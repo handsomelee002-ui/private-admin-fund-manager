@@ -1,13 +1,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import { getInvestors, deleteInvestor } from "@/actions/investors";
+import { AddInvestorForm } from "@/components/AddInvestorForm";
+import { DeleteButton } from "@/components/DeleteButton";
+import Link from "next/link";
+import { ChevronRight } from "lucide-react";
 
-export default function InvestorsPage() {
-  const investors = [
-    { id: "INV-001", name: "Lee Che Hou", joined: "2024-01-15", totalCapital: "RM 500,000" },
-    { id: "INV-002", name: "Ng Siew Chin", joined: "2024-02-20", totalCapital: "RM 605,000" },
-  ];
+export default async function InvestorsPage() {
+  const investors = await getInvestors();
 
   return (
     <div className="space-y-8">
@@ -18,10 +18,7 @@ export default function InvestorsPage() {
             Manage your fund investors and view their total capital.
           </p>
         </div>
-        <Button className="gap-2">
-          <Plus className="h-4 w-4" />
-          Add Investor
-        </Button>
+        <AddInvestorForm />
       </div>
 
       <Card className="bg-card/50 backdrop-blur-sm border-border/50">
@@ -32,25 +29,34 @@ export default function InvestorsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>ID</TableHead>
                 <TableHead>Name</TableHead>
                 <TableHead>Joined Date</TableHead>
                 <TableHead className="text-right">Total Capital</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {investors.map((inv) => (
-                <TableRow key={inv.id}>
-                  <TableCell className="font-medium text-primary">{inv.id}</TableCell>
-                  <TableCell>{inv.name}</TableCell>
+              {investors.map((inv: any) => (
+                <TableRow key={inv.id} className="group hover:bg-muted/50 transition-colors">
+                  <TableCell className="font-medium text-primary">
+                    <Link href={`/investors/${inv.id}`} className="flex items-center gap-1 hover:underline">
+                      {inv.name}
+                      <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </Link>
+                  </TableCell>
                   <TableCell>{inv.joined}</TableCell>
-                  <TableCell className="text-right font-semibold">{inv.totalCapital}</TableCell>
+                  <TableCell className="text-right font-semibold text-green-500">
+                    RM {parseFloat(inv.total_capital).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <DeleteButton id={inv.id} deleteAction={deleteInvestor} />
+                  </TableCell>
                 </TableRow>
               ))}
               {investors.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
-                    No investors found.
+                    No investors found. Add your first investor to begin.
                   </TableCell>
                 </TableRow>
               )}

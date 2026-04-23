@@ -2,10 +2,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Wallet, TrendingUp, ArrowDownRight, ArrowUpRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { sql } from "@vercel/postgres";
 
-export default function InvestorPortal({ params }: { params: { investor_id: string } }) {
-  // Mock data for the specific investor portal
-  const investorName = "Lee Che Hou";
+export default async function InvestorPortalPage({ params }: { params: Promise<{ investor_id: string }> }) {
+  const resolvedParams = await params;
+  const investor_id = resolvedParams.investor_id;
+
+  // Fetch Investor Details
+  const invRes = await sql`SELECT * FROM investors WHERE id = ${investor_id}`;
+  const investorName = invRes.rows[0]?.name || "Unknown Investor";
   const totalDeposits = "RM 500,000";
   const totalWithdrawals = "RM 50,000";
   const shareOfProfit = "RM 12,500";

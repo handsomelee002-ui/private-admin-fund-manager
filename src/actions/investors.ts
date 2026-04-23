@@ -1,0 +1,55 @@
+"use server";
+
+import { sql } from "@vercel/postgres";
+import { revalidatePath } from "next/cache";
+
+export async function getInvestors() {
+  try {
+    const data = await sql`
+      SELECT 
+        i.id, 
+        i.name, 
+        TO_CHAR(i.created_at, 'YYYY-MM-DD') as joined,
+        COALESCE(SUM(CASE WHEN cl.type = 'Deposit' THEN cl.amount ELSE 0 END) - 
+                 SUM(CASE WHEN cl.type = 'Withdrawal' THEN cl.amount ELSE 0 END), 0) as total_capital
+      FROM investors i
+      LEFT JOIN capital_ledger cl ON i.id = cl.investor_id
+      GROUP BY i.id
+      ORDER BY i.created_at DESC;
+    `;
+    return data.rows;
+  } catch (error) {
+    console.error("Database Error:", error);
+    throw new Error("Failed to fetch investors.");
+  }
+}
+
+export async function addInvestor(formData: FormData) {
+  const name = formData.get("name")?.toString()?.trim();
+  if (!name) return { error: "Name is required" };
+
+  try {
+    const existing = await sql`SELECT id FROM investors WHERE name = ${name}`;
+    if (existing.rows.length > 0) {
+      return { error: "An investor with this name already exists." };
+    }
+
+    await sql`INSERT INTO investors (name) VALUES (${name})`;
+    revalidatePath("/investors");
+    return { success: true };
+  } catch (error) {
+    console.error("Database Error:", error);
+    return { error: "Failed to add investor." };
+  }
+}
+
+export async function deleteInvestor(id: string) {
+  try {
+    await sql`DELETE FROM investors WHERE id = ${id}`;
+    revalidatePath("/investors");
+    return { success: true };
+  } catch (error) {
+    console.error("Database Error:", error);
+    return { error: "Failed to delete investor." };
+  }
+}
