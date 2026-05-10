@@ -1,71 +1,148 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Wallet, TrendingUp, Users, DollarSign } from "lucide-react";
 import { sql } from "@vercel/postgres";
-import { DashboardChart } from "@/components/DashboardChart";
+import { SwitchableDashboardChart } from "@/components/SwitchableDashboardChart";
 import { Badge } from "@/components/ui/badge";
 
 export default async function Dashboard() {
-  // Fetch real data for stats
+  // 1. Investor Capital
   const capitalRes = await sql`
     SELECT 
       SUM(CASE WHEN type = 'Deposit' THEN amount ELSE 0 END) as total_deposits,
       SUM(CASE WHEN type = 'Withdrawal' THEN amount ELSE 0 END) as total_withdrawals
     FROM capital_ledger
   `;
-  const totalDeposits = parseFloat(capitalRes.rows[0]?.total_deposits || 0);
-  const totalWithdrawals = parseFloat(capitalRes.rows[0]?.total_withdrawals || 0);
-  const totalInvestorCapital = totalDeposits - totalWithdrawals;
+  const totalInvestorCapital = parseFloat(capitalRes.rows[0]?.total_deposits || 0) - parseFloat(capitalRes.rows[0]?.total_withdrawals || 0);
 
-  const tradeRes = await sql`
+  // 2. Trading Platforms Logic
+  const platformTxRes = await sql`
     SELECT 
-      SUM(CASE WHEN type = 'Buy' THEN amount_rm ELSE 0 END) as total_buys,
-      SUM(CASE WHEN type = 'Sell' THEN amount_rm ELSE 0 END) as total_sells,
-      SUM(profit_loss) as total_profit
-    FROM trading_ledger
+      SUM(CASE WHEN type = 'Deposit' THEN amount ELSE 0 END) as total_deposits,
+      SUM(CASE WHEN type = 'Withdraw' THEN amount ELSE 0 END) as total_withdrawals
+    FROM platform_transactions
   `;
-  const totalBuys = parseFloat(tradeRes.rows[0]?.total_buys || 0);
-  const totalSells = parseFloat(tradeRes.rows[0]?.total_sells || 0);
-  const totalRealizedProfit = parseFloat(tradeRes.rows[0]?.total_profit || 0);
+  const totalPlatformDeposits = parseFloat(platformTxRes.rows[0]?.total_deposits || 0);
+  const totalPlatformWithdrawals = parseFloat(platformTxRes.rows[0]?.total_withdrawals || 0);
+  const netPlatformInvested = totalPlatformDeposits - totalPlatformWithdrawals;
 
-  const dryPowder = totalInvestorCapital + totalSells - totalBuys;
-  const totalFundValue = totalInvestorCapital + totalRealizedProfit;
+  // 3. Unrealized Performance
+  const perfData = await sql`
+    SELECT SUM(unrealized_profit) as total_unrealized 
+    FROM (
+      SELECT unrealized_profit,
+             ROW_NUMBER() OVER(PARTITION BY platform_id ORDER BY month DESC) as rn
+      FROM platform_performance
+    ) sub
+    WHERE rn = 1;
+  `;
+  const totalUnrealized = parseFloat(perfData.rows[0]?.total_unrealized || 0);
 
-  // Recent 5 Transactions (Union of Capital and Trading)
+  // Math
+  const availableCash = totalInvestorCapital - netPlatformInvested;
+  const totalPlatformValue = netPlatformInvested + totalUnrealized;
+  const totalFundValue = availableCash + totalPlatformValue;
+
+  // Recent 5 Transactions (Union of Capital and Platforms)
   const recentRes = await sql`
-    SELECT id, date, 'Capital' as category, type, amount as amount_rm, notes as details
+    SELECT id, date, 'Investor Capital' as category, type, amount as amount_rm, notes as details
     FROM capital_ledger
     UNION ALL
-    SELECT id, date, 'Trade' as category, type, amount_rm, ticker as details
-    FROM trading_ledger
+    SELECT pt.id, pt.date, 'Trading Platform' as category, pt.type, pt.amount as amount_rm, p.name as details
+    FROM platform_transactions pt
+    JOIN platforms p ON pt.platform_id = p.id
     ORDER BY date DESC
     LIMIT 5
   `;
   const recentTransactions = recentRes.rows;
+
+  // Generate Chart Data in JS for accurate historical calculations
+  const allCapitalRes = await sql`SELECT to_char(date, 'YYYY-MM') as month, type, amount FROM capital_ledger ORDER BY date ASC`;
+  const allPerfRes = await sql`SELECT platform_id, month, unrealized_profit FROM platform_performance ORDER BY month ASC`;
+  const allPlatformTxRes = await sql`SELECT to_char(date, 'YYYY-MM') as month, type, amount FROM platform_transactions ORDER BY date ASC`;
+
+  // Get range of months
+  const monthsSet = new Set<string>();
+  allCapitalRes.rows.forEach(r => monthsSet.add(r.month));
+  allPerfRes.rows.forEach(r => monthsSet.add(r.month));
+  allPlatformTxRes.rows.forEach(r => monthsSet.add(r.month));
+  
+  const currentMonthStr = new Date().toISOString().substring(0, 7);
+  monthsSet.add(currentMonthStr);
+  const sortedMonths = Array.from(monthsSet).sort();
+  
+  const allMonths = [];
+  if (sortedMonths.length > 0) {
+    let curr = new Date(sortedMonths[0] + "-01");
+    const end = new Date(sortedMonths[sortedMonths.length - 1] + "-01");
+    while (curr <= end) {
+      allMonths.push(curr.toISOString().substring(0, 7));
+      curr.setMonth(curr.getMonth() + 1);
+    }
+  }
+
+  const chartData = [];
+  let cumulativeInvestorCapital = 0;
+  const latestPlatformPerf = new Map<string, number>();
+
+  for (const month of allMonths) {
+    // 1. Add capital for this month
+    const monthCapitals = allCapitalRes.rows.filter(r => r.month === month);
+    for (const cap of monthCapitals) {
+      if (cap.type === 'Deposit') cumulativeInvestorCapital += parseFloat(cap.amount);
+      if (cap.type === 'Withdrawal') cumulativeInvestorCapital -= parseFloat(cap.amount);
+    }
+
+    // 2. Add performance for this month
+    const monthPerfs = allPerfRes.rows.filter(r => r.month === month);
+    for (const perf of monthPerfs) {
+      latestPlatformPerf.set(perf.platform_id, parseFloat(perf.unrealized_profit));
+    }
+
+    // 3. Withdrawals for this month (for the bar chart)
+    const monthTx = allPlatformTxRes.rows.filter(r => r.month === month);
+    let withdrawals = 0;
+    for (const tx of monthTx) {
+      if (tx.type === 'Withdraw') withdrawals += parseFloat(tx.amount);
+    }
+
+    // Sum up latest performance of all platforms
+    let totalUnrealizedThisMonth = 0;
+    for (const val of latestPlatformPerf.values()) {
+      totalUnrealizedThisMonth += val;
+    }
+
+    chartData.push({
+      month,
+      withdrawals,
+      unrealized: totalUnrealizedThisMonth,
+      totalValue: cumulativeInvestorCapital + totalUnrealizedThisMonth
+    });
+  }
 
   const stats = [
     {
       title: "Total Fund Value",
       value: `RM ${totalFundValue.toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
       icon: DollarSign,
-      trend: "Current AUM",
+      trend: "Current Total AUM",
     },
     {
-      title: "Realized Profit YTD",
-      value: `RM ${totalRealizedProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
+      title: "Total Unrealized",
+      value: `RM ${totalUnrealized.toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
       icon: TrendingUp,
-      trend: "Total historical profit",
+      trend: "Current open profits",
     },
     {
       title: "Total Investor Capital",
       value: `RM ${totalInvestorCapital.toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
       icon: Users,
-      trend: "Net active capital",
+      trend: "Net capital from investors",
     },
     {
       title: "Available Cash",
-      value: `RM ${dryPowder.toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
+      value: `RM ${availableCash.toLocaleString(undefined, { minimumFractionDigits: 2 })}`,
       icon: Wallet,
-      trend: "Available for new trades",
+      trend: "Available for deposit",
     },
   ];
 
@@ -100,10 +177,10 @@ export default async function Dashboard() {
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-7">
         <Card className="col-span-4 bg-card/50 backdrop-blur-sm border-border/50">
           <CardHeader>
-            <CardTitle>Performance Overview</CardTitle>
+            <CardTitle>Performance Metrics</CardTitle>
           </CardHeader>
-          <CardContent className="pl-0 pb-0 h-[300px]">
-            <DashboardChart />
+          <CardContent className="pl-0 pb-0 h-[350px]">
+            <SwitchableDashboardChart data={chartData} />
           </CardContent>
         </Card>
         
@@ -118,14 +195,16 @@ export default async function Dashboard() {
               </div>
             ) : (
               <div className="divide-y divide-border/50">
-                {recentTransactions.map((tx: any) => (
-                  <div key={tx.id} className="p-4 flex items-center justify-between hover:bg-muted/30 transition-colors">
+                {recentTransactions.map((tx: any, idx: number) => (
+                  <div key={`${tx.id}-${idx}`} className="p-4 flex items-center justify-between hover:bg-muted/30 transition-colors">
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center gap-2">
                         <span className="font-semibold">{tx.category}</span>
-                        <Badge variant="outline" className="text-[10px] h-4 px-1">{tx.type}</Badge>
+                        <Badge variant="outline" className={`text-[10px] h-4 px-1 ${
+                          tx.type === 'Deposit' || tx.type === 'Withdrawal' ? 'text-blue-500' : 'text-orange-500'
+                        }`}>{tx.type}</Badge>
                       </div>
-                      <span className="text-xs text-muted-foreground">{new Date(tx.date).toLocaleDateString()} • {tx.details}</span>
+                      <span className="text-xs text-muted-foreground">{new Date(tx.date).toLocaleDateString()} • {tx.details || "-"}</span>
                     </div>
                     <div className="font-bold text-primary">
                       RM {parseFloat(tx.amount_rm).toLocaleString(undefined, { minimumFractionDigits: 2 })}

@@ -53,3 +53,26 @@ export async function deleteInvestor(id: string) {
     return { error: "Failed to delete investor." };
   }
 }
+
+export async function updateInvestorName(formData: FormData) {
+  const id = formData.get("id")?.toString();
+  const name = formData.get("name")?.toString()?.trim();
+  if (!id || !name) return { error: "ID and new name are required" };
+
+  try {
+    const existing = await sql`SELECT id FROM investors WHERE name = ${name} AND id != ${id}`;
+    if (existing.rows.length > 0) {
+      return { error: "An investor with this name already exists." };
+    }
+
+    await sql`UPDATE investors SET name = ${name} WHERE id = ${id}`;
+    revalidatePath("/investors");
+    revalidatePath(`/investors/${id}`);
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    console.error("Database Error:", error);
+    return { error: "Failed to update investor name." };
+  }
+}
+

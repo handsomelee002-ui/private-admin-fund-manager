@@ -8,7 +8,6 @@ import {
   Wallet,
   ArrowRightLeft,
   Settings,
-  FileSpreadsheet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -17,7 +16,6 @@ const navigation = [
   { name: "Investors", href: "/investors", icon: Users },
   { name: "Capital Ledger", href: "/capital", icon: Wallet },
   { name: "Trading Ledger", href: "/trading", icon: ArrowRightLeft },
-  { name: "Statements", href: "/statement", icon: FileSpreadsheet },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
 

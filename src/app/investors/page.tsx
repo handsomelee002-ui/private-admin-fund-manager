@@ -3,6 +3,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { getInvestors, deleteInvestor } from "@/actions/investors";
 import { AddInvestorForm } from "@/components/AddInvestorForm";
 import { DeleteButton } from "@/components/DeleteButton";
+import { EditNameDialog } from "@/components/EditNameDialog";
+import { updateInvestorName } from "@/actions/investors";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 
@@ -49,7 +51,10 @@ export default async function InvestorsPage() {
                     RM {parseFloat(inv.total_capital).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </TableCell>
                   <TableCell className="text-right">
-                    <DeleteButton id={inv.id} deleteAction={deleteInvestor} />
+                    <div className="flex justify-end gap-2">
+                      <EditNameDialog id={inv.id} currentName={inv.name} title="Edit Investor Name" updateAction={updateInvestorName} />
+                      <DeleteButton id={inv.id} deleteAction={deleteInvestor} />
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
