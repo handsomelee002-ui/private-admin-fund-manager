@@ -3,16 +3,46 @@ import { Wallet, TrendingUp, Users, DollarSign } from "lucide-react";
 import { sql } from "@vercel/postgres";
 import { SwitchableDashboardChart } from "@/components/SwitchableDashboardChart";
 import { Badge } from "@/components/ui/badge";
+import { calcDailyCompoundInterest } from "@/lib/savingsUtils";
 
 export default async function Dashboard() {
-  // 1. Investor Capital
+  // 1. Investor Capital (Equity)
   const capitalRes = await sql`
     SELECT 
       SUM(CASE WHEN type = 'Deposit' THEN amount ELSE 0 END) as total_deposits,
       SUM(CASE WHEN type = 'Withdrawal' THEN amount ELSE 0 END) as total_withdrawals
     FROM capital_ledger
   `;
-  const totalInvestorCapital = parseFloat(capitalRes.rows[0]?.total_deposits || 0) - parseFloat(capitalRes.rows[0]?.total_withdrawals || 0);
+  const totalEquityCapital = parseFloat(capitalRes.rows[0]?.total_deposits || 0) - parseFloat(capitalRes.rows[0]?.total_withdrawals || 0);
+
+  // 1b. Fixed Savings Capital (Debt) — principal + dynamically accrued interest
+  const fixedSavingsRes = await sql`
+    SELECT 
+      SUM(CASE WHEN type = 'Deposit' THEN amount ELSE 0 END) as total_deposits,
+      SUM(CASE WHEN type = 'Withdrawal' THEN amount ELSE 0 END) as total_withdrawals
+    FROM fixed_savings_ledger
+  `;
+  const fixedSavingsPrincipal =
+    parseFloat(fixedSavingsRes.rows[0]?.total_deposits || 0) -
+    parseFloat(fixedSavingsRes.rows[0]?.total_withdrawals || 0);
+
+  // Fetch all deposit rows with an interest rate to compute accrued interest
+  const fsDepositRows = await sql`
+    SELECT amount, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+    FROM fixed_savings_ledger
+    WHERE type = 'Deposit' AND interest_rate IS NOT NULL AND interest_rate > 0
+  `;
+  const totalFixedAccrued = fsDepositRows.rows.reduce((sum: number, r: any) => {
+    return sum + calcDailyCompoundInterest(
+      parseFloat(r.amount),
+      parseFloat(r.interest_rate),
+      r.date,
+    );
+  }, 0);
+
+  const totalFixedSavingsCash = fixedSavingsPrincipal + totalFixedAccrued;
+  
+  const totalInvestorCapital = totalEquityCapital + totalFixedSavingsCash;
 
   // 2. Trading Platforms Logic
   const platformTxRes = await sql`
@@ -47,6 +77,9 @@ export default async function Dashboard() {
     SELECT id, date, 'Investor Capital' as category, type, amount as amount_rm, notes as details
     FROM capital_ledger
     UNION ALL
+    SELECT id, date, 'Fixed Savings' as category, type, amount as amount_rm, notes as details
+    FROM fixed_savings_ledger
+    UNION ALL
     SELECT pt.id, pt.date, 'Trading Platform' as category, pt.type, pt.amount as amount_rm, p.name as details
     FROM platform_transactions pt
     JOIN platforms p ON pt.platform_id = p.id
@@ -56,7 +89,14 @@ export default async function Dashboard() {
   const recentTransactions = recentRes.rows;
 
   // Generate Chart Data in JS for accurate historical calculations
-  const allCapitalRes = await sql`SELECT to_char(date, 'YYYY-MM') as month, type, amount FROM capital_ledger ORDER BY date ASC`;
+  const allCapitalRes = await sql`
+    SELECT to_char(date, 'YYYY-MM') as month, type, amount 
+    FROM capital_ledger 
+    UNION ALL
+    SELECT to_char(date, 'YYYY-MM') as month, type, amount 
+    FROM fixed_savings_ledger 
+    WHERE type != 'Interest'
+  `;
   const allPerfRes = await sql`SELECT platform_id, month, unrealized_profit FROM platform_performance ORDER BY month ASC`;
   const allPlatformTxRes = await sql`SELECT to_char(date, 'YYYY-MM') as month, type, amount FROM platform_transactions ORDER BY date ASC`;
 
