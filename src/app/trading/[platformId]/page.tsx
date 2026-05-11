@@ -1,5 +1,11 @@
 import { notFound } from "next/navigation";
-import { getPlatform, getPlatformTransactions, getPlatformPerformance, deletePlatformTransaction, deletePlatformPerformance } from "@/actions/trading";
+import {
+  getPlatform,
+  getPlatformTransactions,
+  getPlatformPerformance,
+  deletePlatformTransaction,
+  deletePlatformPerformance,
+} from "@/actions/trading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -7,209 +13,254 @@ import { AddPlatformTransactionForm } from "@/components/AddPlatformTransactionF
 import { AddPlatformPerformanceForm } from "@/components/AddPlatformPerformanceForm";
 import { PlatformTransactionsChart, PlatformPerformanceChart } from "@/components/PlatformCharts";
 import { DeleteButton } from "@/components/DeleteButton";
+import { Badge } from "@/components/ui/badge";
 import Link from "next/link";
-import { ArrowLeft, Wallet, TrendingUp, DollarSign } from "lucide-react";
+import { ArrowLeft, Wallet, TrendingUp, DollarSign, ArrowDownRight, ArrowUpRight, BarChart3 } from "lucide-react";
 
 export default async function PlatformDetailsPage({ params }: { params: { platformId: string } }) {
   const { platformId } = await params;
-  
+
   const platform = await getPlatform(platformId);
   if (!platform) return notFound();
 
   const transactions = await getPlatformTransactions(platformId);
   const performance = await getPlatformPerformance(platformId);
 
-  // Calculate Net Invested
+  // Stats
   const netInvested = transactions.reduce((acc: number, t: any) => {
-    return t.type === 'Deposit' ? acc + parseFloat(t.amount) : acc - parseFloat(t.amount);
+    return t.type === "Deposit" ? acc + parseFloat(t.amount) : acc - parseFloat(t.amount);
   }, 0);
-
-  // Get Latest Unrealized Profit
   const latestUnrealized = performance.length > 0 ? parseFloat(performance[0].unrealized_profit) : 0;
-  
   const totalValue = netInvested + latestUnrealized;
+  const pnlPct = netInvested > 0 ? ((latestUnrealized / netInvested) * 100) : 0;
+
+  const fmt = (n: number) =>
+    `RM ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-center gap-4">
-        <Link href="/trading" className="text-muted-foreground hover:text-foreground transition-colors">
-          <ArrowLeft className="h-6 w-6" />
-        </Link>
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">{platform.name}</h1>
-          <p className="text-muted-foreground mt-1">Platform Details & Performance</p>
-        </div>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card className="bg-card/50 backdrop-blur-sm border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Net Invested</CardTitle>
-            <Wallet className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">RM {netInvested.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-            <p className="text-xs text-muted-foreground mt-1">Total Deposits - Withdrawals</p>
-          </CardContent>
-        </Card>
-        
-        <Card className="bg-card/50 backdrop-blur-sm border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Latest Unrealized</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${latestUnrealized >= 0 ? "text-blue-500" : "text-red-500"}`}>
-              RM {latestUnrealized.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">From most recent entry</p>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-card/50 backdrop-blur-sm border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Value</CardTitle>
-            <DollarSign className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-500">
-              RM {totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">Net Invested + Unrealized</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Tabs defaultValue="transactions" className="w-full flex-col">
-        <div className="grid lg:grid-cols-2 gap-6 mb-6">
-          <div className="hidden lg:block"></div> {/* Empty space above chart */}
-          
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-            <TabsList className="grid w-[250px] grid-cols-2 h-9 shrink-0">
-              <TabsTrigger value="transactions" className="text-xs">Transactions</TabsTrigger>
-              <TabsTrigger value="performance" className="text-xs">Performance</TabsTrigger>
-            </TabsList>
-            
-            <div className="flex items-center w-full sm:w-auto">
-              <TabsContent value="transactions" className="mt-0 w-full">
-                <AddPlatformTransactionForm platformId={platformId} />
-              </TabsContent>
-              <TabsContent value="performance" className="mt-0 w-full">
-                <AddPlatformPerformanceForm platformId={platformId} />
-              </TabsContent>
-            </div>
+    <div className="space-y-6">
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-4">
+          <Link
+            href="/trading"
+            className="h-9 w-9 rounded-full border border-border/50 bg-card/50 flex items-center justify-center text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Link>
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+              {platform.name}
+            </h1>
+            <p className="text-muted-foreground mt-1 text-sm">Platform Details &amp; Performance</p>
           </div>
         </div>
-        
+      </div>
+
+      {/* ── Stat Cards ──────────────────────────────────────────────────────── */}
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+        <Card className="relative overflow-hidden bg-gradient-to-br from-primary/20 to-primary/5 border-primary/30 shadow-lg hover:shadow-primary/10 transition-all duration-300">
+          <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent pointer-events-none" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Net Invested</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-primary/15 flex items-center justify-center">
+              <Wallet className="h-4 w-4 text-primary" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold tracking-tight">{fmt(netInvested)}</div>
+            <p className="text-xs text-muted-foreground mt-1.5">Total Deposits − Withdrawals</p>
+          </CardContent>
+        </Card>
+
+        <Card className="relative overflow-hidden bg-gradient-to-br from-blue-500/15 to-blue-500/5 border-blue-500/25 shadow-lg hover:shadow-blue-500/10 transition-all duration-300">
+          <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-transparent pointer-events-none" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Latest Unrealized</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-blue-500/15 flex items-center justify-center">
+              <TrendingUp className="h-4 w-4 text-blue-400" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className={`text-3xl font-bold tracking-tight ${latestUnrealized >= 0 ? "text-blue-400" : "text-red-400"}`}>
+              {latestUnrealized >= 0 ? "+" : ""}{fmt(latestUnrealized)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1">
+              <span className={`font-semibold ${pnlPct >= 0 ? "text-blue-400" : "text-red-400"}`}>
+                {pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%
+              </span>
+              &nbsp;return on invested
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="relative overflow-hidden bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border-emerald-500/25 shadow-lg hover:shadow-emerald-500/10 transition-all duration-300">
+          <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent pointer-events-none" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Total Value</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-emerald-500/15 flex items-center justify-center">
+              <DollarSign className="h-4 w-4 text-emerald-500" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold tracking-tight text-emerald-500">{fmt(totalValue)}</div>
+            <p className="text-xs text-muted-foreground mt-1.5">Net Invested + Unrealized</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Tabs ────────────────────────────────────────────────────────────── */}
+      <Tabs defaultValue="transactions" className="w-full flex-col">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+          <TabsList className="grid w-[250px] grid-cols-2 h-9 shrink-0">
+            <TabsTrigger value="transactions" className="text-xs">Transactions</TabsTrigger>
+            <TabsTrigger value="performance" className="text-xs">Performance</TabsTrigger>
+          </TabsList>
+
+          <div>
+            <TabsContent value="transactions" className="mt-0">
+              <AddPlatformTransactionForm platformId={platformId} />
+            </TabsContent>
+            <TabsContent value="performance" className="mt-0">
+              <AddPlatformPerformanceForm platformId={platformId} />
+            </TabsContent>
+          </div>
+        </div>
+
+        {/* ── Transactions Tab ──────────────────────────────────────────────── */}
         <TabsContent value="transactions" className="mt-0">
-          <div className="grid lg:grid-cols-2 gap-6 h-[500px]">
-            <div className="h-full">
-              <Card className="bg-card/50 backdrop-blur-sm border-border/50 h-full flex flex-col">
-                <CardHeader>
-                  <CardTitle className="text-lg">Capital Flows</CardTitle>
-                </CardHeader>
-                <CardContent className="p-0 pb-4 flex-1">
-                  <PlatformTransactionsChart data={transactions} />
-                </CardContent>
-              </Card>
-            </div>
-            
-            <div className="h-full">
-              <Card className="bg-card/50 backdrop-blur-sm border-border/50 h-full flex flex-col">
-                <CardContent className="p-0 flex-1 overflow-auto">
-                  <Table>
-                    <TableHeader className="bg-muted/50 sticky top-0">
-                      <TableRow>
-                        <TableHead>Date</TableHead>
-                        <TableHead>Type</TableHead>
-                        <TableHead>Notes</TableHead>
-                        <TableHead className="text-right">Amount</TableHead>
-                        <TableHead className="text-right">Actions</TableHead>
+          <div className="grid lg:grid-cols-2 gap-4">
+            {/* Chart */}
+            <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
+              <CardHeader className="pb-0">
+                <div className="flex items-center gap-2">
+                  <BarChart3 className="h-4 w-4 text-primary" />
+                  <CardTitle className="text-base">Capital Flows</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="p-0 pb-4">
+                <PlatformTransactionsChart data={transactions} />
+              </CardContent>
+            </Card>
+
+            {/* Table */}
+            <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm overflow-hidden">
+              <CardHeader className="pb-0">
+                <CardTitle className="text-base">Transaction History</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-b border-border/50 hover:bg-transparent">
+                      <TableHead className="pl-6">Date</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead>Notes</TableHead>
+                      <TableHead className="text-right">Amount</TableHead>
+                      <TableHead className="text-right pr-6">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {transactions.map((t: any) => (
+                      <TableRow key={t.id} className="hover:bg-muted/20 transition-colors border-border/30">
+                        <TableCell className="pl-6 text-sm">{t.date}</TableCell>
+                        <TableCell>
+                          <Badge
+                            variant="outline"
+                            className={`text-[10px] h-5 px-1.5 ${
+                              t.type === "Deposit"
+                                ? "text-emerald-500 border-emerald-500/30 bg-emerald-500/5"
+                                : "text-orange-400 border-orange-400/30 bg-orange-400/5"
+                            }`}
+                          >
+                            {t.type === "Deposit" ? (
+                              <ArrowDownRight className="h-2.5 w-2.5 mr-0.5" />
+                            ) : (
+                              <ArrowUpRight className="h-2.5 w-2.5 mr-0.5" />
+                            )}
+                            {t.type}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-xs">{t.notes || "—"}</TableCell>
+                        <TableCell className="text-right font-medium tabular-nums text-sm">
+                          {fmt(parseFloat(t.amount))}
+                        </TableCell>
+                        <TableCell className="text-right pr-6">
+                          <DeleteButton id={t.id} deleteAction={deletePlatformTransaction} />
+                        </TableCell>
                       </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {transactions.map((t: any) => (
-                        <TableRow key={t.id}>
-                          <TableCell>{t.date}</TableCell>
-                          <TableCell>
-                            <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
-                              t.type === 'Deposit' ? 'bg-green-500/10 text-green-500' : 'bg-orange-500/10 text-orange-500'
-                            }`}>
-                              {t.type}
-                            </span>
-                          </TableCell>
-                          <TableCell className="text-muted-foreground">{t.notes || "-"}</TableCell>
-                          <TableCell className="text-right font-medium">
-                            RM {parseFloat(t.amount).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <DeleteButton id={t.id} deleteAction={deletePlatformTransaction} />
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                      {transactions.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
-                            No transactions recorded.
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            </div>
+                    ))}
+                    {transactions.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center text-muted-foreground py-12 text-sm">
+                          No transactions recorded.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
           </div>
         </TabsContent>
-        
+
+        {/* ── Performance Tab ───────────────────────────────────────────────── */}
         <TabsContent value="performance" className="mt-0">
-          <div className="grid lg:grid-cols-2 gap-6 h-[500px]">
-            <div className="h-full">
-              <Card className="bg-card/50 backdrop-blur-sm border-border/50 h-full flex flex-col">
-                <CardHeader>
-                  <CardTitle className="text-lg">Monthly Performance</CardTitle>
-                </CardHeader>
-                <CardContent className="p-0 pb-4 flex-1">
-                  <PlatformPerformanceChart data={performance} />
-                </CardContent>
-              </Card>
-            </div>
-            
-            <div className="h-full">
-              <Card className="bg-card/50 backdrop-blur-sm border-border/50 h-full flex flex-col">
-                <CardContent className="p-0 flex-1 overflow-auto">
-                  <Table>
-                    <TableHeader className="bg-muted/50 sticky top-0">
-                      <TableRow>
-                        <TableHead>Month</TableHead>
-                        <TableHead className="text-right">Unrealized Profit</TableHead>
-                        <TableHead className="text-right">Actions</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {performance.map((p: any) => (
-                        <TableRow key={p.id}>
-                          <TableCell className="font-medium">{p.month}</TableCell>
-                          <TableCell className={`text-right font-medium ${parseFloat(p.unrealized_profit) >= 0 ? "text-blue-500" : "text-red-500"}`}>
-                            RM {parseFloat(p.unrealized_profit).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </TableCell>
+          <div className="grid lg:grid-cols-2 gap-4">
+            {/* Chart */}
+            <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
+              <CardHeader className="pb-0">
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="h-4 w-4 text-primary" />
+                  <CardTitle className="text-base">Monthly Performance</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="p-0 pb-4">
+                <PlatformPerformanceChart data={performance} />
+              </CardContent>
+            </Card>
+
+            {/* Table */}
+            <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm overflow-hidden">
+              <CardHeader className="pb-0">
+                <CardTitle className="text-base">Performance Records</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-b border-border/50 hover:bg-transparent">
+                      <TableHead className="pl-6">Month</TableHead>
+                      <TableHead className="text-right">Unrealized Profit</TableHead>
+                      <TableHead className="text-right pr-6">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {performance.map((p: any) => {
+                      const profit = parseFloat(p.unrealized_profit);
+                      return (
+                        <TableRow key={p.id} className="hover:bg-muted/20 transition-colors border-border/30">
+                          <TableCell className="pl-6 font-medium text-sm">{p.month}</TableCell>
                           <TableCell className="text-right">
+                            <span className={`font-semibold tabular-nums ${profit >= 0 ? "text-blue-400" : "text-red-400"}`}>
+                              {profit >= 0 ? "+" : ""}{fmt(profit)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right pr-6">
                             <DeleteButton id={p.id} deleteAction={deletePlatformPerformance} />
                           </TableCell>
                         </TableRow>
-                      ))}
-                      {performance.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={3} className="text-center text-muted-foreground py-8">
-                            No performance data recorded.
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            </div>
+                      );
+                    })}
+                    {performance.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={3} className="text-center text-muted-foreground py-12 text-sm">
+                          No performance data recorded.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
           </div>
         </TabsContent>
       </Tabs>

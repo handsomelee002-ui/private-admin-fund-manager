@@ -14,7 +14,6 @@ import { cn } from "@/lib/utils";
 const navigation = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Investors", href: "/investors", icon: Users },
-  { name: "Capital Ledger", href: "/capital", icon: Wallet },
   { name: "Trading Ledger", href: "/trading", icon: ArrowRightLeft },
   { name: "Settings", href: "/settings", icon: Settings },
 ];

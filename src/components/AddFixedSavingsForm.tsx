@@ -96,7 +96,7 @@ export function AddFixedSavingsForm({
           {/* Transaction Type */}
           <div className="space-y-2">
             <Label>Transaction Type</Label>
-            <Select name="type" required value={type} onValueChange={setType}>
+            <Select name="type" required value={type} onValueChange={(val) => { if (val) setType(val); }}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>

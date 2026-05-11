@@ -5,73 +5,181 @@ import { AddPlatformForm } from "@/components/AddPlatformForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { EditNameDialog } from "@/components/EditNameDialog";
 import Link from "next/link";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, BarChart3, TrendingUp, Wallet, DollarSign, ArrowRightLeft } from "lucide-react";
 
 export default async function TradingLedgerPage() {
   const platforms = await getPlatforms();
 
+  const totalNetInvested = platforms.reduce((sum: number, p: any) => sum + p.netInvested, 0);
+  const totalUnrealized = platforms.reduce((sum: number, p: any) => sum + p.unrealizedProfit, 0);
+  const totalValue = platforms.reduce((sum: number, p: any) => sum + p.totalValue, 0);
+
+  const fmt = (n: number) =>
+    `RM ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
   return (
-    <div className="space-y-8">
-      <div className="flex justify-between items-center">
+    <div className="space-y-6">
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
+      <div className="flex items-end justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Trading Ledger</h1>
-          <p className="text-muted-foreground mt-2">
+          <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+            Trading Ledger
+          </h1>
+          <p className="text-muted-foreground mt-1 text-sm">
             Manage your trading platforms, capital flows, and performance.
           </p>
         </div>
         <AddPlatformForm />
       </div>
 
-      <Card className="bg-card/50 backdrop-blur-sm border-border/50">
+      {/* ── Summary Cards ───────────────────────────────────────────────────── */}
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+        <Card className="relative overflow-hidden bg-gradient-to-br from-primary/20 to-primary/5 border-primary/30 shadow-lg hover:shadow-primary/10 transition-all duration-300">
+          <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent pointer-events-none" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Total Net Invested</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-primary/15 flex items-center justify-center">
+              <Wallet className="h-4 w-4 text-primary" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold tracking-tight">{fmt(totalNetInvested)}</div>
+            <p className="text-xs text-muted-foreground mt-1.5">Across all platforms</p>
+          </CardContent>
+        </Card>
+
+        <Card className="relative overflow-hidden bg-gradient-to-br from-blue-500/15 to-blue-500/5 border-blue-500/25 shadow-lg hover:shadow-blue-500/10 transition-all duration-300">
+          <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-transparent pointer-events-none" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Total Unrealized</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-blue-500/15 flex items-center justify-center">
+              <TrendingUp className="h-4 w-4 text-blue-400" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className={`text-3xl font-bold tracking-tight ${totalUnrealized >= 0 ? "text-blue-400" : "text-red-400"}`}>
+              {fmt(totalUnrealized)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5">Latest unrealized profit/loss</p>
+          </CardContent>
+        </Card>
+
+        <Card className="relative overflow-hidden bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border-emerald-500/25 shadow-lg hover:shadow-emerald-500/10 transition-all duration-300">
+          <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent pointer-events-none" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Total Portfolio Value</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-emerald-500/15 flex items-center justify-center">
+              <DollarSign className="h-4 w-4 text-emerald-500" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold tracking-tight text-emerald-500">{fmt(totalValue)}</div>
+            <p className="text-xs text-muted-foreground mt-1.5">Net Invested + Unrealized</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* ── Platforms Table ─────────────────────────────────────────────────── */}
+      <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
         <CardHeader>
-          <CardTitle>Trading Platforms</CardTitle>
+          <div className="flex items-center gap-2">
+            <BarChart3 className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Trading Platforms</CardTitle>
+          </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="p-0">
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Platform Name</TableHead>
+              <TableRow className="border-b border-border/50 hover:bg-transparent">
+                <TableHead className="pl-6">Platform</TableHead>
                 <TableHead className="text-right">Net Invested</TableHead>
-                <TableHead className="text-right">Latest Unrealized</TableHead>
+                <TableHead className="text-right">Unrealized P&L</TableHead>
                 <TableHead className="text-right">Total Value</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead className="text-right pr-6">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {platforms.map((platform: any) => (
-                <TableRow key={platform.id} className="group hover:bg-muted/50 transition-colors">
-                  <TableCell className="font-medium text-primary">
-                    <Link href={`/trading/${platform.id}`} className="flex items-center gap-1 hover:underline">
-                      {platform.name}
-                      <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    </Link>
-                  </TableCell>
-                  <TableCell className="text-right font-medium">
-                    RM {platform.netInvested.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </TableCell>
-                  <TableCell className="text-right font-medium text-blue-500">
-                    RM {platform.unrealizedProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </TableCell>
-                  <TableCell className="text-right font-bold text-green-500">
-                    RM {platform.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      <EditNameDialog id={platform.id} currentName={platform.name} title="Edit Platform Name" updateAction={updatePlatformName} />
-                      <DeleteButton id={platform.id} deleteAction={deletePlatform} />
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {platforms.map((platform: any) => {
+                const pnlPct = platform.netInvested > 0
+                  ? ((platform.unrealizedProfit / platform.netInvested) * 100)
+                  : 0;
+                return (
+                  <TableRow key={platform.id} className="group hover:bg-muted/20 transition-colors border-border/30">
+                    <TableCell className="pl-6">
+                      <Link
+                        href={`/trading/${platform.id}`}
+                        className="flex items-center gap-2 w-fit"
+                      >
+                        <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+                          <ArrowRightLeft className="h-3.5 w-3.5 text-primary" />
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="font-semibold text-sm text-primary hover:underline flex items-center gap-1">
+                            {platform.name}
+                            <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">Click to view details</span>
+                        </div>
+                      </Link>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <span className="font-medium tabular-nums">
+                        {fmt(platform.netInvested)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className={`font-semibold tabular-nums ${platform.unrealizedProfit >= 0 ? "text-blue-400" : "text-red-400"}`}>
+                          {platform.unrealizedProfit >= 0 ? "+" : ""}{fmt(platform.unrealizedProfit)}
+                        </span>
+                        <span className={`text-[10px] ${pnlPct >= 0 ? "text-blue-400/70" : "text-red-400/70"}`}>
+                          {pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <span className="font-bold tabular-nums text-emerald-400">
+                        {fmt(platform.totalValue)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right pr-6">
+                      <div className="flex justify-end gap-2">
+                        <EditNameDialog id={platform.id} currentName={platform.name} title="Edit Platform Name" updateAction={updatePlatformName} />
+                        <DeleteButton id={platform.id} deleteAction={deletePlatform} />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
               {platforms.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                  <TableCell colSpan={5} className="text-center text-muted-foreground py-16 text-sm">
                     No trading platforms found. Add your first platform to begin.
                   </TableCell>
                 </TableRow>
               )}
             </TableBody>
           </Table>
+
+          {/* Totals footer */}
+          {platforms.length > 0 && (
+            <div className="border-t border-border/50 px-6 py-3 flex items-center justify-end gap-8 bg-muted/20">
+              <div className="text-right">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Total Invested</p>
+                <p className="text-sm font-bold tabular-nums">{fmt(totalNetInvested)}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Total P&L</p>
+                <p className={`text-sm font-bold tabular-nums ${totalUnrealized >= 0 ? "text-blue-400" : "text-red-400"}`}>
+                  {totalUnrealized >= 0 ? "+" : ""}{fmt(totalUnrealized)}
+                </p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Portfolio Value</p>
+                <p className="text-sm font-bold tabular-nums text-emerald-400">{fmt(totalValue)}</p>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
