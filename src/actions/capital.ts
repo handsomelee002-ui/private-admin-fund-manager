@@ -2,6 +2,7 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
+import { ensureClaimsTable } from "@/actions/profitClaims";
 
 export async function getCapitalLedger() {
   try {
@@ -59,14 +60,68 @@ export async function addCapitalRecord(formData: FormData) {
   if (isNaN(amount)) return { error: "Amount must be a number" };
 
   try {
+    // ── Auto profit claim on Withdrawal ──────────────────────────────────────
+    // Calculate BEFORE inserting the withdrawal so the equity share is correct
+    let autoClaimedAmount = 0;
+    if (type === "Withdrawal") {
+      // Investor's current net equity (before this withdrawal)
+      const investorEquityRes = await sql`
+        SELECT COALESCE(SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount ELSE -amount END), 0) as net
+        FROM capital_ledger
+        WHERE investor_id = ${investorId}
+      `;
+      const investorNetEquity = parseFloat(investorEquityRes.rows[0]?.net || 0);
+
+      // Total fund equity (before this withdrawal)
+      const totalFundRes = await sql`
+        SELECT COALESCE(SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount ELSE -amount END), 0) as total
+        FROM capital_ledger
+      `;
+      const totalFundEquity = parseFloat(totalFundRes.rows[0]?.total || 0);
+
+      // Latest total unrealized profit across all platforms
+      const unrealizedRes = await sql`
+        SELECT COALESCE(SUM(unrealized_profit), 0) as total
+        FROM (
+          SELECT unrealized_profit,
+                 ROW_NUMBER() OVER(PARTITION BY platform_id ORDER BY month DESC) as rn
+          FROM platform_performance
+        ) sub WHERE rn = 1
+      `;
+      const totalUnrealized = parseFloat(unrealizedRes.rows[0]?.total || 0);
+
+      // Investor's share of unrealized profit
+      if (totalFundEquity > 0 && totalUnrealized > 0) {
+        autoClaimedAmount = (investorNetEquity / totalFundEquity) * totalUnrealized;
+      }
+    }
+
+    // ── Insert the capital record ─────────────────────────────────────────────
     await sql`
       INSERT INTO capital_ledger (investor_id, date, type, amount, notes)
       VALUES (${investorId}, ${date}, ${type}, ${amount}, ${notes})
     `;
+
+    // ── Auto-create profit claim if withdrawal and unrealized > 0 ────────────
+    if (type === "Withdrawal" && autoClaimedAmount > 0) {
+      await ensureClaimsTable();
+      await sql`
+        INSERT INTO investor_profit_claims (investor_id, locked_amount, claim_date, notes)
+        VALUES (
+          ${investorId},
+          ${autoClaimedAmount},
+          ${date},
+          ${'Auto-locked on capital withdrawal'}
+        )
+      `;
+      revalidatePath("/claims");
+    }
+
     revalidatePath("/capital");
     revalidatePath(`/investors/${investorId}`);
     revalidatePath("/");
-    return { success: true };
+    revalidatePath("/reports");
+    return { success: true, autoClaimedAmount };
   } catch (error) {
     console.error("Database Error:", error);
     return { error: "Failed to add capital record." };

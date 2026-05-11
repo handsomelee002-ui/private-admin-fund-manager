@@ -1,13 +1,15 @@
 import { sql } from "@vercel/postgres";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Wallet, ArrowDownRight, ArrowUpRight, TrendingUp, Percent, PieChart, Award } from "lucide-react";
+import { Wallet, ArrowDownRight, ArrowUpRight, TrendingUp, Percent, PieChart, Award, Handshake, Clock, CheckCircle, AlertCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { getCapitalLedgerByInvestor, deleteCapitalRecord } from "@/actions/capital";
 import { getFixedSavingsByInvestor, deleteFixedSavingsRecord } from "@/actions/fixedSavings";
 import { calcDailyCompoundInterest } from "@/lib/savingsUtils";
+import { getClaimsByInvestor, deleteClaim } from "@/actions/profitClaims";
 import { AddCapitalForm } from "@/components/AddCapitalForm";
 import { AddFixedSavingsForm } from "@/components/AddFixedSavingsForm";
+import { SettleClaimDialog } from "@/components/SettleClaimDialog";
 import { DeleteButton } from "@/components/DeleteButton";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -24,17 +26,21 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
     return <div>Investor not found</div>;
   }
 
-  // Equity Records
+  // Equity Records — include Bonus type as positive contribution
   const records = await getCapitalLedgerByInvestor(id);
-  const totalDeposits = records.filter(r => r.type === 'Deposit').reduce((sum, r) => sum + parseFloat(r.amount), 0);
-  const totalWithdrawals = records.filter(r => r.type === 'Withdrawal').reduce((sum, r) => sum + parseFloat(r.amount), 0);
+  const totalDeposits = records
+    .filter(r => r.type === 'Deposit' || r.type === 'Bonus')
+    .reduce((sum, r) => sum + parseFloat(r.amount), 0);
+  const totalWithdrawals = records
+    .filter(r => r.type === 'Withdrawal')
+    .reduce((sum, r) => sum + parseFloat(r.amount), 0);
   const netCapital = totalDeposits - totalWithdrawals;
 
-  // Fixed Savings Records — interest is computed dynamically (daily compounding)
+  // Fixed Savings Records — Bonus type added to balance, no interest accrual on bonus
   const savingsRecords = await getFixedSavingsByInvestor(id);
 
   const savingsDeposits = savingsRecords
-    .filter(r => r.type === 'Deposit')
+    .filter(r => r.type === 'Deposit' || r.type === 'Bonus')
     .reduce((sum, r) => sum + parseFloat(r.amount), 0);
 
   const savingsWithdrawals = savingsRecords
@@ -55,9 +61,9 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
   // Principal balance (deposits – withdrawals) + all accrued interest
   const savingsBalance = savingsDeposits - savingsWithdrawals + totalAccruedInterest;
 
-  // Fund-level totals for equity % + ROI
+  // Fund-level totals — include Bonus type as positive equity contribution
   const totalEquityRes = await sql`
-    SELECT COALESCE(SUM(CASE WHEN type='Deposit' THEN amount ELSE -amount END), 0) as total
+    SELECT COALESCE(SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount ELSE -amount END), 0) as total
     FROM capital_ledger
   `;
   const totalFundEquity = parseFloat(totalEquityRes.rows[0]?.total || 0);
@@ -77,6 +83,12 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
   const totalProfit = equityProfitShare + totalAccruedInterest;
   const totalDeposited = totalDeposits + savingsDeposits;
   const roi = totalDeposited > 0 ? (totalProfit / totalDeposited) * 100 : 0;
+
+  // Profit claims for this investor
+  const claims = await getClaimsByInvestor(id);
+  const pendingClaimsTotal = claims
+    .filter((c: any) => c.status !== "settled")
+    .reduce((s: number, c: any) => s + (parseFloat(c.locked_amount) - parseFloat(c.settled_amount)), 0);
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -214,7 +226,10 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
                   <TableRow key={rec.id}>
                     <TableCell className="text-xs">{rec.date}</TableCell>
                     <TableCell>
-                      <Badge variant={rec.type === "Deposit" ? "default" : "destructive"}>
+                      <Badge
+                        variant={rec.type === "Deposit" ? "default" : rec.type === "Bonus" ? "outline" : "destructive"}
+                        className={rec.type === "Bonus" ? "text-emerald-400 border-emerald-400/40 bg-emerald-400/10" : ""}
+                      >
                         {rec.type}
                       </Badge>
                     </TableCell>
@@ -320,6 +335,87 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
           </CardContent>
         </Card>
       </div>
+      {/* Profit Claims Section */}
+      <Card className="bg-card/50 backdrop-blur-sm border-amber-500/20 shadow-sm">
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Handshake className="h-4 w-4 text-amber-400" />
+            <CardTitle className="text-base">Profit Claims (IOUs)</CardTitle>
+            {pendingClaimsTotal > 0 && (
+              <Badge variant="outline" className="text-[10px] h-5 px-1.5 text-amber-400 border-amber-400/30 bg-amber-400/5">
+                {fmt(pendingClaimsTotal)} pending
+              </Badge>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow className="border-b border-border/50 hover:bg-transparent">
+                <TableHead className="pl-6">Claim Date</TableHead>
+                <TableHead className="text-right">Locked (IOU)</TableHead>
+                <TableHead className="text-right">Settled</TableHead>
+                <TableHead className="text-right">Remaining</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Settled On</TableHead>
+                <TableHead className="text-right pr-6">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {claims.map((c: any) => {
+                const locked    = parseFloat(c.locked_amount);
+                const settled   = parseFloat(c.settled_amount);
+                const remaining = locked - settled;
+                return (
+                  <TableRow key={c.id} className="hover:bg-muted/20 transition-colors border-border/30">
+                    <TableCell className="pl-6 text-sm">{c.claim_date}</TableCell>
+                    <TableCell className="text-right font-semibold tabular-nums text-sm text-amber-400">
+                      {fmt(locked)}
+                    </TableCell>
+                    <TableCell className="text-right font-semibold tabular-nums text-sm text-emerald-400">
+                      {settled > 0 ? fmt(settled) : "—"}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums text-sm">
+                      {remaining > 0 ? <span className="text-orange-400 font-medium">{fmt(remaining)}</span> : <span className="text-muted-foreground">—</span>}
+                    </TableCell>
+                    <TableCell>
+                      {c.status === "settled" ? (
+                        <Badge variant="outline" className="text-[10px] h-5 px-1.5 gap-1 text-emerald-500 border-emerald-500/30 bg-emerald-500/5">
+                          <CheckCircle className="h-2.5 w-2.5" /> Settled
+                        </Badge>
+                      ) : c.status === "partial" ? (
+                        <Badge variant="outline" className="text-[10px] h-5 px-1.5 gap-1 text-amber-400 border-amber-400/30 bg-amber-400/5">
+                          <AlertCircle className="h-2.5 w-2.5" /> Partial
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-[10px] h-5 px-1.5 gap-1 text-orange-400 border-orange-400/30 bg-orange-400/5">
+                          <Clock className="h-2.5 w-2.5" /> Pending
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{c.settled_date ?? "—"}</TableCell>
+                    <TableCell className="text-right pr-6">
+                      <div className="flex justify-end gap-2">
+                        {c.status !== "settled" && (
+                          <SettleClaimDialog claim={{ ...c, investor_name: investor.name }} />
+                        )}
+                        <DeleteButton id={c.id} deleteAction={deleteClaim} />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+              {claims.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-10 text-sm">
+                    No profit claims yet. A claim is automatically created when a capital withdrawal is recorded while the fund has unrealized profits.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -16,7 +16,7 @@ export default async function InvestorsPage() {
 
   // Fund-level totals for equity % calculation
   const totalFundEquityRes = await sql`
-    SELECT COALESCE(SUM(CASE WHEN type='Deposit' THEN amount ELSE -amount END), 0) as total
+    SELECT COALESCE(SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount ELSE -amount END), 0) as total
     FROM capital_ledger
   `;
   const totalFundEquity = parseFloat(totalFundEquityRes.rows[0]?.total || 0);

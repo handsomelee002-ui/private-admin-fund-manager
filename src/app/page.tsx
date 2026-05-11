@@ -19,7 +19,7 @@ export default async function Dashboard() {
   // ── 1. Investor Capital (Equity) ──────────────────────────────────────────
   const capitalRes = await sql`
     SELECT 
-      SUM(CASE WHEN type = 'Deposit' THEN amount ELSE 0 END) as total_deposits,
+      SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount ELSE 0 END) as total_deposits,
       SUM(CASE WHEN type = 'Withdrawal' THEN amount ELSE 0 END) as total_withdrawals
     FROM capital_ledger
   `;
@@ -30,7 +30,7 @@ export default async function Dashboard() {
   // ── 1b. Fixed Savings Capital (Debt) — principal + dynamically accrued interest ──
   const fixedSavingsRes = await sql`
     SELECT 
-      SUM(CASE WHEN type = 'Deposit' THEN amount ELSE 0 END) as total_deposits,
+      SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount ELSE 0 END) as total_deposits,
       SUM(CASE WHEN type = 'Withdrawal' THEN amount ELSE 0 END) as total_withdrawals
     FROM fixed_savings_ledger
   `;
