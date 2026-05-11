@@ -3,6 +3,14 @@
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 
+// Auto-migrate: add realized_profit column if not present
+export async function ensureRealizedProfitColumn() {
+  await sql`
+    ALTER TABLE platform_transactions
+    ADD COLUMN IF NOT EXISTS realized_profit NUMERIC(15, 4) DEFAULT NULL;
+  `;
+}
+
 // --- PLATFORMS ---
 
 export async function getPlatforms() {
@@ -105,6 +113,7 @@ export async function deletePlatform(id: string) {
 // --- TRANSACTIONS ---
 
 export async function getPlatformTransactions(platformId: string) {
+  await ensureRealizedProfitColumn();
   try {
     const data = await sql`
       SELECT 
@@ -112,7 +121,8 @@ export async function getPlatformTransactions(platformId: string) {
         platform_id, 
         TO_CHAR(date, 'YYYY-MM-DD') as date, 
         type, 
-        amount, 
+        amount,
+        realized_profit,
         notes 
       FROM platform_transactions
       WHERE platform_id = ${platformId}
@@ -131,6 +141,7 @@ export async function addPlatformTransaction(formData: FormData) {
   const type = formData.get("type")?.toString();
   const amountStr = formData.get("amount")?.toString();
   const notes = formData.get("notes")?.toString() || "";
+  const realizedProfitStr = formData.get("realized_profit")?.toString();
 
   if (!platformId || !date || !type || !amountStr) {
     return { error: "Missing required fields" };
@@ -139,14 +150,21 @@ export async function addPlatformTransaction(formData: FormData) {
   const amount = parseFloat(amountStr);
   if (isNaN(amount)) return { error: "Amount must be a valid number" };
 
+  const realizedProfit =
+    realizedProfitStr && realizedProfitStr !== ""
+      ? parseFloat(realizedProfitStr)
+      : null;
+
+  await ensureRealizedProfitColumn();
   try {
     await sql`
-      INSERT INTO platform_transactions (platform_id, date, type, amount, notes)
-      VALUES (${platformId}, ${date}, ${type}, ${amount}, ${notes})
+      INSERT INTO platform_transactions (platform_id, date, type, amount, realized_profit, notes)
+      VALUES (${platformId}, ${date}, ${type}, ${amount}, ${realizedProfit}, ${notes})
     `;
     revalidatePath(`/trading/${platformId}`);
     revalidatePath("/trading");
     revalidatePath("/");
+    revalidatePath("/reports");
     return { success: true };
   } catch (error) {
     console.error("Database Error:", error);

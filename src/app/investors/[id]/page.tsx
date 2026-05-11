@@ -1,7 +1,7 @@
 import { sql } from "@vercel/postgres";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Wallet, ArrowDownRight, ArrowUpRight, TrendingUp, Percent } from "lucide-react";
+import { Wallet, ArrowDownRight, ArrowUpRight, TrendingUp, Percent, PieChart, Award } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { getCapitalLedgerByInvestor, deleteCapitalRecord } from "@/actions/capital";
 import { getFixedSavingsByInvestor, deleteFixedSavingsRecord } from "@/actions/fixedSavings";
@@ -55,73 +55,139 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
   // Principal balance (deposits – withdrawals) + all accrued interest
   const savingsBalance = savingsDeposits - savingsWithdrawals + totalAccruedInterest;
 
+  // Fund-level totals for equity % + ROI
+  const totalEquityRes = await sql`
+    SELECT COALESCE(SUM(CASE WHEN type='Deposit' THEN amount ELSE -amount END), 0) as total
+    FROM capital_ledger
+  `;
+  const totalFundEquity = parseFloat(totalEquityRes.rows[0]?.total || 0);
+
+  const perfRes = await sql`
+    SELECT SUM(unrealized_profit) as total
+    FROM (
+      SELECT unrealized_profit,
+             ROW_NUMBER() OVER(PARTITION BY platform_id ORDER BY month DESC) as rn
+      FROM platform_performance
+    ) sub WHERE rn = 1
+  `;
+  const totalUnrealized = parseFloat(perfRes.rows[0]?.total || 0);
+
+  const equityPct = totalFundEquity > 0 ? (netCapital / totalFundEquity) * 100 : 0;
+  const equityProfitShare = totalFundEquity > 0 ? (netCapital / totalFundEquity) * totalUnrealized : 0;
+  const totalProfit = equityProfitShare + totalAccruedInterest;
+  const totalDeposited = totalDeposits + savingsDeposits;
+  const roi = totalDeposited > 0 ? (totalProfit / totalDeposited) * 100 : 0;
+
   const today = new Date().toISOString().split("T")[0];
 
+  const fmt = (n: number) =>
+    `RM ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
   return (
-    <div className="space-y-8">
-      <div className="flex justify-between items-center">
+    <div className="space-y-6">
+      <div className="flex justify-between items-start">
         <div>
-          <div className="flex items-center gap-4 mb-2">
+          <div className="flex items-center gap-4 mb-1">
              <Link href="/investors">
                <Button variant="outline" size="sm">← Back</Button>
              </Link>
-             <h1 className="text-3xl font-bold tracking-tight">{investor.name}</h1>
+             <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+               {investor.name}
+             </h1>
           </div>
-          <p className="text-muted-foreground">
+          <p className="text-muted-foreground text-sm ml-[78px]">
             Detailed ledger and capital overview.
           </p>
         </div>
       </div>
 
-      <div className="grid gap-6 md:grid-cols-4">
-        <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
+      {/* Stat Cards */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        {/* Equity Capital */}
+        <Card className="relative overflow-hidden bg-gradient-to-br from-primary/20 to-primary/5 border-primary/30 shadow-lg">
+          <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent pointer-events-none" />
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Equity Capital</CardTitle>
-            <Wallet className="h-4 w-4 text-primary" />
+            <CardTitle className="text-sm font-medium text-muted-foreground">Equity Capital</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-primary/15 flex items-center justify-center">
+              <Wallet className="h-4 w-4 text-primary" />
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-green-500">
-              RM {netCapital.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-            </div>
+            <div className="text-2xl font-bold">{fmt(netCapital)}</div>
+            <p className="text-xs text-muted-foreground mt-1.5">Net equity (deposits − withdrawals)</p>
           </CardContent>
         </Card>
 
-        <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm border-orange-500/20">
+        {/* Fixed Savings */}
+        <Card className="relative overflow-hidden bg-gradient-to-br from-orange-500/15 to-orange-500/5 border-orange-500/25 shadow-lg">
+          <div className="absolute inset-0 bg-gradient-to-br from-orange-500/10 to-transparent pointer-events-none" />
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Fixed Savings Balance</CardTitle>
-            <TrendingUp className="h-4 w-4 text-orange-500" />
+            <CardTitle className="text-sm font-medium text-muted-foreground">Fixed Savings Balance</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-orange-500/15 flex items-center justify-center">
+              <TrendingUp className="h-4 w-4 text-orange-400" />
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-orange-500">
-              RM {savingsBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              +RM {totalAccruedInterest.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} accrued interest (as of {today})
+            <div className="text-2xl font-bold text-orange-400">{fmt(savingsBalance)}</div>
+            <p className="text-xs text-muted-foreground mt-1.5">
+              +{fmt(totalAccruedInterest)} accrued interest
             </p>
           </CardContent>
         </Card>
-        
-        <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
+
+        {/* Equity % */}
+        <Card className="relative overflow-hidden bg-gradient-to-br from-violet-500/15 to-violet-500/5 border-violet-500/25 shadow-lg">
+          <div className="absolute inset-0 bg-gradient-to-br from-violet-500/10 to-transparent pointer-events-none" />
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Total Lifetime Deposits</CardTitle>
-            <ArrowDownRight className="h-4 w-4 text-primary" />
+            <CardTitle className="text-sm font-medium text-muted-foreground">Equity Ownership</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-violet-500/15 flex items-center justify-center">
+              <PieChart className="h-4 w-4 text-violet-400" />
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              RM {(totalDeposits + savingsDeposits).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-            </div>
+            <div className="text-2xl font-bold text-violet-400">{equityPct.toFixed(2)}%</div>
+            <p className="text-xs text-muted-foreground mt-1.5">Share of total fund equity</p>
           </CardContent>
         </Card>
 
-        <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
+        {/* ROI */}
+        <Card className="relative overflow-hidden bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border-emerald-500/25 shadow-lg">
+          <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent pointer-events-none" />
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">Total Lifetime Withdrawals</CardTitle>
-            <ArrowUpRight className="h-4 w-4 text-destructive" />
+            <CardTitle className="text-sm font-medium text-muted-foreground">ROI</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-emerald-500/15 flex items-center justify-center">
+              <Award className="h-4 w-4 text-emerald-500" />
+            </div>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">
-              RM {(totalWithdrawals + savingsWithdrawals).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            <div className={`text-2xl font-bold ${roi >= 0 ? "text-emerald-500" : "text-red-400"}`}>
+              {roi >= 0 ? "+" : ""}{roi.toFixed(2)}%
             </div>
+            <p className="text-xs text-muted-foreground mt-1.5">
+              {fmt(totalProfit)} total profit
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Secondary: Lifetime Deposits & Withdrawals */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card className="bg-card/50 backdrop-blur-sm border-border/50">
+          <CardHeader className="flex flex-row items-center justify-between pb-1 pt-4 px-4">
+            <CardTitle className="text-xs font-medium text-muted-foreground">Total Lifetime Deposits</CardTitle>
+            <ArrowDownRight className="h-3.5 w-3.5 text-primary" />
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <div className="text-xl font-bold">{fmt(totalDeposits + savingsDeposits)}</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-card/50 backdrop-blur-sm border-border/50">
+          <CardHeader className="flex flex-row items-center justify-between pb-1 pt-4 px-4">
+            <CardTitle className="text-xs font-medium text-muted-foreground">Total Lifetime Withdrawals</CardTitle>
+            <ArrowUpRight className="h-3.5 w-3.5 text-destructive" />
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <div className="text-xl font-bold">{fmt(totalWithdrawals + savingsWithdrawals)}</div>
           </CardContent>
         </Card>
       </div>

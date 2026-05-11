@@ -8,14 +8,16 @@ import {
   Wallet,
   ArrowRightLeft,
   Settings,
+  BarChart2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navigation = [
-  { name: "Dashboard", href: "/", icon: LayoutDashboard },
-  { name: "Investors", href: "/investors", icon: Users },
-  { name: "Trading Ledger", href: "/trading", icon: ArrowRightLeft },
-  { name: "Settings", href: "/settings", icon: Settings },
+  { name: "Dashboard", href: "/", icon: LayoutDashboard, exact: true },
+  { name: "Investors", href: "/investors", icon: Users, exact: false },
+  { name: "Trading Ledger", href: "/trading", icon: ArrowRightLeft, exact: false },
+  { name: "Reports", href: "/reports", icon: BarChart2, exact: false },
+  { name: "Settings", href: "/settings", icon: Settings, exact: false },
 ];
 
 export function Sidebar() {
@@ -32,7 +34,9 @@ export function Sidebar() {
       <div className="flex flex-1 flex-col overflow-y-auto pt-6">
         <nav className="flex-1 space-y-1 px-4">
           {navigation.map((item) => {
-            const isActive = pathname === item.href;
+            const isActive = item.exact
+              ? pathname === item.href
+              : pathname === item.href || pathname.startsWith(item.href + "/");
             return (
               <Link
                 key={item.name}
