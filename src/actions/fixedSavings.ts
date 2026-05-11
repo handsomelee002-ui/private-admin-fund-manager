@@ -107,7 +107,9 @@ export async function deleteFixedSavingsRecord(id: string) {
   try {
     await sql`DELETE FROM fixed_savings_ledger WHERE id = ${id}`;
     revalidatePath("/fixed-savings");
+    revalidatePath("/investors");
     revalidatePath("/");
+    revalidatePath("/reports");
     return { success: true };
   } catch (error) {
     console.error("Database Error:", error);

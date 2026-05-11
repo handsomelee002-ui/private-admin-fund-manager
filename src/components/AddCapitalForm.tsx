@@ -16,11 +16,13 @@ export function AddCapitalForm({ investors, defaultInvestorId }: { investors: an
   const [type, setType] = useState<string>("Deposit");
   const [autoClaim, setAutoClaim] = useState<number | null>(null);
 
-  async function handleSubmit(formData: FormData) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
     if (!investorId) {
       alert("Please select an investor");
       return;
     }
+    const formData = new FormData(e.currentTarget);
     formData.append("investor_id", investorId);
     formData.append("type", type);
     
@@ -70,7 +72,7 @@ export function AddCapitalForm({ investors, defaultInvestorId }: { investors: an
             </div>
           </div>
         ) : (
-          <form action={handleSubmit} className="space-y-4 pt-4">
+          <form onSubmit={handleSubmit} className="space-y-4 pt-4">
             <div className="space-y-2">
               <Label>Investor</Label>
               <Select value={investorId} onValueChange={(val) => setInvestorId(val || "")} disabled={!!defaultInvestorId}>

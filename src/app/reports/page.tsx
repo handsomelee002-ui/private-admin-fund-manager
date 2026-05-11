@@ -80,11 +80,12 @@ export default async function ReportsPage() {
   });
 
   // ── 4. Total fund equity (for investor share calculations) ────────────────
-  const totalEquityRes = await sql`
-    SELECT COALESCE(SUM(CASE WHEN type='Deposit' THEN amount ELSE -amount END), 0) as total
+  const totalFundEquityRes = await sql`
+    SELECT COALESCE(SUM(CASE WHEN type IN ('Deposit', 'Bonus') THEN amount ELSE 0 END) -
+                   SUM(CASE WHEN type = 'Withdrawal' THEN amount ELSE 0 END), 0) as total
     FROM capital_ledger
   `;
-  const totalFundEquity = parseFloat(totalEquityRes.rows[0]?.total || 0);
+  const totalFundEquity = parseFloat(totalFundEquityRes.rows[0]?.total || 0);
 
   // Total unrealized (latest)
   const latestUnrealizedRes = await sql`
@@ -102,7 +103,7 @@ export default async function ReportsPage() {
     SELECT 
       i.id,
       i.name,
-      COALESCE(SUM(CASE WHEN cl.type = 'Deposit' THEN cl.amount ELSE 0 END), 0) as total_deposits,
+      COALESCE(SUM(CASE WHEN cl.type IN ('Deposit', 'Bonus') THEN cl.amount ELSE 0 END), 0) as total_deposits,
       COALESCE(SUM(CASE WHEN cl.type = 'Withdrawal' THEN cl.amount ELSE 0 END), 0) as total_withdrawals
     FROM investors i
     LEFT JOIN capital_ledger cl ON i.id = cl.investor_id
@@ -114,7 +115,7 @@ export default async function ReportsPage() {
   const fsSummaryRes = await sql`
     SELECT
       investor_id,
-      COALESCE(SUM(CASE WHEN type = 'Deposit' THEN amount ELSE 0 END), 0) as fs_deposits,
+      COALESCE(SUM(CASE WHEN type IN ('Deposit', 'Bonus') THEN amount ELSE 0 END), 0) as fs_deposits,
       COALESCE(SUM(CASE WHEN type = 'Withdrawal' THEN amount ELSE 0 END), 0) as fs_withdrawals
     FROM fixed_savings_ledger
     GROUP BY investor_id

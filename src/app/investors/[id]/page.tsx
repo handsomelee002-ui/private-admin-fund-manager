@@ -1,4 +1,4 @@
-import { sql } from "@vercel/postgres";
+﻿import { sql } from "@vercel/postgres";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Wallet, ArrowDownRight, ArrowUpRight, TrendingUp, Percent, PieChart, Award, Handshake, Clock, CheckCircle, AlertCircle } from "lucide-react";
@@ -63,7 +63,7 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
 
   // Fund-level totals — include Bonus type as positive equity contribution
   const totalEquityRes = await sql`
-    SELECT COALESCE(SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount ELSE -amount END), 0) as total
+    SELECT COALESCE(SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END), 0) as total
     FROM capital_ledger
   `;
   const totalFundEquity = parseFloat(totalEquityRes.rows[0]?.total || 0);
@@ -81,8 +81,11 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
   const equityPct = totalFundEquity > 0 ? (netCapital / totalFundEquity) * 100 : 0;
   const equityProfitShare = totalFundEquity > 0 ? (netCapital / totalFundEquity) * totalUnrealized : 0;
   const totalProfit = equityProfitShare + totalAccruedInterest;
-  const totalDeposited = totalDeposits + savingsDeposits;
-  const roi = totalDeposited > 0 ? (totalProfit / totalDeposited) * 100 : 0;
+  // ROI: profit / gross capital ever committed (deposits+bonuses, not reduced by withdrawals)
+  const grossEquityInvested = totalDeposits; // totalDeposits already includes Bonus (filter above)
+  const grossSavingsInvested = savingsDeposits; // savingsDeposits already includes Bonus
+  const grossTotalInvested = grossEquityInvested + grossSavingsInvested;
+  const roi = grossTotalInvested > 0 ? (totalProfit / grossTotalInvested) * 100 : 0;
 
   // Profit claims for this investor
   const claims = await getClaimsByInvestor(id);
@@ -186,7 +189,7 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
       <div className="grid gap-4 md:grid-cols-2">
         <Card className="bg-card/50 backdrop-blur-sm border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-1 pt-4 px-4">
-            <CardTitle className="text-xs font-medium text-muted-foreground">Total Lifetime Deposits</CardTitle>
+            <CardTitle className="text-xs font-medium text-muted-foreground">Total Lifetime Deposits & Bonuses</CardTitle>
             <ArrowDownRight className="h-3.5 w-3.5 text-primary" />
           </CardHeader>
           <CardContent className="px-4 pb-4">

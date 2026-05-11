@@ -1,4 +1,4 @@
-import { sql } from "@vercel/postgres";
+﻿import { sql } from "@vercel/postgres";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -20,14 +20,29 @@ export default async function SettingsPage() {
   // ── Config ───────────────────────────────────────────────────────────────────
   const brokerageFeeRate = await getBrokerageFeeRate();
 
-  // ── Total Realized Profit (from platform transactions) ───────────────────────
+  // ── Realized Profit: NET across all platform Withdraw transactions ───────────
+  // Performance fee model — losses reduce the fee base; no fee on net losses
   const realizedRes = await sql`
-    SELECT COALESCE(SUM(realized_profit), 0) as total
+    SELECT COALESCE(SUM(realized_profit), 0) as net_realized
     FROM platform_transactions
-    WHERE type = 'Withdraw' AND realized_profit IS NOT NULL AND realized_profit > 0
+    WHERE type = 'Withdraw' AND realized_profit IS NOT NULL
   `;
-  const totalRealized = parseFloat(realizedRes.rows[0]?.total || 0);
-  const brokerageFeeEarned = totalRealized * (brokerageFeeRate / 100);
+  const netRealized = parseFloat(realizedRes.rows[0]?.net_realized || 0);
+  const platformBrokerageEarned = netRealized > 0 ? netRealized * (brokerageFeeRate / 100) : 0;
+
+  // ── Brokerage earned from settled profit claims (pre-calculated at lock) ─────
+  let claimsBrokerageEarned = 0;
+  try {
+    const claimsFeesRes = await sql`
+      SELECT COALESCE(SUM(brokerage_fee), 0) as total
+      FROM investor_profit_claims
+      WHERE status = 'settled'
+    `;
+    claimsBrokerageEarned = parseFloat(claimsFeesRes.rows[0]?.total || 0);
+  } catch { /* table may not exist yet */ }
+
+  const brokerageFeeEarned = platformBrokerageEarned + claimsBrokerageEarned;
+  const totalRealized = netRealized; // for display
 
   // ── Total Interest Owed to All Investors ─────────────────────────────────────
   const fsRows = await sql`
@@ -83,7 +98,7 @@ export default async function SettingsPage() {
           <CardContent>
             <BrokerageFeeConfig initialRate={brokerageFeeRate} />
             <p className="text-[10px] text-muted-foreground mt-3">
-              On RM {totalRealized.toLocaleString(undefined, {minimumFractionDigits: 2})} total realized → <strong className="text-primary">{fmt(brokerageFeeEarned)}</strong> earned
+              {totalRealized >= 0 ? "Profit" : "Loss"} RM {Math.abs(totalRealized).toLocaleString(undefined, {minimumFractionDigits: 2})} net realized → <strong className={totalRealized >= 0 ? "text-primary" : "text-red-400"}>{fmt(brokerageFeeEarned)}</strong> earned
             </p>
           </CardContent>
         </Card>
@@ -100,7 +115,10 @@ export default async function SettingsPage() {
             </CardHeader>
             <CardContent>
               <div className="text-xl font-bold text-emerald-400">{fmt(brokerageFeeEarned)}</div>
-              <p className="text-[10px] text-muted-foreground mt-1">{brokerageFeeRate}% on {fmt(totalRealized)} realized</p>
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Platform: {fmt(platformBrokerageEarned)} + Claims: {fmt(claimsBrokerageEarned)}
+              </p>
+              <p className="text-[10px] text-muted-foreground">Net realized: {totalRealized >= 0 ? "+" : ""}{fmt(totalRealized)}</p>
             </CardContent>
           </Card>
 

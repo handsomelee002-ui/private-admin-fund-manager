@@ -21,8 +21,10 @@ export function AddProfitClaimForm({ investorId, investorName, defaultAmount }: 
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  async function handleSubmit(formData: FormData) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
     setLoading(true);
+    const formData = new FormData(e.currentTarget);
     formData.set("investor_id", investorId);
     const res = await addProfitClaim(formData);
     setLoading(false);
@@ -46,7 +48,7 @@ export function AddProfitClaimForm({ investorId, investorName, defaultAmount }: 
         <p className="text-xs text-muted-foreground -mt-2">
           This records an IOU for the investor&apos;s unrealized profit share at the time of their capital withdrawal. The claim stays pending until you manually settle it.
         </p>
-        <form action={handleSubmit} className="space-y-4 pt-2">
+        <form onSubmit={handleSubmit} className="space-y-4 pt-2">
           <div className="space-y-2">
             <Label>Claim Date (Withdrawal Date)</Label>
             <Input

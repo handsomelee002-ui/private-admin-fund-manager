@@ -1,4 +1,4 @@
-"use server";
+﻿"use server";
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
@@ -153,10 +153,10 @@ export async function addBonusPayment(formData: FormData) {
       const sourceTable = ledgerType === "equity" ? "capital_ledger" : "fixed_savings_ledger";
       const rows = await sql.query(
         `SELECT investor_id,
-                SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount ELSE -amount END) as net
+                SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END) as net
          FROM ${sourceTable}
          GROUP BY investor_id
-         HAVING SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount ELSE -amount END) > 0`,
+         HAVING SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END) > 0`,
       );
       const totalNet = rows.rows.reduce((s: number, r: any) => s + parseFloat(r.net), 0);
       if (totalNet <= 0) return { error: "No balance found to distribute to" };

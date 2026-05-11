@@ -1,4 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+﻿import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { getInvestors, deleteInvestor } from "@/actions/investors";
@@ -16,7 +16,7 @@ export default async function InvestorsPage() {
 
   // Fund-level totals for equity % calculation
   const totalFundEquityRes = await sql`
-    SELECT COALESCE(SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount ELSE -amount END), 0) as total
+    SELECT COALESCE(SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END), 0) as total
     FROM capital_ledger
   `;
   const totalFundEquity = parseFloat(totalFundEquityRes.rows[0]?.total || 0);
@@ -43,6 +43,22 @@ export default async function InvestorsPage() {
     const a = calcDailyCompoundInterest(parseFloat(r.amount), parseFloat(r.interest_rate), r.date);
     accruedMap.set(r.investor_id, (accruedMap.get(r.investor_id) || 0) + a);
   }
+
+  // Gross invested capital (deposits + bonuses) per investor for ROI denominator
+  const grossCapitalRes = await sql`
+    SELECT
+      investor_id,
+      COALESCE(SUM(CASE WHEN type IN ('Deposit', 'Bonus') THEN amount ELSE 0 END), 0) as gross_invested,
+      COALESCE(SUM(CASE WHEN type = 'Withdrawal' THEN amount ELSE 0 END), 0) as gross_withdrawn
+    FROM capital_ledger
+    GROUP BY investor_id
+  `;
+  const grossCapitalMap = new Map(
+    grossCapitalRes.rows.map((r: any) => [
+      r.investor_id,
+      { invested: parseFloat(r.gross_invested), withdrawn: parseFloat(r.gross_withdrawn) },
+    ]),
+  );
 
   const fmt = (n: number) =>
     `RM ${parseFloat(String(n)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -89,8 +105,9 @@ export default async function InvestorsPage() {
                 const profitShare = totalFundEquity > 0 ? (netEquity / totalFundEquity) * totalUnrealized : 0;
                 const accrued = accruedMap.get(inv.id) || 0;
                 const totalProfit = profitShare + accrued;
-                // ROI = total profit / total deposited (equity deposits + all accrued interest base)
-                const roi = netEquity > 0 ? (totalProfit / netEquity) * 100 : 0;
+                // ROI = total profit / gross capital ever invested (deposits + bonuses, never reduced by withdrawals)
+                const grossEquity = grossCapitalMap.get(inv.id)?.invested ?? netEquity;
+                const roi = grossEquity > 0 ? (totalProfit / grossEquity) * 100 : 0;
 
                 return (
                   <TableRow key={inv.id} className="group hover:bg-muted/20 transition-colors border-border/30">

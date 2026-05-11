@@ -155,7 +155,7 @@ export default async function Dashboard() {
   for (const month of allMonths) {
     const monthCapitals = allCapitalRes.rows.filter(r => r.month === month);
     for (const cap of monthCapitals) {
-      if (cap.type === "Deposit") cumulativeInvestorCapital += parseFloat(cap.amount);
+      if (cap.type === "Deposit" || cap.type === "Bonus") cumulativeInvestorCapital += parseFloat(cap.amount);
       if (cap.type === "Withdrawal") cumulativeInvestorCapital -= parseFloat(cap.amount);
     }
 

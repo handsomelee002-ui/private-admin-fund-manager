@@ -10,7 +10,7 @@ export async function getInvestors() {
         i.id, 
         i.name, 
         TO_CHAR(i.created_at, 'YYYY-MM-DD') as joined,
-        COALESCE(SUM(CASE WHEN cl.type = 'Deposit' THEN cl.amount ELSE 0 END) - 
+        COALESCE(SUM(CASE WHEN cl.type IN ('Deposit', 'Bonus') THEN cl.amount ELSE 0 END) - 
                  SUM(CASE WHEN cl.type = 'Withdrawal' THEN cl.amount ELSE 0 END), 0) as total_capital
       FROM investors i
       LEFT JOIN capital_ledger cl ON i.id = cl.investor_id

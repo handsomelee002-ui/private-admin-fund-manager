@@ -19,8 +19,10 @@ export function EditNameDialog({ id, currentName, title, updateAction }: EditNam
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState(currentName);
 
-  async function handleSubmit(formData: FormData) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
     setLoading(true);
+    const formData = new FormData(e.currentTarget);
     formData.append("id", id);
     const res = await updateAction(formData);
     setLoading(false);
@@ -40,7 +42,7 @@ export function EditNameDialog({ id, currentName, title, updateAction }: EditNam
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
-        <form action={handleSubmit} className="space-y-4 pt-4">
+        <form onSubmit={handleSubmit} className="space-y-4 pt-4">
           <div className="space-y-2">
             <Label htmlFor="name">Name</Label>
             <Input 

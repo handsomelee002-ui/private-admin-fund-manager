@@ -12,8 +12,10 @@ export function AddPlatformPerformanceForm({ platformId }: { platformId: string 
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  async function handleSubmit(formData: FormData) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
     setLoading(true);
+    const formData = new FormData(e.currentTarget);
     formData.append("platform_id", platformId);
     const res = await upsertPlatformPerformance(formData);
     setLoading(false);
@@ -34,7 +36,7 @@ export function AddPlatformPerformanceForm({ platformId }: { platformId: string 
         <DialogHeader>
           <DialogTitle>Update Monthly Performance</DialogTitle>
         </DialogHeader>
-        <form action={handleSubmit} className="space-y-4 pt-4">
+        <form onSubmit={handleSubmit} className="space-y-4 pt-4">
           <div className="space-y-2">
             <Label htmlFor="month">Month</Label>
             <Input id="month" name="month" type="month" required />

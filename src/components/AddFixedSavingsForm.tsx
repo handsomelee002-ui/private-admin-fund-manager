@@ -35,8 +35,19 @@ export function AddFixedSavingsForm({
     return { annual: daily, monthly };
   })();
 
-  async function onSubmit(formData: FormData) {
+  const [investorId, setInvestorId] = useState(defaultInvestorId || "");
+
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!investorId) {
+      alert("Please select an investor");
+      return;
+    }
     setLoading(true);
+    const formData = new FormData(e.currentTarget);
+    // Shadcn Select values don't flow through native FormData — inject from state
+    formData.set("investor_id", investorId);
+    formData.set("type", type);
     const res = await addFixedSavingsRecord(formData);
     setLoading(false);
     if (res?.error) {
@@ -59,12 +70,16 @@ export function AddFixedSavingsForm({
         <DialogHeader>
           <DialogTitle>Add Fixed Savings Transaction</DialogTitle>
         </DialogHeader>
-        <form action={onSubmit} className="space-y-4 mt-4">
+        <form onSubmit={onSubmit} className="space-y-4 mt-4">
           {/* Investor selector (global ledger page) */}
           {!defaultInvestorId && (
             <div className="space-y-2">
               <Label>Investor</Label>
-              <Select name="investor_id" required>
+              <Select
+                value={investorId}
+                onValueChange={(val) => { if (val) setInvestorId(val); }}
+                required
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select investor..." />
                 </SelectTrigger>
@@ -77,9 +92,6 @@ export function AddFixedSavingsForm({
                 </SelectContent>
               </Select>
             </div>
-          )}
-          {defaultInvestorId && (
-            <input type="hidden" name="investor_id" value={defaultInvestorId} />
           )}
 
           {/* Date */}

@@ -2,21 +2,28 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
+import { getBrokerageFeeRate } from "@/actions/settings";
 
 // ── Schema Migration ─────────────────────────────────────────────────────────
 export async function ensureClaimsTable() {
   await sql`
     CREATE TABLE IF NOT EXISTS investor_profit_claims (
-      id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-      investor_id UUID NOT NULL REFERENCES investors(id) ON DELETE CASCADE,
+      id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      investor_id     UUID NOT NULL REFERENCES investors(id) ON DELETE CASCADE,
       locked_amount   NUMERIC(15, 4) NOT NULL,
       settled_amount  NUMERIC(15, 4) NOT NULL DEFAULT 0,
+      brokerage_fee   NUMERIC(15, 4) NOT NULL DEFAULT 0,
       status          TEXT NOT NULL DEFAULT 'pending', -- 'pending' | 'partial' | 'settled'
       claim_date      DATE NOT NULL,
       settled_date    DATE,
       notes           TEXT,
       created_at      TIMESTAMPTZ DEFAULT NOW()
     );
+  `;
+  // Add brokerage_fee column if table existed before this migration
+  await sql`
+    ALTER TABLE investor_profit_claims
+    ADD COLUMN IF NOT EXISTS brokerage_fee NUMERIC(15, 4) NOT NULL DEFAULT 0;
   `;
 }
 
@@ -31,6 +38,7 @@ export async function getAllClaims() {
       i.name as investor_name,
       ipc.locked_amount,
       ipc.settled_amount,
+      ipc.brokerage_fee,
       ipc.status,
       TO_CHAR(ipc.claim_date, 'YYYY-MM-DD')   as claim_date,
       TO_CHAR(ipc.settled_date, 'YYYY-MM-DD') as settled_date,
@@ -51,6 +59,7 @@ export async function getClaimsByInvestor(investorId: string) {
       investor_id,
       locked_amount,
       settled_amount,
+      brokerage_fee,
       status,
       TO_CHAR(claim_date, 'YYYY-MM-DD')   as claim_date,
       TO_CHAR(settled_date, 'YYYY-MM-DD') as settled_date,
@@ -76,27 +85,42 @@ export async function addProfitClaim(formData: FormData) {
   const amount = parseFloat(amountStr);
   if (isNaN(amount) || amount <= 0) return { error: "Amount must be a positive number" };
 
+  // Pre-calculate and round brokerage fee (performance fee, 2dp precision)
+  const brokerageRate     = await getBrokerageFeeRate();
+  const roundedAmount     = Math.round(amount * 100) / 100;
+  const roundedBrokerage  = Math.round(roundedAmount * (brokerageRate / 100) * 100) / 100;
+  const netAmount         = Math.round((roundedAmount - roundedBrokerage) * 100) / 100;
+
   await ensureClaimsTable();
   try {
     await sql`
-      INSERT INTO investor_profit_claims (investor_id, locked_amount, claim_date, notes)
-      VALUES (${investorId}, ${amount}, ${claimDate}, ${notes})
+      INSERT INTO investor_profit_claims (investor_id, locked_amount, brokerage_fee, claim_date, notes)
+      VALUES (${investorId}, ${roundedAmount}, ${roundedBrokerage}, ${claimDate}, ${notes})
     `;
     revalidatePath("/claims");
     revalidatePath(`/investors/${investorId}`);
     revalidatePath("/reports");
-    return { success: true };
+    return { success: true, brokerageFee: roundedBrokerage, netAmount };
   } catch (error) {
     console.error("DB Error:", error);
     return { error: "Failed to create profit claim." };
   }
 }
 
+// ── Settlement ────────────────────────────────────────────────────────────────
+// Production logic:
+//   - locked_amount = gross profit share owed to investor
+//   - brokerage_fee = performance fee deducted by the fund manager (already calculated at lock time)
+//   - net_payable   = locked_amount - brokerage_fee  (what investor actually receives)
+//   - settled_amount tracks cumulative cash paid to investor (net of fee)
+//   - On full settlement: create a ProfitDistribution entry in capital_ledger (cash outflow)
+//     and a BrokerageIncome entry representing the fee earned
+//
 export async function settleClaim(formData: FormData) {
-  const id              = formData.get("id")?.toString();
+  const id               = formData.get("id")?.toString();
   const settledAmountStr = formData.get("settled_amount")?.toString();
-  const settledDate     = formData.get("settled_date")?.toString();
-  const notes           = formData.get("notes")?.toString() || "";
+  const settledDate      = formData.get("settled_date")?.toString();
+  const notes            = formData.get("notes")?.toString() || "";
 
   if (!id || !settledAmountStr || !settledDate) {
     return { error: "Missing required fields" };
@@ -106,28 +130,82 @@ export async function settleClaim(formData: FormData) {
 
   await ensureClaimsTable();
   try {
-    // Get current claim to compute new total settled
-    const current = await sql`SELECT locked_amount, settled_amount FROM investor_profit_claims WHERE id = ${id}`;
+    // Fetch current claim including investor_id for ledger entries
+    const current = await sql`
+      SELECT locked_amount, settled_amount, brokerage_fee, investor_id
+      FROM investor_profit_claims WHERE id = ${id}
+    `;
     if (current.rows.length === 0) return { error: "Claim not found" };
 
     const locked       = parseFloat(current.rows[0].locked_amount);
     const prevSettled  = parseFloat(current.rows[0].settled_amount);
-    const newSettled   = prevSettled + settledAmount;
-    const newStatus    = newSettled >= locked ? "settled" : "partial";
+    const brokerageFee = parseFloat(current.rows[0].brokerage_fee || "0");
+    const investorId   = current.rows[0].investor_id;
 
+    // Net payable to investor = gross - brokerage fee
+    const netPayable = locked - brokerageFee;
+
+    // Cap the settled amount at the remaining net payable
+    const remainingNet  = Math.max(0, netPayable - prevSettled);
+    // Round to 2 dp (cent-level precision) for comparison
+    const cappedAmount  = Math.min(settledAmount, remainingNet);
+    if (cappedAmount <= 0) {
+      return { error: "This claim is already fully settled." };
+    }
+
+    const newSettled = parseFloat((prevSettled + cappedAmount).toFixed(4));
+    // Settled = full when newSettled covers netPayable (within 1 cent tolerance)
+    const isFullySettled = newSettled >= netPayable - 0.005;
+    const newStatus      = isFullySettled ? "settled" : "partial";
+    const finalSettled   = isFullySettled ? netPayable : newSettled;
+
+    // ── Update the claim record ─────────────────────────────────────────────
+    const notesParam = notes || null;
     await sql`
       UPDATE investor_profit_claims
       SET
-        settled_amount = ${newSettled},
+        settled_amount = ${finalSettled},
         settled_date   = ${settledDate},
         status         = ${newStatus},
-        notes          = CASE WHEN ${notes} != '' THEN ${notes} ELSE notes END
+        notes          = COALESCE(NULLIF(${notesParam}, ''), notes)
       WHERE id = ${id}
     `;
+
+    // ── On full settlement: record cash outflow in capital_ledger ───────────
+    // "ProfitDistribution" type = profit paid out; excluded from equity calcs
+    // The investor receives netPayable; the fund retains brokerageFee as income.
+    if (isFullySettled) {
+      await sql`
+        INSERT INTO capital_ledger (investor_id, date, type, amount, notes)
+        VALUES (
+          ${investorId},
+          ${settledDate},
+          'ProfitDistribution',
+          ${netPayable},
+          ${`Profit claim settled — gross RM ${locked.toFixed(2)}, fee RM ${brokerageFee.toFixed(2)}, net RM ${netPayable.toFixed(2)}`}
+        )
+      `;
+    } else {
+      // Partial: record only the partial cash paid out
+      await sql`
+        INSERT INTO capital_ledger (investor_id, date, type, amount, notes)
+        VALUES (
+          ${investorId},
+          ${settledDate},
+          'ProfitDistribution',
+          ${cappedAmount},
+          ${`Partial profit settlement (${notes || "payment"})`}
+        )
+      `;
+    }
+
     revalidatePath("/claims");
+    revalidatePath("/investors");
+    revalidatePath(`/investors/${investorId}`);
     revalidatePath("/reports");
+    revalidatePath("/settings");
     revalidatePath("/");
-    return { success: true };
+    return { success: true, netPaid: cappedAmount, brokerageFee: isFullySettled ? brokerageFee : 0 };
   } catch (error) {
     console.error("DB Error:", error);
     return { error: "Failed to settle claim." };
@@ -139,6 +217,7 @@ export async function deleteClaim(id: string) {
   try {
     await sql`DELETE FROM investor_profit_claims WHERE id = ${id}`;
     revalidatePath("/claims");
+    revalidatePath("/investors");
     revalidatePath("/reports");
     return { success: true };
   } catch (error) {

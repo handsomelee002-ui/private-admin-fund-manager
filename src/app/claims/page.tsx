@@ -125,9 +125,11 @@ export default async function ClaimsPage() {
               <TableRow className="border-b border-border/50 hover:bg-transparent">
                 <TableHead className="pl-6">Investor</TableHead>
                 <TableHead>Claim Date</TableHead>
-                <TableHead className="text-right">Locked (IOU)</TableHead>
+                <TableHead className="text-right">Gross (IOU)</TableHead>
+                <TableHead className="text-right">Perf. Fee</TableHead>
+                <TableHead className="text-right">Net Payable</TableHead>
                 <TableHead className="text-right">Settled</TableHead>
-                <TableHead className="text-right">Remaining</TableHead>
+                <TableHead className="text-right">Outstanding</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Settled On</TableHead>
                 <TableHead>Notes</TableHead>
@@ -136,9 +138,11 @@ export default async function ClaimsPage() {
             </TableHeader>
             <TableBody>
               {claims.map((c: any) => {
-                const locked    = parseFloat(c.locked_amount);
-                const settled   = parseFloat(c.settled_amount);
-                const remaining = locked - settled;
+                const locked       = parseFloat(c.locked_amount);
+                const brokerageFee = parseFloat(c.brokerage_fee || "0");
+                const netPayable   = locked - brokerageFee;
+                const settled      = parseFloat(c.settled_amount);
+                const outstanding  = Math.max(0, netPayable - settled);
                 return (
                   <TableRow key={c.id} className="hover:bg-muted/20 transition-colors border-border/30">
                     <TableCell className="pl-6">
@@ -153,12 +157,18 @@ export default async function ClaimsPage() {
                     <TableCell className="text-right font-semibold tabular-nums text-sm text-amber-400">
                       {fmt(locked)}
                     </TableCell>
+                    <TableCell className="text-right tabular-nums text-sm text-red-400">
+                      {brokerageFee > 0 ? `− ${fmt(brokerageFee)}` : "—"}
+                    </TableCell>
+                    <TableCell className="text-right font-bold tabular-nums text-sm text-primary">
+                      {fmt(netPayable)}
+                    </TableCell>
                     <TableCell className="text-right font-semibold tabular-nums text-sm text-emerald-400">
                       {settled > 0 ? fmt(settled) : "—"}
                     </TableCell>
                     <TableCell className="text-right font-semibold tabular-nums text-sm">
-                      {remaining > 0 ? (
-                        <span className="text-orange-400">{fmt(remaining)}</span>
+                      {outstanding > 0.005 ? (
+                        <span className="text-orange-400">{fmt(outstanding)}</span>
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}
@@ -185,7 +195,7 @@ export default async function ClaimsPage() {
               })}
               {claims.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center text-muted-foreground py-16 text-sm">
+                  <TableCell colSpan={11} className="text-center text-muted-foreground py-16 text-sm">
                     No profit claims recorded yet. Lock a claim from an investor&apos;s profile when they withdraw capital.
                   </TableCell>
                 </TableRow>

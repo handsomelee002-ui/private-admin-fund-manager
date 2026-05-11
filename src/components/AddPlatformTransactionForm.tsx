@@ -13,8 +13,10 @@ export function AddPlatformTransactionForm({ platformId }: { platformId: string 
   const [loading, setLoading] = useState(false);
   const [type, setType] = useState("Deposit");
 
-  async function handleSubmit(formData: FormData) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
     setLoading(true);
+    const formData = new FormData(e.currentTarget);
     formData.append("platform_id", platformId);
     const res = await addPlatformTransaction(formData);
     setLoading(false);
@@ -36,7 +38,7 @@ export function AddPlatformTransactionForm({ platformId }: { platformId: string 
         <DialogHeader>
           <DialogTitle>Add Capital Transaction</DialogTitle>
         </DialogHeader>
-        <form action={handleSubmit} className="space-y-4 pt-4">
+        <form onSubmit={handleSubmit} className="space-y-4 pt-4">
           <div className="space-y-2">
             <Label htmlFor="date">Date</Label>
             <Input id="date" name="date" type="date" required defaultValue={new Date().toISOString().split("T")[0]} />
