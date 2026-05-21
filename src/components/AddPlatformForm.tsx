@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -8,7 +9,8 @@ import { Label } from "@/components/ui/label";
 import { Plus } from "lucide-react";
 import { addPlatform } from "@/actions/trading";
 
-export function AddPlatformForm() {
+export function AddPlatformForm({ redirectToDetail = false }: { redirectToDetail?: boolean }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -20,6 +22,9 @@ export function AddPlatformForm() {
     setLoading(false);
     if (res?.success) {
       setOpen(false);
+      if (redirectToDetail && res.id) {
+        router.push(`/trading/${res.id}`);
+      }
     } else {
       alert(res?.error || "An error occurred");
     }

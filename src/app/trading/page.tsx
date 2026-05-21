@@ -4,18 +4,21 @@ import { getPlatforms, deletePlatform, updatePlatformName } from "@/actions/trad
 import { AddPlatformForm } from "@/components/AddPlatformForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { EditNameDialog } from "@/components/EditNameDialog";
+import { formatMoney } from "@/lib/formatting";
 import Link from "next/link";
-import { ChevronRight, BarChart3, TrendingUp, Wallet, DollarSign, ArrowRightLeft } from "lucide-react";
+import { ChevronRight, Building2, TrendingUp, Wallet, DollarSign, ArrowRightLeft } from "lucide-react";
+
+export const dynamic = "force-dynamic";
 
 export default async function TradingLedgerPage() {
   const platforms = await getPlatforms();
 
   const totalNetInvested = platforms.reduce((sum: number, p: any) => sum + p.netInvested, 0);
+  const totalRealized = platforms.reduce((sum: number, p: any) => sum + p.realizedProfit, 0);
   const totalUnrealized = platforms.reduce((sum: number, p: any) => sum + p.unrealizedProfit, 0);
   const totalValue = platforms.reduce((sum: number, p: any) => sum + p.totalValue, 0);
 
-  const fmt = (n: number) =>
-    `RM ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmt = formatMoney;
 
   return (
     <div className="space-y-6">
@@ -23,17 +26,17 @@ export default async function TradingLedgerPage() {
       <div className="flex items-end justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-            Trading Ledger
+            Platforms
           </h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Manage your trading platforms, capital flows, and performance.
+            Platform directory with capital flows and weekly NAV snapshot history.
           </p>
         </div>
-        <AddPlatformForm />
+        <AddPlatformForm redirectToDetail />
       </div>
 
       {/* ── Summary Cards ───────────────────────────────────────────────────── */}
-      <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-4">
         <Card className="relative overflow-hidden bg-gradient-to-br from-primary/20 to-primary/5 border-primary/30 shadow-lg hover:shadow-primary/10 transition-all duration-300">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent pointer-events-none" />
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -64,6 +67,22 @@ export default async function TradingLedgerPage() {
           </CardContent>
         </Card>
 
+        <Card className="relative overflow-hidden bg-gradient-to-br from-violet-500/15 to-violet-500/5 border-violet-500/25 shadow-lg hover:shadow-violet-500/10 transition-all duration-300">
+          <div className="absolute inset-0 bg-gradient-to-br from-violet-500/10 to-transparent pointer-events-none" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Total Realized</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-violet-500/15 flex items-center justify-center">
+              <DollarSign className="h-4 w-4 text-violet-400" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className={`text-3xl font-bold tracking-tight ${totalRealized >= 0 ? "text-violet-400" : "text-red-400"}`}>
+              {fmt(totalRealized)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5">Closed profit from withdrawals</p>
+          </CardContent>
+        </Card>
+
         <Card className="relative overflow-hidden bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border-emerald-500/25 shadow-lg hover:shadow-emerald-500/10 transition-all duration-300">
           <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent pointer-events-none" />
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -83,8 +102,8 @@ export default async function TradingLedgerPage() {
       <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
         <CardHeader>
           <div className="flex items-center gap-2">
-            <BarChart3 className="h-4 w-4 text-primary" />
-            <CardTitle className="text-base">Trading Platforms</CardTitle>
+            <Building2 className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Directory</CardTitle>
           </div>
         </CardHeader>
         <CardContent className="p-0">
@@ -92,7 +111,9 @@ export default async function TradingLedgerPage() {
             <TableHeader>
               <TableRow className="border-b border-border/50 hover:bg-transparent">
                 <TableHead className="pl-6">Platform</TableHead>
+                <TableHead>Created</TableHead>
                 <TableHead className="text-right">Net Invested</TableHead>
+                <TableHead className="text-right">Realized Profit</TableHead>
                 <TableHead className="text-right">Unrealized P&L</TableHead>
                 <TableHead className="text-right">Total Value</TableHead>
                 <TableHead className="text-right pr-6">Actions</TableHead>
@@ -122,9 +143,15 @@ export default async function TradingLedgerPage() {
                         </div>
                       </Link>
                     </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{platform.createdAt}</TableCell>
                     <TableCell className="text-right">
                       <span className="font-medium tabular-nums">
                         {fmt(platform.netInvested)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <span className={`font-semibold tabular-nums ${platform.realizedProfit >= 0 ? "text-violet-400" : "text-red-400"}`}>
+                        {fmt(platform.realizedProfit)}
                       </span>
                     </TableCell>
                     <TableCell className="text-right">
@@ -153,7 +180,7 @@ export default async function TradingLedgerPage() {
               })}
               {platforms.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground py-16 text-sm">
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-16 text-sm">
                     No trading platforms found. Add your first platform to begin.
                   </TableCell>
                 </TableRow>
@@ -167,6 +194,12 @@ export default async function TradingLedgerPage() {
               <div className="text-right">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Total Invested</p>
                 <p className="text-sm font-bold tabular-nums">{fmt(totalNetInvested)}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Total Realized</p>
+                <p className={`text-sm font-bold tabular-nums ${totalRealized >= 0 ? "text-violet-400" : "text-red-400"}`}>
+                  {fmt(totalRealized)}
+                </p>
               </div>
               <div className="text-right">
                 <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Total P&L</p>

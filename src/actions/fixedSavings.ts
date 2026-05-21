@@ -6,19 +6,11 @@ import { revalidatePath } from "next/cache";
 // ---------------------------------------------------------------------------
 // Schema guard — runs silently before any query, no-op after first time
 // ---------------------------------------------------------------------------
-async function ensureInterestRateColumn() {
-  await sql`
-    ALTER TABLE fixed_savings_ledger
-    ADD COLUMN IF NOT EXISTS interest_rate NUMERIC(8, 4) DEFAULT NULL;
-  `;
-}
-
 // ---------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------
 
 export async function getFixedSavingsLedger() {
-  await ensureInterestRateColumn();
   try {
     const data = await sql`
       SELECT 
@@ -41,7 +33,6 @@ export async function getFixedSavingsLedger() {
 }
 
 export async function getFixedSavingsByInvestor(investorId: string) {
-  await ensureInterestRateColumn();
   try {
     const data = await sql`
       SELECT 
@@ -53,7 +44,7 @@ export async function getFixedSavingsByInvestor(investorId: string) {
         notes
       FROM fixed_savings_ledger
       WHERE investor_id = ${investorId}
-      ORDER BY date DESC, created_at DESC;
+      ORDER BY fixed_savings_ledger.date DESC, fixed_savings_ledger.created_at DESC;
     `;
     return data.rows;
   } catch (error) {
@@ -86,7 +77,6 @@ export async function addFixedSavingsRecord(formData: FormData) {
       ? parseFloat(interestRateStr)
       : null;
 
-  await ensureInterestRateColumn();
   try {
     await sql`
       INSERT INTO fixed_savings_ledger (investor_id, date, type, amount, interest_rate, notes)

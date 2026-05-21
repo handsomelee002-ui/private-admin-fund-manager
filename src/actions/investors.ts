@@ -2,22 +2,12 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
+import { requireAdmin } from "@/lib/auth";
+import { getInvestorsWithBalances } from "@/lib/fundDb";
 
 export async function getInvestors() {
   try {
-    const data = await sql`
-      SELECT 
-        i.id, 
-        i.name, 
-        TO_CHAR(i.created_at, 'YYYY-MM-DD') as joined,
-        COALESCE(SUM(CASE WHEN cl.type IN ('Deposit', 'Bonus') THEN cl.amount ELSE 0 END) - 
-                 SUM(CASE WHEN cl.type = 'Withdrawal' THEN cl.amount ELSE 0 END), 0) as total_capital
-      FROM investors i
-      LEFT JOIN capital_ledger cl ON i.id = cl.investor_id
-      GROUP BY i.id
-      ORDER BY i.created_at DESC;
-    `;
-    return data.rows;
+    return await getInvestorsWithBalances();
   } catch (error) {
     console.error("Database Error:", error);
     throw new Error("Failed to fetch investors.");
@@ -25,6 +15,7 @@ export async function getInvestors() {
 }
 
 export async function addInvestor(formData: FormData) {
+  await requireAdmin();
   const name = formData.get("name")?.toString()?.trim();
   if (!name) return { error: "Name is required" };
 
@@ -44,6 +35,7 @@ export async function addInvestor(formData: FormData) {
 }
 
 export async function deleteInvestor(id: string) {
+  await requireAdmin();
   try {
     await sql`DELETE FROM investors WHERE id = ${id}`;
     revalidatePath("/investors");
@@ -55,6 +47,7 @@ export async function deleteInvestor(id: string) {
 }
 
 export async function updateInvestorName(formData: FormData) {
+  await requireAdmin();
   const id = formData.get("id")?.toString();
   const name = formData.get("name")?.toString()?.trim();
   if (!id || !name) return { error: "ID and new name are required" };

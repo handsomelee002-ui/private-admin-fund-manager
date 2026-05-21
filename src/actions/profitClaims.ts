@@ -30,7 +30,6 @@ export async function ensureClaimsTable() {
 // ── Queries ──────────────────────────────────────────────────────────────────
 
 export async function getAllClaims() {
-  await ensureClaimsTable();
   const data = await sql`
     SELECT
       ipc.id,
@@ -52,7 +51,6 @@ export async function getAllClaims() {
 }
 
 export async function getClaimsByInvestor(investorId: string) {
-  await ensureClaimsTable();
   const data = await sql`
     SELECT
       id,
@@ -91,7 +89,6 @@ export async function addProfitClaim(formData: FormData) {
   const roundedBrokerage  = Math.round(roundedAmount * (brokerageRate / 100) * 100) / 100;
   const netAmount         = Math.round((roundedAmount - roundedBrokerage) * 100) / 100;
 
-  await ensureClaimsTable();
   try {
     await sql`
       INSERT INTO investor_profit_claims (investor_id, locked_amount, brokerage_fee, claim_date, notes)
@@ -128,7 +125,6 @@ export async function settleClaim(formData: FormData) {
   const settledAmount = parseFloat(settledAmountStr);
   if (isNaN(settledAmount) || settledAmount <= 0) return { error: "Settled amount must be positive" };
 
-  await ensureClaimsTable();
   try {
     // Fetch current claim including investor_id for ledger entries
     const current = await sql`
@@ -213,7 +209,6 @@ export async function settleClaim(formData: FormData) {
 }
 
 export async function deleteClaim(id: string) {
-  await ensureClaimsTable();
   try {
     await sql`DELETE FROM investor_profit_claims WHERE id = ${id}`;
     revalidatePath("/claims");

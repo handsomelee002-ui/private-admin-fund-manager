@@ -2,40 +2,41 @@ import { notFound } from "next/navigation";
 import {
   getPlatform,
   getPlatformTransactions,
-  getPlatformPerformance,
+  getPlatformNavSnapshots,
   deletePlatformTransaction,
-  deletePlatformPerformance,
 } from "@/actions/trading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AddPlatformTransactionForm } from "@/components/AddPlatformTransactionForm";
-import { AddPlatformPerformanceForm } from "@/components/AddPlatformPerformanceForm";
-import { PlatformTransactionsChart, PlatformPerformanceChart } from "@/components/PlatformCharts";
+import { PlatformTransactionsChart, PlatformNavSnapshotChart } from "@/components/PlatformCharts";
 import { DeleteButton } from "@/components/DeleteButton";
 import { Badge } from "@/components/ui/badge";
+import { formatMoney } from "@/lib/formatting";
 import Link from "next/link";
 import { ArrowLeft, Wallet, TrendingUp, DollarSign, ArrowDownRight, ArrowUpRight, BarChart3 } from "lucide-react";
 
-export default async function PlatformDetailsPage({ params }: { params: { platformId: string } }) {
+export const dynamic = "force-dynamic";
+
+export default async function PlatformDetailsPage({ params }: { params: Promise<{ platformId: string }> }) {
   const { platformId } = await params;
 
   const platform = await getPlatform(platformId);
   if (!platform) return notFound();
 
   const transactions = await getPlatformTransactions(platformId);
-  const performance = await getPlatformPerformance(platformId);
+  const snapshots = await getPlatformNavSnapshots(platformId);
 
   // Stats
   const netInvested = transactions.reduce((acc: number, t: any) => {
     return t.type === "Deposit" ? acc + parseFloat(t.amount) : acc - parseFloat(t.amount);
   }, 0);
-  const latestUnrealized = performance.length > 0 ? parseFloat(performance[0].unrealized_profit) : 0;
+  const realizedProfit = transactions.reduce((acc: number, t: any) => acc + parseFloat(t.realized_profit || "0"), 0);
+  const latestUnrealized = snapshots.length > 0 ? parseFloat(snapshots[0].unrealized_profit) : 0;
   const totalValue = netInvested + latestUnrealized;
   const pnlPct = netInvested > 0 ? ((latestUnrealized / netInvested) * 100) : 0;
 
-  const fmt = (n: number) =>
-    `RM ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmt = formatMoney;
 
   return (
     <div className="space-y-6">
@@ -52,13 +53,13 @@ export default async function PlatformDetailsPage({ params }: { params: { platfo
             <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
               {platform.name}
             </h1>
-            <p className="text-muted-foreground mt-1 text-sm">Platform Details &amp; Performance</p>
+            <p className="text-muted-foreground mt-1 text-sm">Details and history since {platform.created_at}</p>
           </div>
         </div>
       </div>
 
       {/* ── Stat Cards ──────────────────────────────────────────────────────── */}
-      <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-4">
         <Card className="relative overflow-hidden bg-gradient-to-br from-primary/20 to-primary/5 border-primary/30 shadow-lg hover:shadow-primary/10 transition-all duration-300">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent pointer-events-none" />
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -94,6 +95,22 @@ export default async function PlatformDetailsPage({ params }: { params: { platfo
           </CardContent>
         </Card>
 
+        <Card className="relative overflow-hidden bg-gradient-to-br from-violet-500/15 to-violet-500/5 border-violet-500/25 shadow-lg hover:shadow-violet-500/10 transition-all duration-300">
+          <div className="absolute inset-0 bg-gradient-to-br from-violet-500/10 to-transparent pointer-events-none" />
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Realized Profit</CardTitle>
+            <div className="h-8 w-8 rounded-full bg-violet-500/15 flex items-center justify-center">
+              <DollarSign className="h-4 w-4 text-violet-400" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className={`text-3xl font-bold tracking-tight ${realizedProfit >= 0 ? "text-violet-400" : "text-red-400"}`}>
+              {fmt(realizedProfit)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5">Closed profit from withdrawals</p>
+          </CardContent>
+        </Card>
+
         <Card className="relative overflow-hidden bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border-emerald-500/25 shadow-lg hover:shadow-emerald-500/10 transition-all duration-300">
           <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent pointer-events-none" />
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -114,15 +131,12 @@ export default async function PlatformDetailsPage({ params }: { params: { platfo
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
           <TabsList className="grid w-[250px] grid-cols-2 h-9 shrink-0">
             <TabsTrigger value="transactions" className="text-xs">Transactions</TabsTrigger>
-            <TabsTrigger value="performance" className="text-xs">Performance</TabsTrigger>
+            <TabsTrigger value="snapshots" className="text-xs">NAV Snapshots</TabsTrigger>
           </TabsList>
 
           <div>
             <TabsContent value="transactions" className="mt-0">
               <AddPlatformTransactionForm platformId={platformId} />
-            </TabsContent>
-            <TabsContent value="performance" className="mt-0">
-              <AddPlatformPerformanceForm platformId={platformId} />
             </TabsContent>
           </div>
         </div>
@@ -156,6 +170,7 @@ export default async function PlatformDetailsPage({ params }: { params: { platfo
                       <TableHead>Type</TableHead>
                       <TableHead>Notes</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
+                      <TableHead className="text-right">Realized</TableHead>
                       <TableHead className="text-right pr-6">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -184,6 +199,9 @@ export default async function PlatformDetailsPage({ params }: { params: { platfo
                         <TableCell className="text-right font-medium tabular-nums text-sm">
                           {fmt(parseFloat(t.amount))}
                         </TableCell>
+                        <TableCell className={`text-right font-medium tabular-nums text-sm ${parseFloat(t.realized_profit || "0") >= 0 ? "text-violet-400" : "text-red-400"}`}>
+                          {t.realized_profit ? fmt(parseFloat(t.realized_profit)) : "-"}
+                        </TableCell>
                         <TableCell className="text-right pr-6">
                           <DeleteButton id={t.id} deleteAction={deletePlatformTransaction} />
                         </TableCell>
@@ -191,7 +209,7 @@ export default async function PlatformDetailsPage({ params }: { params: { platfo
                     ))}
                     {transactions.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={5} className="text-center text-muted-foreground py-12 text-sm">
+                        <TableCell colSpan={6} className="text-center text-muted-foreground py-12 text-sm">
                           No transactions recorded.
                         </TableCell>
                       </TableRow>
@@ -203,57 +221,57 @@ export default async function PlatformDetailsPage({ params }: { params: { platfo
           </div>
         </TabsContent>
 
-        {/* ── Performance Tab ───────────────────────────────────────────────── */}
-        <TabsContent value="performance" className="mt-0">
+        {/* ── NAV Snapshots Tab ─────────────────────────────────────────────── */}
+        <TabsContent value="snapshots" className="mt-0">
           <div className="grid lg:grid-cols-2 gap-4">
             {/* Chart */}
             <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
               <CardHeader className="pb-0">
                 <div className="flex items-center gap-2">
                   <TrendingUp className="h-4 w-4 text-primary" />
-                  <CardTitle className="text-base">Monthly Performance</CardTitle>
+                  <CardTitle className="text-base">Weekly NAV Snapshots</CardTitle>
                 </div>
               </CardHeader>
               <CardContent className="p-0 pb-4">
-                <PlatformPerformanceChart data={performance} />
+                <PlatformNavSnapshotChart data={snapshots} />
               </CardContent>
             </Card>
 
             {/* Table */}
             <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm overflow-hidden">
               <CardHeader className="pb-0">
-                <CardTitle className="text-base">Performance Records</CardTitle>
+                <CardTitle className="text-base">NAV Snapshot History</CardTitle>
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
                   <TableHeader>
                     <TableRow className="border-b border-border/50 hover:bg-transparent">
-                      <TableHead className="pl-6">Month</TableHead>
+                      <TableHead className="pl-6">Week Ending</TableHead>
+                      <TableHead className="text-right">Net Invested</TableHead>
                       <TableHead className="text-right">Unrealized Profit</TableHead>
-                      <TableHead className="text-right pr-6">Actions</TableHead>
+                      <TableHead className="text-right pr-6">NAV / Unit</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {performance.map((p: any) => {
+                    {snapshots.map((p: any) => {
                       const profit = parseFloat(p.unrealized_profit);
                       return (
                         <TableRow key={p.id} className="hover:bg-muted/20 transition-colors border-border/30">
-                          <TableCell className="pl-6 font-medium text-sm">{p.month}</TableCell>
+                          <TableCell className="pl-6 font-medium text-sm">{p.week_ending}</TableCell>
+                          <TableCell className="text-right font-medium tabular-nums text-sm">{fmt(parseFloat(p.net_invested))}</TableCell>
                           <TableCell className="text-right">
                             <span className={`font-semibold tabular-nums ${profit >= 0 ? "text-blue-400" : "text-red-400"}`}>
                               {profit >= 0 ? "+" : ""}{fmt(profit)}
                             </span>
                           </TableCell>
-                          <TableCell className="text-right pr-6">
-                            <DeleteButton id={p.id} deleteAction={deletePlatformPerformance} />
-                          </TableCell>
+                          <TableCell className="text-right pr-6 font-semibold text-primary">{Number(p.nav_per_unit).toFixed(6)}</TableCell>
                         </TableRow>
                       );
                     })}
-                    {performance.length === 0 && (
+                    {snapshots.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={3} className="text-center text-muted-foreground py-12 text-sm">
-                          No performance data recorded.
+                        <TableCell colSpan={4} className="text-center text-muted-foreground py-12 text-sm">
+                          No weekly NAV snapshots recorded. Update platform unrealized profit when creating Weekly NAV.
                         </TableCell>
                       </TableRow>
                     )}

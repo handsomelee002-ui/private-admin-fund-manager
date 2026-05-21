@@ -9,17 +9,22 @@ import {
   ArrowRightLeft,
   Settings,
   BarChart2,
-  Handshake,
+  Building2,
+  CalendarClock,
+  Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const navigation = [
   { name: "Dashboard",      href: "/",        icon: LayoutDashboard, exact: true },
+  { name: "Platforms",      href: "/trading", icon: Building2,        exact: false },
+  { name: "Weekly NAV",     href: "/nav",     icon: CalendarClock,   exact: false },
+  { name: "Capital",        href: "/capital",  icon: ArrowRightLeft,  exact: false },
   { name: "Investors",      href: "/investors", icon: Users,           exact: false },
-  { name: "Trading Ledger", href: "/trading",  icon: ArrowRightLeft,  exact: false },
+  { name: "Fixed Savings",  href: "/fixed-savings", icon: Wallet,      exact: false },
   { name: "Reports",        href: "/reports",  icon: BarChart2,       exact: false },
-  { name: "Profit Claims",  href: "/claims",   icon: Handshake,       exact: false },
-  { name: "Settings",       href: "/settings", icon: Settings,        exact: false },
+  { name: "Brokerage",      href: "/settings", icon: Settings,        exact: false },
+  { name: "Settings",       href: "/development", icon: Database,     exact: false },
 ];
 
 export function Sidebar() {

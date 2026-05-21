@@ -7,14 +7,15 @@ import {
   getAllBonusPayments,
   deleteBonusPayment,
 } from "@/actions/settings";
-import { calcDailyCompoundInterest } from "@/lib/savingsUtils";
+import { calculateFixedSavingsLiability } from "@/lib/fundDb";
 import { getInvestors } from "@/actions/investors";
 import { BrokerageFeeConfig } from "@/components/BrokerageFeeConfig";
 import { AddBonusForm } from "@/components/AddBonusForm";
 import { DeleteButton } from "@/components/DeleteButton";
-import {
-  Settings, Percent, DollarSign, TrendingDown, TrendingUp, Gift, Wallet,
-} from "lucide-react";
+import { formatMoney } from "@/lib/formatting";
+import { Percent, DollarSign, TrendingDown, TrendingUp, Gift, Wallet } from "lucide-react";
+
+export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
   // ── Config ───────────────────────────────────────────────────────────────────
@@ -46,18 +47,17 @@ export default async function SettingsPage() {
 
   // ── Total Interest Owed to All Investors ─────────────────────────────────────
   const fsRows = await sql`
-    SELECT investor_id, amount, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+    SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
     FROM fixed_savings_ledger
-    WHERE type = 'Deposit' AND interest_rate IS NOT NULL AND interest_rate > 0
+    ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
   `;
-  const totalInterestOwed = fsRows.rows.reduce((sum: number, r: any) => {
-    return sum + calcDailyCompoundInterest(parseFloat(r.amount), parseFloat(r.interest_rate), r.date);
-  }, 0);
+  const fixedSavingsLiability = calculateFixedSavingsLiability(fsRows.rows as any[]);
+  const totalInterestOwed = fixedSavingsLiability.payableInterest;
 
   // ── Total Bonuses Paid ───────────────────────────────────────────────────────
   const bonusPayments = await getAllBonusPayments();
   const totalBonusPaid = bonusPayments.reduce(
-    (sum: number, b: any) => sum + parseFloat(b.amount),
+    (sum: number, b: any) => sum + (b.ledger_type === "equity" ? parseFloat(b.amount) : 0),
     0,
   );
 
@@ -67,18 +67,17 @@ export default async function SettingsPage() {
   // ── Investors list for AddBonusForm ─────────────────────────────────────────
   const investors = await getInvestors();
 
-  const fmt = (n: number) =>
-    `RM ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmt = formatMoney;
 
   return (
     <div className="space-y-6">
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div>
         <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-          Settings & Finance
+          Brokerage
         </h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Configure fund fees, track commission, and manage investor bonuses.
+          Configure brokerage fees, track commission, and manage investor payable liabilities.
         </p>
       </div>
 
@@ -98,7 +97,7 @@ export default async function SettingsPage() {
           <CardContent>
             <BrokerageFeeConfig initialRate={brokerageFeeRate} />
             <p className="text-[10px] text-muted-foreground mt-3">
-              {totalRealized >= 0 ? "Profit" : "Loss"} RM {Math.abs(totalRealized).toLocaleString(undefined, {minimumFractionDigits: 2})} net realized → <strong className={totalRealized >= 0 ? "text-primary" : "text-red-400"}>{fmt(brokerageFeeEarned)}</strong> earned
+              {totalRealized >= 0 ? "Profit" : "Loss"} {fmt(Math.abs(totalRealized))} net realized → <strong className={totalRealized >= 0 ? "text-primary" : "text-red-400"}>{fmt(brokerageFeeEarned)}</strong> earned
             </p>
           </CardContent>
         </Card>
@@ -132,21 +131,21 @@ export default async function SettingsPage() {
             </CardHeader>
             <CardContent>
               <div className="text-xl font-bold text-orange-400">{fmt(totalInterestOwed)}</div>
-              <p className="text-[10px] text-muted-foreground mt-1">Fixed savings accrued interest liability</p>
+              <p className="text-[10px] text-muted-foreground mt-1">Accrued interest plus fixed-savings bonus payable</p>
             </CardContent>
           </Card>
 
           <Card className="relative overflow-hidden bg-gradient-to-br from-violet-500/15 to-violet-500/5 border-violet-500/25 shadow-lg">
             <div className="absolute inset-0 bg-gradient-to-br from-violet-500/10 to-transparent pointer-events-none" />
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-xs font-medium text-muted-foreground">Bonus Paid Out</CardTitle>
+              <CardTitle className="text-xs font-medium text-muted-foreground">Equity Bonus</CardTitle>
               <div className="h-7 w-7 rounded-full bg-violet-500/15 flex items-center justify-center">
                 <Gift className="h-3.5 w-3.5 text-violet-400" />
               </div>
             </CardHeader>
             <CardContent>
               <div className="text-xl font-bold text-violet-400">{fmt(totalBonusPaid)}</div>
-              <p className="text-[10px] text-muted-foreground mt-1">{bonusPayments.length} bonus payment{bonusPayments.length !== 1 ? "s" : ""}</p>
+              <p className="text-[10px] text-muted-foreground mt-1">Fixed-savings bonus is included in interest owed</p>
             </CardContent>
           </Card>
         </div>
@@ -159,7 +158,7 @@ export default async function SettingsPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-muted-foreground">Net Commission Balance</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Brokerage Earned − Interest Owed − Bonus Paid</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Brokerage Earned - Payable Interest - Equity Bonus</p>
             </div>
             <div className="text-right">
               <div className={`text-3xl font-bold ${netCommission >= 0 ? "text-emerald-400" : "text-red-400"}`}>
@@ -174,7 +173,7 @@ export default async function SettingsPage() {
           <div className="mt-4 space-y-1.5">
             <div className="flex justify-between text-[10px] text-muted-foreground">
               <span>Interest ({fmt(totalInterestOwed)})</span>
-              <span>Bonus ({fmt(totalBonusPaid)})</span>
+              <span>Equity bonus ({fmt(totalBonusPaid)})</span>
               <span>Net ({fmt(netCommission)})</span>
             </div>
             <div className="h-2 w-full rounded-full bg-muted/50 overflow-hidden flex">
@@ -182,11 +181,11 @@ export default async function SettingsPage() {
                 <>
                   <div
                     className="h-full bg-orange-400/70 transition-all duration-500"
-                    style={{ width: `${Math.min(100, (totalInterestOwed / brokerageFeeEarned) * 100).toFixed(1)}%` }}
+                    style={{ width: `${Math.max(0, Math.min(100, (totalInterestOwed / brokerageFeeEarned) * 100)).toFixed(1)}%` }}
                   />
                   <div
                     className="h-full bg-violet-400/70 transition-all duration-500"
-                    style={{ width: `${Math.min(100, (totalBonusPaid / brokerageFeeEarned) * 100).toFixed(1)}%` }}
+                    style={{ width: `${Math.max(0, Math.min(100, (totalBonusPaid / brokerageFeeEarned) * 100)).toFixed(1)}%` }}
                   />
                 </>
               )}
@@ -204,7 +203,7 @@ export default async function SettingsPage() {
               <CardTitle className="text-base">Special Bonus Payments</CardTitle>
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              One-time bonuses to specific investors or all investors proportionally (equity or savings basis).
+              One-time positive or negative bonuses to specific investors or all investors proportionally.
             </p>
           </div>
           <AddBonusForm investors={investors.map((i: any) => ({ id: i.id, name: i.name }))} />
@@ -249,8 +248,8 @@ export default async function SettingsPage() {
                     </Badge>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">{b.date}</TableCell>
-                  <TableCell className="text-right font-bold tabular-nums text-emerald-400 text-sm">
-                    +{fmt(parseFloat(b.amount))}
+                  <TableCell className={`text-right font-bold tabular-nums text-sm ${parseFloat(b.amount) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                    {parseFloat(b.amount) >= 0 ? "+" : ""}{fmt(parseFloat(b.amount))}
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground max-w-[150px] truncate">
                     {b.notes || "—"}

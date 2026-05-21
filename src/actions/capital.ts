@@ -2,7 +2,6 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { ensureClaimsTable } from "@/actions/profitClaims";
 import { getBrokerageFeeRate } from "@/actions/settings";
 
 export async function getCapitalLedger() {
@@ -37,7 +36,7 @@ export async function getCapitalLedgerByInvestor(investorId: string) {
         notes
       FROM capital_ledger
       WHERE investor_id = ${investorId}
-      ORDER BY date DESC, created_at DESC;
+      ORDER BY capital_ledger.date DESC, capital_ledger.created_at DESC;
     `;
     return data.rows;
   } catch (error) {
@@ -84,14 +83,17 @@ export async function addCapitalRecord(formData: FormData) {
       `;
       const totalFundEquity = parseFloat(totalFundRes.rows[0]?.total || 0);
 
-      // Latest total unrealized profit/loss across all platforms (can be negative)
+      // Latest locked weekly NAV platform snapshots (can be negative)
       const unrealizedRes = await sql`
         SELECT COALESCE(SUM(unrealized_profit), 0) as total
         FROM (
-          SELECT unrealized_profit,
-                 ROW_NUMBER() OVER(PARTITION BY platform_id ORDER BY month DESC) as rn
-          FROM platform_performance
-        ) sub WHERE rn = 1
+          SELECT nwps.unrealized_profit,
+                 ROW_NUMBER() OVER(PARTITION BY nwps.platform_id ORDER BY nw.week_ending DESC) as rn
+          FROM nav_week_platform_snapshots nwps
+          JOIN nav_weeks nw ON nw.id = nwps.nav_week_id
+          WHERE nw.status = 'locked'
+        ) sub
+        WHERE rn = 1
       `;
       const totalUnrealized = parseFloat(unrealizedRes.rows[0]?.total || 0);
 
@@ -142,7 +144,6 @@ export async function addCapitalRecord(formData: FormData) {
 
     // ── Auto-create profit claim if withdrawal and unrealized > 0 ────────────
     if (type === "Withdrawal" && autoClaimedAmount > 0) {
-      await ensureClaimsTable();
       const brokerageRate = await getBrokerageFeeRate();
       const brokerageFee  = Math.round(autoClaimedAmount * (brokerageRate / 100) * 100) / 100;
       await sql`

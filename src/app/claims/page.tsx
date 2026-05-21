@@ -4,7 +4,10 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SettleClaimDialog } from "@/components/SettleClaimDialog";
 import { DeleteButton } from "@/components/DeleteButton";
+import { formatMoney } from "@/lib/formatting";
 import { Handshake, Clock, CheckCircle, AlertCircle, DollarSign } from "lucide-react";
+
+export const dynamic = "force-dynamic";
 
 function StatusBadge({ status }: { status: string }) {
   if (status === "settled") {
@@ -36,8 +39,7 @@ export default async function ClaimsPage() {
   const totalPending  = totalLocked - totalSettled;
   const pendingCount  = claims.filter((c: any) => c.status !== "settled").length;
 
-  const fmt = (n: number) =>
-    `RM ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmt = formatMoney;
 
   return (
     <div className="space-y-6">

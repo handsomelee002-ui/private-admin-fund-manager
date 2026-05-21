@@ -62,7 +62,7 @@ export function AddBonusForm({ investors }: Props) {
           <DialogTitle>Special Bonus Payment</DialogTitle>
         </DialogHeader>
         <p className="text-xs text-muted-foreground -mt-2">
-          Distribute a one-time bonus to a specific investor or all investors proportionally.
+          Distribute a one-time positive or negative bonus to a specific investor or all investors proportionally.
         </p>
         <form onSubmit={handleSubmit} className="space-y-4 pt-2">
           {/* Target Type */}
@@ -151,13 +151,13 @@ export function AddBonusForm({ investors }: Props) {
           {/* Amount */}
           <div className="space-y-2">
             <Label>
-              {targetType === "all" ? "Total Bonus Amount (RM) — distributed proportionally" : "Bonus Amount (RM)"}
+              {targetType === "all" ? "Total Bonus Amount (RM) - distributed proportionally" : "Bonus Amount (RM)"}
             </Label>
             <Input
               type="number"
               step="0.01"
               required
-              placeholder="0.00"
+              placeholder="Use negative value for reversal"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
             />

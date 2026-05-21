@@ -19,19 +19,23 @@ export async function getPlatforms() {
       SELECT 
         p.id, 
         p.name,
-        COALESCE(SUM(CASE WHEN pt.type = 'Deposit' THEN pt.amount ELSE -pt.amount END), 0) as net_invested
+        TO_CHAR(p.created_at, 'YYYY-MM-DD') as created_at,
+        COALESCE(SUM(CASE WHEN pt.type = 'Deposit' THEN pt.amount ELSE -pt.amount END), 0) as net_invested,
+        COALESCE(SUM(CASE WHEN pt.realized_profit IS NOT NULL THEN pt.realized_profit ELSE 0 END), 0) as realized_profit
       FROM platforms p
       LEFT JOIN platform_transactions pt ON p.id = pt.platform_id
-      GROUP BY p.id, p.name
-      ORDER BY p.name ASC;
+      GROUP BY p.id, p.name, p.created_at
+      ORDER BY p.created_at DESC, p.name ASC;
     `;
     
     const perfData = await sql`
-      SELECT platform_id, unrealized_profit 
+      SELECT platform_id, unrealized_profit
       FROM (
-        SELECT platform_id, unrealized_profit,
-               ROW_NUMBER() OVER(PARTITION BY platform_id ORDER BY month DESC) as rn
-        FROM platform_performance
+        SELECT nwps.platform_id, nwps.unrealized_profit,
+               ROW_NUMBER() OVER(PARTITION BY nwps.platform_id ORDER BY nw.week_ending DESC) as rn
+        FROM nav_week_platform_snapshots nwps
+        JOIN nav_weeks nw ON nw.id = nwps.nav_week_id
+        WHERE nw.status = 'locked'
       ) sub
       WHERE rn = 1;
     `;
@@ -43,11 +47,14 @@ export async function getPlatforms() {
 
     return data.rows.map((row: any) => {
       const netInvested = parseFloat(row.net_invested || 0);
+      const realizedProfit = parseFloat(row.realized_profit || 0);
       const unrealizedProfit = latestPerfMap.get(row.id) || 0;
       return {
         id: row.id,
         name: row.name,
+        createdAt: row.created_at,
         netInvested,
+        realizedProfit,
         unrealizedProfit,
         totalValue: netInvested + unrealizedProfit
       };
@@ -60,7 +67,7 @@ export async function getPlatforms() {
 
 export async function getPlatform(id: string) {
   try {
-    const data = await sql`SELECT id, name FROM platforms WHERE id = ${id}`;
+    const data = await sql`SELECT id, name, TO_CHAR(created_at, 'YYYY-MM-DD') as created_at FROM platforms WHERE id = ${id}`;
     return data.rows[0];
   } catch (error) {
     console.error("Database Error:", error);
@@ -69,13 +76,19 @@ export async function getPlatform(id: string) {
 }
 
 export async function addPlatform(formData: FormData) {
-  const name = formData.get("name")?.toString();
+  const name = formData.get("name")?.toString()?.trim();
   if (!name) return { error: "Platform name is required" };
 
   try {
-    await sql`INSERT INTO platforms (name) VALUES (${name})`;
+    const existing = await sql`SELECT id FROM platforms WHERE name = ${name}`;
+    if (existing.rows.length > 0) {
+      return { error: "A platform with this name already exists." };
+    }
+
+    const created = await sql`INSERT INTO platforms (name) VALUES (${name}) RETURNING id`;
     revalidatePath("/trading");
-    return { success: true };
+    revalidatePath("/nav");
+    return { success: true, id: created.rows[0].id };
   } catch (error) {
     console.error("Database Error:", error);
     return { error: "Failed to add platform." };
@@ -91,6 +104,7 @@ export async function updatePlatformName(formData: FormData) {
     await sql`UPDATE platforms SET name = ${name} WHERE id = ${id}`;
     revalidatePath("/trading");
     revalidatePath(`/trading/${id}`);
+    revalidatePath("/nav");
     revalidatePath("/");
     return { success: true };
   } catch (error) {
@@ -103,6 +117,7 @@ export async function deletePlatform(id: string) {
   try {
     await sql`DELETE FROM platforms WHERE id = ${id}`;
     revalidatePath("/trading");
+    revalidatePath("/nav");
     return { success: true };
   } catch (error) {
     console.error("Database Error:", error);
@@ -113,7 +128,6 @@ export async function deletePlatform(id: string) {
 // --- TRANSACTIONS ---
 
 export async function getPlatformTransactions(platformId: string) {
-  await ensureRealizedProfitColumn();
   try {
     const data = await sql`
       SELECT 
@@ -126,7 +140,7 @@ export async function getPlatformTransactions(platformId: string) {
         notes 
       FROM platform_transactions
       WHERE platform_id = ${platformId}
-      ORDER BY date DESC, created_at DESC;
+      ORDER BY platform_transactions.date DESC, platform_transactions.created_at DESC;
     `;
     return data.rows;
   } catch (error) {
@@ -154,8 +168,10 @@ export async function addPlatformTransaction(formData: FormData) {
     realizedProfitStr && realizedProfitStr !== ""
       ? parseFloat(realizedProfitStr)
       : null;
+  if (realizedProfit !== null && !Number.isFinite(realizedProfit)) {
+    return { error: "Realized profit must be a valid number" };
+  }
 
-  await ensureRealizedProfitColumn();
   try {
     await sql`
       INSERT INTO platform_transactions (platform_id, date, type, amount, realized_profit, notes)
@@ -163,6 +179,7 @@ export async function addPlatformTransaction(formData: FormData) {
     `;
     revalidatePath(`/trading/${platformId}`);
     revalidatePath("/trading");
+    revalidatePath("/nav");
     revalidatePath("/");
     revalidatePath("/reports");
     return { success: true };
@@ -174,8 +191,13 @@ export async function addPlatformTransaction(formData: FormData) {
 
 export async function deletePlatformTransaction(id: string) {
   try {
-    await sql`DELETE FROM platform_transactions WHERE id = ${id}`;
-    revalidatePath("/", "layout");
+    const deleted = await sql`DELETE FROM platform_transactions WHERE id = ${id} RETURNING platform_id`;
+    const platformId = deleted.rows[0]?.platform_id;
+    if (platformId) revalidatePath(`/trading/${platformId}`);
+    revalidatePath("/trading");
+    revalidatePath("/nav");
+    revalidatePath("/");
+    revalidatePath("/reports");
     return { success: true };
   } catch (error) {
     console.error("Database Error:", error);
@@ -185,61 +207,26 @@ export async function deletePlatformTransaction(id: string) {
 
 // --- PERFORMANCE ---
 
-export async function getPlatformPerformance(platformId: string) {
+export async function getPlatformNavSnapshots(platformId: string) {
   try {
     const data = await sql`
       SELECT 
-        id, 
-        platform_id, 
-        month, 
-        unrealized_profit 
-      FROM platform_performance
-      WHERE platform_id = ${platformId}
-      ORDER BY month DESC;
+        nwps.id,
+        nwps.platform_id,
+        TO_CHAR(nw.week_ending, 'YYYY-MM-DD') as week_ending,
+        nwps.net_invested,
+        nwps.unrealized_profit,
+        nw.nav_per_unit,
+        nw.status
+      FROM nav_week_platform_snapshots nwps
+      JOIN nav_weeks nw ON nw.id = nwps.nav_week_id
+      WHERE nwps.platform_id = ${platformId}
+        AND nw.status = 'locked'
+      ORDER BY nw.week_ending DESC;
     `;
     return data.rows;
   } catch (error) {
     console.error("Database Error:", error);
-    throw new Error("Failed to fetch performance data.");
-  }
-}
-
-export async function upsertPlatformPerformance(formData: FormData) {
-  const platformId = formData.get("platform_id")?.toString();
-  const month = formData.get("month")?.toString();
-  const profitStr = formData.get("unrealized_profit")?.toString();
-
-  if (!platformId || !month || !profitStr) {
-    return { error: "Missing required fields" };
-  }
-
-  const profit = parseFloat(profitStr);
-  if (isNaN(profit)) return { error: "Unrealized profit must be a valid number" };
-
-  try {
-    await sql`
-      INSERT INTO platform_performance (platform_id, month, unrealized_profit)
-      VALUES (${platformId}, ${month}, ${profit})
-      ON CONFLICT (platform_id, month) 
-      DO UPDATE SET unrealized_profit = EXCLUDED.unrealized_profit
-    `;
-    revalidatePath(`/trading/${platformId}`);
-    revalidatePath("/trading");
-    revalidatePath("/");
-    return { success: true };
-  } catch (error) {
-    console.error("Database Error:", error);
-    return { error: "Failed to update performance data." };
-  }
-}
-
-export async function deletePlatformPerformance(id: string) {
-  try {
-    await sql`DELETE FROM platform_performance WHERE id = ${id}`;
-    revalidatePath("/", "layout");
-    return { success: true };
-  } catch (error) {
-    console.error("Database Error:", error);
-    return { error: "Failed to delete performance record." };
+    throw new Error("Failed to fetch platform NAV snapshots.");
   }
 }

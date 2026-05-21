@@ -1,0 +1,79 @@
+const assert = require("node:assert/strict");
+const test = require("node:test");
+
+const {
+  accrueDailyCompoundInterest,
+  calculateNavPerUnit,
+  calculateOwnershipPercent,
+  issueUnitsForDeposit,
+  redeemUnitsForWithdrawal,
+  roundMoney,
+  roundUnits,
+} = require("./accounting.js");
+
+test("bootstraps NAV per unit to 1.000000 when no units exist", () => {
+  assert.equal(calculateNavPerUnit({ netAssetValue: 25000, totalUnits: 0 }), 1);
+});
+
+test("calculates weekly NAV per unit from locked net assets and units", () => {
+  assert.equal(calculateNavPerUnit({ netAssetValue: 125000, totalUnits: 100000 }), 1.25);
+});
+
+test("issues units for a deposit at the locked weekly NAV", () => {
+  assert.equal(issueUnitsForDeposit({ amount: 5000, navPerUnit: 1.25 }), 4000);
+});
+
+test("redeems units for a withdrawal at the locked weekly NAV", () => {
+  assert.deepEqual(
+    redeemUnitsForWithdrawal({
+      requestedAmount: 3125,
+      navPerUnit: 1.25,
+      availableUnits: 4000,
+    }),
+    { unitsRedeemed: 2500, grossAmount: 3125 },
+  );
+});
+
+test("caps a full exit redemption at available units", () => {
+  assert.deepEqual(
+    redeemUnitsForWithdrawal({
+      requestedAmount: 999999,
+      navPerUnit: 1.25,
+      availableUnits: 4000,
+    }),
+    { unitsRedeemed: 4000, grossAmount: 5000 },
+  );
+});
+
+test("keeps late investors from receiving prior-period gains", () => {
+  const founderUnits = issueUnitsForDeposit({ amount: 10000, navPerUnit: 1 });
+  const navAfterGain = calculateNavPerUnit({ netAssetValue: 12000, totalUnits: founderUnits });
+  const lateUnits = issueUnitsForDeposit({ amount: 6000, navPerUnit: navAfterGain });
+  const totalUnits = founderUnits + lateUnits;
+
+  assert.equal(navAfterGain, 1.2);
+  assert.equal(lateUnits, 5000);
+  assert.equal(roundMoney(founderUnits * navAfterGain), 12000);
+  assert.equal(roundMoney(lateUnits * navAfterGain), 6000);
+  assert.equal(calculateOwnershipPercent({ investorUnits: lateUnits, totalUnits }), 33.333333);
+});
+
+test("supports negative P&L weeks through lower NAV per unit", () => {
+  assert.equal(calculateNavPerUnit({ netAssetValue: 8500, totalUnits: 10000 }), 0.85);
+});
+
+test("rounds money and units deterministically", () => {
+  assert.equal(roundMoney(10.005), 10.01);
+  assert.equal(roundUnits(1.23456789), 1.234568);
+});
+
+test("fixed savings interest accrues outside equity NAV", () => {
+  const interest = accrueDailyCompoundInterest({
+    principal: 10000,
+    annualRatePercent: 3.65,
+    startDate: "2026-01-01",
+    endDate: "2026-01-31",
+  });
+
+  assert.equal(interest, 30.04);
+});

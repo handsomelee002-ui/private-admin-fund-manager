@@ -40,7 +40,6 @@ export async function ensureSettingsTables() {
 // ── Fund Config ───────────────────────────────────────────────────────────────
 
 export async function getBrokerageFeeRate(): Promise<number> {
-  await ensureSettingsTables();
   const res = await sql`SELECT value FROM fund_config WHERE key = 'brokerage_fee_pct'`;
   return parseFloat(res.rows[0]?.value ?? "2.0");
 }
@@ -51,7 +50,6 @@ export async function updateBrokerageFeeRate(formData: FormData) {
   const rate = parseFloat(rateStr);
   if (isNaN(rate) || rate < 0 || rate > 100) return { error: "Rate must be between 0 and 100" };
 
-  await ensureSettingsTables();
   await sql`
     INSERT INTO fund_config (key, value, updated_at)
     VALUES ('brokerage_fee_pct', ${rate.toString()}, NOW())
@@ -64,7 +62,6 @@ export async function updateBrokerageFeeRate(formData: FormData) {
 // ── Bonus Payments ────────────────────────────────────────────────────────────
 
 export async function getAllBonusPayments() {
-  await ensureSettingsTables();
   const res = await sql`
     SELECT
       bp.id,
@@ -83,13 +80,12 @@ export async function getAllBonusPayments() {
 }
 
 export async function getBonusByInvestor(investorId: string) {
-  await ensureSettingsTables();
   const res = await sql`
     SELECT id, ledger_type, amount,
            TO_CHAR(date, 'YYYY-MM-DD') as date, notes
     FROM bonus_payments
     WHERE investor_id = ${investorId}
-    ORDER BY date DESC;
+    ORDER BY bonus_payments.date DESC;
   `;
   return res.rows;
 }
@@ -140,9 +136,7 @@ export async function addBonusPayment(formData: FormData) {
     return { error: "Missing required fields" };
   }
   const totalAmount = parseFloat(amountStr);
-  if (isNaN(totalAmount) || totalAmount <= 0) return { error: "Amount must be positive" };
-
-  await ensureSettingsTables();
+  if (isNaN(totalAmount) || totalAmount === 0) return { error: "Amount must be a non-zero number" };
 
   try {
     if (targetType === "specific") {
@@ -150,21 +144,36 @@ export async function addBonusPayment(formData: FormData) {
       await insertBonusRecord(investorId, ledgerType, totalAmount, date, notes || "Special bonus");
     } else {
       // Distribute proportionally to all investors
-      const sourceTable = ledgerType === "equity" ? "capital_ledger" : "fixed_savings_ledger";
-      const rows = await sql.query(
-        `SELECT investor_id,
-                SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END) as net
-         FROM ${sourceTable}
-         GROUP BY investor_id
-         HAVING SUM(CASE WHEN type IN ('Deposit','Bonus') THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END) > 0`,
-      );
+      const rows = ledgerType === "equity"
+        ? await sql`
+            WITH latest_nav AS (
+              SELECT nav_per_unit
+              FROM nav_weeks
+              WHERE status = 'locked'
+              ORDER BY week_ending DESC
+              LIMIT 1
+            )
+            SELECT investor_id,
+              SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END)
+                * COALESCE((SELECT nav_per_unit FROM latest_nav), 1) as net
+            FROM investor_unit_ledger
+            GROUP BY investor_id
+            HAVING SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END) > 0
+          `
+        : await sql`
+            SELECT investor_id,
+              SUM(CASE WHEN type = 'Deposit' THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END) as net
+            FROM fixed_savings_ledger
+            GROUP BY investor_id
+            HAVING SUM(CASE WHEN type = 'Deposit' THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END) > 0
+          `;
       const totalNet = rows.rows.reduce((s: number, r: any) => s + parseFloat(r.net), 0);
-      if (totalNet <= 0) return { error: "No balance found to distribute to" };
+      if (totalNet <= 0) return { error: ledgerType === "equity" ? "No positive investor unit balance found to distribute to" : "No fixed savings balance found to distribute to" };
 
       for (const r of rows.rows) {
         const share = parseFloat(r.net) / totalNet;
         const investorBonus = totalAmount * share;
-        if (investorBonus > 0.001) {
+        if (Math.abs(investorBonus) > 0.001) {
           await insertBonusRecord(
             r.investor_id,
             ledgerType,
@@ -178,6 +187,7 @@ export async function addBonusPayment(formData: FormData) {
 
     revalidatePath("/settings");
     revalidatePath("/investors");
+    revalidatePath("/capital");
     revalidatePath("/reports");
     revalidatePath("/");
     return { success: true };
@@ -188,7 +198,6 @@ export async function addBonusPayment(formData: FormData) {
 }
 
 export async function deleteBonusPayment(id: string) {
-  await ensureSettingsTables();
   try {
     // Get source_id and ledger_type to delete from the correct ledger
     const log = await sql`

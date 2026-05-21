@@ -1,97 +1,214 @@
 # Private Admin Fund Manager
 
-A minimal, robust, and beautiful Next.js application designed to help private fund managers record investor capital, log trades, and provide a read-only portal for investors to check their performance.
+Private Admin Fund Manager is a Next.js admin application for managing a private fund with weekly unit-based NAV accounting, investor unit balances, fixed-savings liabilities, and development-only seed/reset utilities.
 
-## Tech Stack
-- **Framework**: Next.js (App Router)
-- **Styling**: Tailwind CSS & Shadcn UI (Custom Dark Theme)
-- **Database & Backend**: Supabase (PostgreSQL, Auth, Storage)
-- **Deployment**: Vercel
+The current accounting model is a fresh start. Legacy capital-ratio records, monthly NAV assumptions, profit-claim IOUs, and platform-ledger ownership calculations are no longer the source of truth.
 
-## 1. Supabase Setup
+## Core Accounting Model
 
-Before deploying or running locally, you must set up your database. 
+- Equity investors own fund units.
+- Weekly NAV is the only equity accounting source of truth.
+- Deposits issue units at a locked weekly NAV per unit.
+- Withdrawals redeem units at a locked weekly NAV per unit.
+- Investor ownership is calculated from current unit balance divided by total fund units.
+- Fixed savings is a liability book and is excluded from equity NAV ownership.
+- Performance fees are tracked separately from investor unit ownership.
 
-1. Create a new project at [Supabase](https://supabase.com/).
-2. Navigate to the **SQL Editor** in your Supabase dashboard and run the following script:
+Default operating cycle:
 
-```sql
--- 1. Investors Table
-CREATE TABLE investors (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  name TEXT NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+1. Admin creates a draft weekly NAV using Friday close valuation.
+2. Admin reviews gross assets, liabilities, and adjustments.
+3. Admin locks the weekly NAV.
+4. Deposits and withdrawals settle against the locked NAV, normally on Monday.
 
--- 2. Capital Ledger Table
-CREATE TABLE capital_ledger (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  investor_id UUID REFERENCES investors(id) ON DELETE CASCADE,
-  date DATE NOT NULL,
-  type TEXT CHECK (type IN ('Deposit', 'Withdrawal')),
-  amount NUMERIC(15, 2) NOT NULL,
-  notes TEXT,
-  receipt_url TEXT,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+## Main Modules
 
--- 3. Trading Ledger Table
-CREATE TABLE trading_ledger (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  date DATE NOT NULL,
-  platform TEXT NOT NULL,
-  ticker TEXT NOT NULL,
-  type TEXT CHECK (type IN ('Buy', 'Sell')),
-  currency TEXT NOT NULL,
-  price NUMERIC(15, 4) NOT NULL,
-  quantity NUMERIC(15, 4) NOT NULL,
-  amount_rm NUMERIC(15, 2) NOT NULL,
-  profit_loss NUMERIC(15, 2), -- Manual field, only for 'Sell' or closed trades
-  date_closed DATE,
-  receipt_url TEXT,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
+- `Dashboard`: Latest AUM, NAV per unit, total units, fixed-savings liability, and investor unit balances.
+- `Weekly NAV`: Create, review, and lock weekly NAV snapshots.
+- `Investors`: Manage investors and review unit ownership.
+- `Capital`: Settle deposits and withdrawals against locked NAV weeks.
+- `Fixed Savings`: Record fixed-savings deposits and withdrawals as liabilities.
+- `Reports`: NAV trend, AUM, units, fees, and fixed-savings liability.
+- `Development`: Import dummy data or clean all financial/configuration data in development.
+- `Investor Portal`: Investor-facing statement for unit balance, market value, ownership, and fixed savings.
 
--- 4. Cash Balances Table
-CREATE TABLE cash_balances (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  account_name TEXT NOT NULL,
-  current_balance NUMERIC(15, 2) NOT NULL DEFAULT 0,
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-```
+## Fresh Schema
 
-3. Go to **Storage** and create a new public bucket named `receipts`.
-4. Go to **Project Settings -> API** and copy your `Project URL` and `anon public` key.
+The application creates and uses these fresh-model tables:
 
-## 2. Environment Variables
+- `investors`
+- `nav_weeks`
+- `investor_unit_ledger`
+- `cash_movements`
+- `fixed_savings_accounts`
+- `fixed_savings_ledger`
+- `performance_fees`
+- `audit_events`
 
-Create a `.env.local` file in the root of the project:
+Legacy tables may still exist in an old development database, but they are not the accounting source of truth for the redesigned pages and are included in the development cleaner.
+
+## Development Data Tools
+
+The `Development` page contains bootstrap and destructive data utilities:
+
+- `Initialize Database`: Creates the required schema and restores baseline configuration without running schema checks during normal page renders.
+- `Import Dummy Data`: Deletes all resettable financial/configuration data and seeds sample investors, NAV weeks, unit ledgers, fixed-savings records, and fee examples.
+- `Clean All Data`: Deletes fresh-model records, legacy capital/trading records, profit claims, bonus logs, platform records, cash balances, audit events, and brokerage-fee configuration, then restores the default brokerage fee.
+
+These actions are blocked unless:
+
+- `NODE_ENV !== "production"`, or
+- `ALLOW_DEV_DATA_TOOLS=true`
+
+They also require admin authorization and a typed confirmation phrase:
+
+- `IMPORT DUMMY DATA`
+- `INITIALIZE DATABASE`
+- `DELETE ALL FUND DATA`
+
+Never expose these tools in production without an explicit operational reason.
+
+## Security Requirements
+
+This application handles financial records. Treat Server Actions as public mutation endpoints.
+
+Required controls:
+
+- Rotate any database credentials previously stored in `.env.local`.
+- Use role-based authentication for production admin and investor access.
+- Authorize every financial mutation server-side.
+- Enforce investor-level authorization on `/portal/[investor_id]`.
+- Keep development seed/reset tools disabled in production.
+- Do not rely on obscured URLs as access control.
+
+The current development fallback allows local admin access when `NODE_ENV !== "production"` to keep local workflows usable. Production deployments must provide real session/auth integration and secrets.
+
+## Environment Variables
+
+Minimum database configuration uses Vercel Postgres or a compatible Neon/Postgres connection:
 
 ```env
-NEXT_PUBLIC_SUPABASE_URL=your-project-url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+POSTGRES_URL=postgresql://...
+POSTGRES_URL_NON_POOLING=postgresql://...
+POSTGRES_USER=...
+POSTGRES_HOST=...
+POSTGRES_PASSWORD=...
+POSTGRES_DATABASE=...
 ```
 
-## 3. Local Development
+Optional development flag:
+
+```env
+ALLOW_DEV_DATA_TOOLS=true
+```
+
+Optional production admin token fallback:
+
+```env
+ADMIN_ACCESS_TOKEN=replace-with-secure-random-token
+```
+
+Do not commit real credentials.
+
+## Local Development
+
+Install dependencies:
 
 ```bash
 npm install
+```
+
+Run the app:
+
+```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open:
 
-## 4. Deployment on Vercel
+```text
+http://localhost:3000
+```
 
-The easiest way to deploy this Next.js app is to use the Vercel Platform.
+Recommended first local workflow:
 
-1. Push your code to a GitHub repository.
-2. Go to [Vercel](https://vercel.com/new) and import your repository.
-3. In the "Environment Variables" section, add:
-   - `NEXT_PUBLIC_SUPABASE_URL`
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-4. Click **Deploy**.
+1. Open `/development`.
+2. Type `INITIALIZE DATABASE`.
+3. Click `Initialize Database`.
+4. Type `IMPORT DUMMY DATA`.
+5. Click `Import Dummy Data`.
+6. Review `/nav`, `/capital`, `/investors`, and `/reports`.
 
-## Authentication Note
-Currently, the admin portal relies on obfuscated URLs or standard routing. If you want full role-based access control, we recommend enabling Supabase Auth and restricting access to `/investors`, `/capital`, and `/trading` to only authenticated Admin users. The `/portal/[investor_id]` route can remain open to users with the specific UUID.
+## Verification
+
+Run accounting tests:
+
+```bash
+npm test
+```
+
+Run lint:
+
+```bash
+npm run lint
+```
+
+Run production build:
+
+```bash
+npm run build
+```
+
+Expected verification at the time of this redesign:
+
+- Accounting tests cover unit issuance, unit redemption, full exit, negative NAV, late-investor isolation, rounding, and fixed-savings interest.
+- Lint passes for active application code.
+- Production build passes under Next.js 16.
+
+## Accounting Examples
+
+Deposit:
+
+```text
+Locked NAV per unit: RM 1.250000
+Investor deposit: RM 5,000.00
+Units issued: 4,000.000000
+```
+
+Withdrawal:
+
+```text
+Locked NAV per unit: RM 1.250000
+Investor requests: RM 3,125.00
+Units redeemed: 2,500.000000
+Cash paid: RM 3,125.00
+```
+
+Late investor protection:
+
+```text
+Founder deposits RM 10,000.00 at NAV 1.000000 and receives 10,000 units.
+Fund rises to RM 12,000.00, so NAV becomes 1.200000.
+Late investor deposits RM 6,000.00 and receives 5,000 units.
+Late investor does not receive the founder's prior RM 2,000.00 gain.
+```
+
+## Technical Stack
+
+- Next.js 16 App Router
+- React 19
+- TypeScript
+- Vercel Postgres / Neon-compatible Postgres
+- Tailwind CSS
+- shadcn-style UI components
+- Node.js built-in test runner
+
+## Production Notes
+
+- Replace the development auth fallback with real role-based sessions before handling real investor data.
+- Review every Server Action when adding new financial workflows.
+- Keep destructive data tools behind production gates.
+- Use database backups before any schema reset or destructive operation.
+- Maintain audit events for NAV locks, cash movements, fixed-savings records, seed imports, and data wipes.
+- Run schema initialization explicitly from `/development` or a deployment bootstrap job; normal page renders do not create or alter tables.
+- Financial pages are forced to dynamic rendering so database-backed views are resolved at request time instead of being prerendered during `next build`.

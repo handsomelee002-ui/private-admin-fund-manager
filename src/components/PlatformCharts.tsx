@@ -47,9 +47,9 @@ export function PlatformTransactionsChart({ data }: { data: any[] }) {
   );
 }
 
-export function PlatformPerformanceChart({ data }: { data: any[] }) {
-  const chartData = [...data].sort((a: any, b: any) => a.month.localeCompare(b.month)).map(p => ({
-    month: p.month,
+export function PlatformNavSnapshotChart({ data }: { data: any[] }) {
+  const chartData = [...data].sort((a: any, b: any) => String(a.week_ending).localeCompare(String(b.week_ending))).map(p => ({
+    week: p.week_ending,
     profit: parseFloat(p.unrealized_profit)
   }));
 
@@ -67,7 +67,7 @@ export function PlatformPerformanceChart({ data }: { data: any[] }) {
               <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
             </linearGradient>
           </defs>
-          <XAxis dataKey="month" axisLine={false} tickLine={false} tickMargin={10} fontSize={12} />
+          <XAxis dataKey="week" axisLine={false} tickLine={false} tickMargin={10} fontSize={12} />
           <YAxis axisLine={false} tickLine={false} tickMargin={10} fontSize={12} width={80} tickFormatter={(v) => `RM ${v}`} />
           <Tooltip 
             formatter={(value: any) => [`RM ${Number(value).toLocaleString(undefined, { minimumFractionDigits: 2 })}`, "Unrealized"]} 
