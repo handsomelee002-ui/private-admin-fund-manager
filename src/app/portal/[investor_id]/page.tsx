@@ -1,18 +1,36 @@
 import { notFound } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestorStatement } from "@/lib/fundDb";
 import { requireInvestorAccess } from "@/lib/auth";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Banknote, Percent, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function InvestorPortalPage({ params }: { params: Promise<{ investor_id: string }> }) {
+const portalUnitSorts = ["date", "type", "units", "amount"] as const;
+
+export default async function InvestorPortalPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ investor_id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { investor_id } = await params;
+  const resolvedSearchParams = await searchParams;
+  const sortState = getSortState(resolvedSearchParams, portalUnitSorts, { sort: "date", dir: "desc" });
   await requireInvestorAccess(investor_id);
   const statement = await getInvestorStatement(investor_id);
   if (!statement) notFound();
+  const sortedUnitLedger = sortRows(statement.unitLedger, sortState, {
+    date: (row: any) => row.date,
+    type: (row: any) => row.type,
+    units: (row: any) => row.units,
+    amount: (row: any) => row.gross_amount,
+  });
 
   return (
     <div className="min-h-screen bg-background p-8">
@@ -59,14 +77,14 @@ export default async function InvestorPortalPage({ params }: { params: Promise<{
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="pl-6">Date</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead className="text-right">Units</TableHead>
-                  <TableHead className="text-right pr-6">Amount</TableHead>
+                  <SortableTableHead className="pl-6" sortKey="date" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Date</SortableTableHead>
+                  <SortableTableHead sortKey="type" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Type</SortableTableHead>
+                  <SortableTableHead className="text-right" sortKey="units" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Units</SortableTableHead>
+                  <SortableTableHead className="text-right pr-6" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {statement.unitLedger.map((row: any) => (
+                {sortedUnitLedger.map((row: any) => (
                   <TableRow key={row.id}>
                     <TableCell className="pl-6">{row.date}</TableCell>
                     <TableCell>{row.type}</TableCell>
@@ -74,7 +92,7 @@ export default async function InvestorPortalPage({ params }: { params: Promise<{
                     <TableCell className="text-right pr-6">{formatMoney(row.gross_amount)}</TableCell>
                   </TableRow>
                 ))}
-                {statement.unitLedger.length === 0 && (
+                {sortedUnitLedger.length === 0 && (
                   <TableRow><TableCell colSpan={4} className="text-center text-muted-foreground py-12">No unit activity.</TableCell></TableRow>
                 )}
               </TableBody>

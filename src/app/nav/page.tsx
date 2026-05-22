@@ -4,15 +4,33 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { AddPlatformForm } from "@/components/AddPlatformForm";
 import { CreateNavWeekForm } from "@/components/CreateNavWeekForm";
 import { LockNavButton } from "@/components/LockNavButton";
+import { SortableTableHead } from "@/components/SortableTableHead";
 import { getPlatforms } from "@/actions/trading";
 import { getNavWeeks } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { getSortState, sortRows } from "@/lib/tableSorting";
 import { CalendarClock } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function NavPage() {
+const navSorts = ["week", "grossAssets", "nav", "units", "navPerUnit", "status"] as const;
+
+export default async function NavPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const resolvedSearchParams = await searchParams;
+  const sortState = getSortState(resolvedSearchParams, navSorts, { sort: "week", dir: "desc" });
   const [navWeeks, platforms] = await Promise.all([getNavWeeks(), getPlatforms()]);
+  const sortedNavWeeks = sortRows(navWeeks, sortState, {
+    week: (week: any) => week.week_ending,
+    grossAssets: (week: any) => week.gross_assets,
+    nav: (week: any) => week.net_asset_value,
+    units: (week: any) => week.total_units,
+    navPerUnit: (week: any) => week.nav_per_unit,
+    status: (week: any) => week.status,
+  });
 
   return (
     <div className="space-y-6">
@@ -38,17 +56,17 @@ export default async function NavPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="pl-6">Week Ending</TableHead>
-                <TableHead className="text-right">Gross Assets</TableHead>
-                <TableHead className="text-right">Net Asset Value</TableHead>
-                <TableHead className="text-right">Total Units</TableHead>
-                <TableHead className="text-right">NAV / Unit</TableHead>
-                <TableHead>Status</TableHead>
+                <SortableTableHead className="pl-6" sortKey="week" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Week Ending</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="grossAssets" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Gross Assets</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="nav" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Net Asset Value</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="units" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Total Units</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="navPerUnit" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>NAV / Unit</SortableTableHead>
+                <SortableTableHead sortKey="status" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Status</SortableTableHead>
                 <TableHead className="text-right pr-6">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {navWeeks.map((week: any) => (
+              {sortedNavWeeks.map((week: any) => (
                 <TableRow key={week.id}>
                   <TableCell className="pl-6 font-medium">{week.week_ending}</TableCell>
                   <TableCell className="text-right">{formatMoney(week.gross_assets)}</TableCell>
@@ -63,7 +81,7 @@ export default async function NavPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {navWeeks.length === 0 && (
+              {sortedNavWeeks.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center text-muted-foreground py-12">
                     No NAV weeks recorded. Add a platform, create a draft NAV, then lock it before recording capital movements.

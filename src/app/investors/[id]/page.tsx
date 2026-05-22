@@ -6,20 +6,40 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AddCashMovementForm } from "@/components/AddCashMovementForm";
 import { AddFixedSavingsMovementForm } from "@/components/AddFixedSavingsMovementForm";
+import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestors } from "@/actions/investors";
 import { getInvestorStatement } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { getSortState, sortRows } from "@/lib/tableSorting";
 import { ArrowLeft, Banknote, Percent, TrendingUp, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function InvestorDetailPage({ params }: { params: Promise<{ id: string }> }) {
+const activitySorts = ["date", "ledger", "type", "units", "nav", "amount"] as const;
+
+export default async function InvestorDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { id } = await params;
+  const resolvedSearchParams = await searchParams;
+  const sortState = getSortState(resolvedSearchParams, activitySorts, { sort: "date", dir: "desc" });
   const [statement, investors] = await Promise.all([
     getInvestorStatement(id),
     getInvestors(),
   ]);
   if (!statement) notFound();
+  const sortedActivityLedger = sortRows(statement.activityLedger, sortState, {
+    date: (row: any) => row.date,
+    ledger: (row: any) => row.category,
+    type: (row: any) => row.type,
+    units: (row: any) => row.units,
+    nav: (row: any) => row.navPerUnit,
+    amount: (row: any) => row.amount,
+  });
 
   return (
     <div className="space-y-6">
@@ -88,17 +108,17 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="pl-6">Date</TableHead>
-                <TableHead>Ledger</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead className="text-right">Units</TableHead>
-                <TableHead className="text-right">NAV / Unit</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
+                <SortableTableHead className="pl-6" sortKey="date" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Date</SortableTableHead>
+                <SortableTableHead sortKey="ledger" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Ledger</SortableTableHead>
+                <SortableTableHead sortKey="type" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Type</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="units" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Units</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="nav" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>NAV / Unit</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
                 <TableHead className="pr-6">Notes</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {statement.activityLedger.map((row: any) => (
+              {sortedActivityLedger.map((row: any) => (
                 <TableRow key={row.id}>
                   <TableCell className="pl-6">{row.date}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{row.category}</TableCell>
@@ -109,7 +129,7 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
                   <TableCell className="pr-6 text-muted-foreground">{row.notes || "-"}</TableCell>
                 </TableRow>
               ))}
-              {statement.activityLedger.length === 0 && (
+              {sortedActivityLedger.length === 0 && (
                 <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-12">No investor activity.</TableCell></TableRow>
               )}
             </TableBody>

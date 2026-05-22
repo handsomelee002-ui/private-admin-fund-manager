@@ -5,14 +5,33 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { AddInvestorForm } from "@/components/AddInvestorForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { EditNameDialog } from "@/components/EditNameDialog";
+import { SortableTableHead } from "@/components/SortableTableHead";
 import { deleteInvestor, getInvestors, updateInvestorName } from "@/actions/investors";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { getSortState, sortRows } from "@/lib/tableSorting";
 import { ChevronRight, Users } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function InvestorsPage() {
+const investorSorts = ["investor", "joined", "units", "ownership", "netInvested", "marketValue", "fixedSavings"] as const;
+
+export default async function InvestorsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const resolvedSearchParams = await searchParams;
+  const sortState = getSortState(resolvedSearchParams, investorSorts, { sort: "joined", dir: "desc" });
   const investors = await getInvestors();
+  const sortedInvestors = sortRows(investors, sortState, {
+    investor: (investor: any) => investor.name,
+    joined: (investor: any) => investor.joined,
+    units: (investor: any) => investor.units,
+    ownership: (investor: any) => investor.ownershipPercent,
+    netInvested: (investor: any) => investor.netInvestedCapital,
+    marketValue: (investor: any) => investor.marketValue,
+    fixedSavings: (investor: any) => investor.fixedSavingsBalance,
+  });
 
   return (
     <div className="space-y-6">
@@ -35,18 +54,18 @@ export default async function InvestorsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="pl-6">Investor</TableHead>
-                <TableHead>Joined</TableHead>
-                <TableHead className="text-right">Units</TableHead>
-                <TableHead className="text-right">Ownership</TableHead>
-                <TableHead className="text-right">Net Invested</TableHead>
-                <TableHead className="text-right">Market Value</TableHead>
-                <TableHead className="text-right">Fixed Savings</TableHead>
+                <SortableTableHead className="pl-6" sortKey="investor" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Investor</SortableTableHead>
+                <SortableTableHead sortKey="joined" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Joined</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="units" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Units</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="ownership" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Ownership</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="netInvested" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Net Invested</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="marketValue" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Market Value</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="fixedSavings" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Fixed Savings</SortableTableHead>
                 <TableHead className="text-right pr-6">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {investors.map((investor: any) => (
+              {sortedInvestors.map((investor: any) => (
                 <TableRow key={investor.id} className="group">
                   <TableCell className="pl-6">
                     <Link href={`/investors/${investor.id}`} className="flex items-center gap-3 w-fit">
@@ -75,7 +94,7 @@ export default async function InvestorsPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {investors.length === 0 && (
+              {sortedInvestors.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={8} className="text-center text-muted-foreground py-12">
                     No investors found.

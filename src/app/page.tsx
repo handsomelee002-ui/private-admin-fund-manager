@@ -1,14 +1,30 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { SortableTableHead } from "@/components/SortableTableHead";
 import { getDashboardSummary } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Activity, Banknote, Percent, Users, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function Dashboard() {
+const dashboardInvestorSorts = ["investor", "units", "ownership", "marketValue"] as const;
+
+export default async function Dashboard({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const resolvedSearchParams = await searchParams;
+  const sortState = getSortState(resolvedSearchParams, dashboardInvestorSorts, { sort: "marketValue", dir: "desc" });
   const summary = await getDashboardSummary();
+  const sortedInvestors = sortRows(summary.investors, sortState, {
+    investor: (investor: any) => investor.name,
+    units: (investor: any) => investor.units,
+    ownership: (investor: any) => investor.ownershipPercent,
+    marketValue: (investor: any) => investor.marketValue,
+  });
   const latestNav = summary.latestNav;
   const navPerUnit = latestNav ? Number(latestNav.nav_per_unit) : 1;
 
@@ -73,14 +89,14 @@ export default async function Dashboard() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="pl-6">Investor</TableHead>
-                <TableHead className="text-right">Units</TableHead>
-                <TableHead className="text-right">Ownership</TableHead>
-                <TableHead className="text-right pr-6">Market Value</TableHead>
+                <SortableTableHead className="pl-6" sortKey="investor" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Investor</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="units" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Units</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="ownership" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Ownership</SortableTableHead>
+                <SortableTableHead className="text-right pr-6" sortKey="marketValue" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Market Value</SortableTableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {summary.investors.map((investor: any) => (
+              {sortedInvestors.map((investor: any) => (
                 <TableRow key={investor.id}>
                   <TableCell className="pl-6 font-medium">{investor.name}</TableCell>
                   <TableCell className="text-right">{formatUnits(investor.units)}</TableCell>
@@ -90,7 +106,7 @@ export default async function Dashboard() {
                   <TableCell className="text-right pr-6 font-semibold">{formatMoney(investor.marketValue)}</TableCell>
                 </TableRow>
               ))}
-              {summary.investors.length === 0 && (
+              {sortedInvestors.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={4} className="text-center text-muted-foreground py-12">
                     No investors or units yet. Use Development to import dummy data or add investors manually.

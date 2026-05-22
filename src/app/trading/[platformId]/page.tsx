@@ -11,21 +11,48 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AddPlatformTransactionForm } from "@/components/AddPlatformTransactionForm";
 import { PlatformTransactionsChart, PlatformNavSnapshotChart } from "@/components/PlatformCharts";
 import { DeleteButton } from "@/components/DeleteButton";
+import { SortableTableHead } from "@/components/SortableTableHead";
 import { Badge } from "@/components/ui/badge";
 import { formatMoney } from "@/lib/formatting";
+import { getSortState, sortRows } from "@/lib/tableSorting";
 import Link from "next/link";
 import { ArrowLeft, Wallet, TrendingUp, DollarSign, ArrowDownRight, ArrowUpRight, BarChart3 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function PlatformDetailsPage({ params }: { params: Promise<{ platformId: string }> }) {
+const transactionSorts = ["date", "type", "notes", "amount", "realized"] as const;
+const snapshotSorts = ["week", "netInvested", "unrealized", "nav"] as const;
+
+export default async function PlatformDetailsPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ platformId: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { platformId } = await params;
+  const resolvedSearchParams = await searchParams;
+  const transactionSortState = getSortState(resolvedSearchParams, transactionSorts, { sort: "date", dir: "desc" }, "tx");
+  const snapshotSortState = getSortState(resolvedSearchParams, snapshotSorts, { sort: "week", dir: "desc" }, "snap");
 
   const platform = await getPlatform(platformId);
   if (!platform) return notFound();
 
   const transactions = await getPlatformTransactions(platformId);
   const snapshots = await getPlatformNavSnapshots(platformId);
+  const sortedTransactions = sortRows(transactions, transactionSortState, {
+    date: (transaction: any) => transaction.date,
+    type: (transaction: any) => transaction.type,
+    notes: (transaction: any) => transaction.notes,
+    amount: (transaction: any) => transaction.amount,
+    realized: (transaction: any) => transaction.realized_profit,
+  });
+  const sortedSnapshots = sortRows(snapshots, snapshotSortState, {
+    week: (snapshot: any) => snapshot.week_ending,
+    netInvested: (snapshot: any) => snapshot.net_invested,
+    unrealized: (snapshot: any) => snapshot.unrealized_profit,
+    nav: (snapshot: any) => snapshot.nav_per_unit,
+  });
 
   // Stats
   const netInvested = transactions.reduce((acc: number, t: any) => {
@@ -166,16 +193,16 @@ export default async function PlatformDetailsPage({ params }: { params: Promise<
                 <Table>
                   <TableHeader>
                     <TableRow className="border-b border-border/50 hover:bg-transparent">
-                      <TableHead className="pl-6">Date</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Notes</TableHead>
-                      <TableHead className="text-right">Amount</TableHead>
-                      <TableHead className="text-right">Realized</TableHead>
+                      <SortableTableHead className="pl-6" sortKey="date" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Date</SortableTableHead>
+                      <SortableTableHead sortKey="type" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Type</SortableTableHead>
+                      <SortableTableHead sortKey="notes" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Notes</SortableTableHead>
+                      <SortableTableHead className="text-right" sortKey="amount" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Amount</SortableTableHead>
+                      <SortableTableHead className="text-right" sortKey="realized" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Realized</SortableTableHead>
                       <TableHead className="text-right pr-6">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {transactions.map((t: any) => (
+                    {sortedTransactions.map((t: any) => (
                       <TableRow key={t.id} className="hover:bg-muted/20 transition-colors border-border/30">
                         <TableCell className="pl-6 text-sm">{t.date}</TableCell>
                         <TableCell>
@@ -207,7 +234,7 @@ export default async function PlatformDetailsPage({ params }: { params: Promise<
                         </TableCell>
                       </TableRow>
                     ))}
-                    {transactions.length === 0 && (
+                    {sortedTransactions.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={6} className="text-center text-muted-foreground py-12 text-sm">
                           No transactions recorded.
@@ -246,14 +273,14 @@ export default async function PlatformDetailsPage({ params }: { params: Promise<
                 <Table>
                   <TableHeader>
                     <TableRow className="border-b border-border/50 hover:bg-transparent">
-                      <TableHead className="pl-6">Week Ending</TableHead>
-                      <TableHead className="text-right">Net Invested</TableHead>
-                      <TableHead className="text-right">Unrealized Profit</TableHead>
-                      <TableHead className="text-right pr-6">NAV / Unit</TableHead>
+                      <SortableTableHead className="pl-6" sortKey="week" activeSort={snapshotSortState.sort} activeDir={snapshotSortState.dir} searchParams={resolvedSearchParams} prefix="snap">Week Ending</SortableTableHead>
+                      <SortableTableHead className="text-right" sortKey="netInvested" activeSort={snapshotSortState.sort} activeDir={snapshotSortState.dir} searchParams={resolvedSearchParams} prefix="snap">Net Invested</SortableTableHead>
+                      <SortableTableHead className="text-right" sortKey="unrealized" activeSort={snapshotSortState.sort} activeDir={snapshotSortState.dir} searchParams={resolvedSearchParams} prefix="snap">Unrealized Profit</SortableTableHead>
+                      <SortableTableHead className="text-right pr-6" sortKey="nav" activeSort={snapshotSortState.sort} activeDir={snapshotSortState.dir} searchParams={resolvedSearchParams} prefix="snap">NAV / Unit</SortableTableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {snapshots.map((p: any) => {
+                    {sortedSnapshots.map((p: any) => {
                       const profit = parseFloat(p.unrealized_profit);
                       return (
                         <TableRow key={p.id} className="hover:bg-muted/20 transition-colors border-border/30">
@@ -268,7 +295,7 @@ export default async function PlatformDetailsPage({ params }: { params: Promise<
                         </TableRow>
                       );
                     })}
-                    {snapshots.length === 0 && (
+                    {sortedSnapshots.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={4} className="text-center text-muted-foreground py-12 text-sm">
                           No weekly NAV snapshots recorded. Update platform unrealized profit when creating Weekly NAV.

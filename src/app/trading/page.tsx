@@ -4,14 +4,32 @@ import { getPlatforms, deletePlatform, updatePlatformName } from "@/actions/trad
 import { AddPlatformForm } from "@/components/AddPlatformForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { EditNameDialog } from "@/components/EditNameDialog";
+import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
+import { getSortState, sortRows } from "@/lib/tableSorting";
 import Link from "next/link";
 import { ChevronRight, Building2, TrendingUp, Wallet, DollarSign, ArrowRightLeft } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function TradingLedgerPage() {
+const platformSorts = ["platform", "created", "netInvested", "realized", "unrealized", "totalValue"] as const;
+
+export default async function TradingLedgerPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const resolvedSearchParams = await searchParams;
+  const sortState = getSortState(resolvedSearchParams, platformSorts, { sort: "created", dir: "desc" });
   const platforms = await getPlatforms();
+  const sortedPlatforms = sortRows(platforms, sortState, {
+    platform: (platform: any) => platform.name,
+    created: (platform: any) => platform.createdAt,
+    netInvested: (platform: any) => platform.netInvested,
+    realized: (platform: any) => platform.realizedProfit,
+    unrealized: (platform: any) => platform.unrealizedProfit,
+    totalValue: (platform: any) => platform.totalValue,
+  });
 
   const totalNetInvested = platforms.reduce((sum: number, p: any) => sum + p.netInvested, 0);
   const totalRealized = platforms.reduce((sum: number, p: any) => sum + p.realizedProfit, 0);
@@ -110,17 +128,17 @@ export default async function TradingLedgerPage() {
           <Table>
             <TableHeader>
               <TableRow className="border-b border-border/50 hover:bg-transparent">
-                <TableHead className="pl-6">Platform</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead className="text-right">Net Invested</TableHead>
-                <TableHead className="text-right">Realized Profit</TableHead>
-                <TableHead className="text-right">Unrealized P&L</TableHead>
-                <TableHead className="text-right">Total Value</TableHead>
+                <SortableTableHead className="pl-6" sortKey="platform" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Platform</SortableTableHead>
+                <SortableTableHead sortKey="created" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Created</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="netInvested" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Net Invested</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="realized" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Realized Profit</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="unrealized" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Unrealized P&L</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="totalValue" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Total Value</SortableTableHead>
                 <TableHead className="text-right pr-6">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {platforms.map((platform: any) => {
+              {sortedPlatforms.map((platform: any) => {
                 const pnlPct = platform.netInvested > 0
                   ? ((platform.unrealizedProfit / platform.netInvested) * 100)
                   : 0;
@@ -178,7 +196,7 @@ export default async function TradingLedgerPage() {
                   </TableRow>
                 );
               })}
-              {platforms.length === 0 && (
+              {sortedPlatforms.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center text-muted-foreground py-16 text-sm">
                     No trading platforms found. Add your first platform to begin.

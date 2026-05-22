@@ -1,14 +1,38 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { SortableTableHead } from "@/components/SortableTableHead";
 import { getPlatforms } from "@/actions/trading";
 import { getFundSummaryMetrics, getNavWeeks } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { getSortState, sortRows } from "@/lib/tableSorting";
 import { BarChart3, DollarSign, TrendingUp, Users, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function ReportsPage() {
+const reportPlatformSorts = ["platform", "netInvested", "realized", "unrealized"] as const;
+const reportNavSorts = ["week", "nav", "units", "navPerUnit"] as const;
+
+export default async function ReportsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const resolvedSearchParams = await searchParams;
+  const platformSortState = getSortState(resolvedSearchParams, reportPlatformSorts, { sort: "platform", dir: "asc" }, "platform");
+  const navSortState = getSortState(resolvedSearchParams, reportNavSorts, { sort: "week", dir: "desc" }, "nav");
   const [summary, navWeeks, platforms] = await Promise.all([getFundSummaryMetrics(), getNavWeeks(), getPlatforms()]);
+  const sortedPlatforms = sortRows(platforms, platformSortState, {
+    platform: (platform: any) => platform.name,
+    netInvested: (platform: any) => platform.netInvested,
+    realized: (platform: any) => platform.realizedProfit,
+    unrealized: (platform: any) => platform.unrealizedProfit,
+  });
+  const sortedNavWeeks = sortRows(navWeeks, navSortState, {
+    week: (week: any) => week.week_ending,
+    nav: (week: any) => week.net_asset_value,
+    units: (week: any) => week.total_units,
+    navPerUnit: (week: any) => week.nav_per_unit,
+  });
   const totalRealized = platforms.reduce((sum: number, platform: any) => sum + platform.realizedProfit, 0);
 
   return (
@@ -62,14 +86,14 @@ export default async function ReportsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="pl-6">Platform</TableHead>
-                <TableHead className="text-right">Net Invested</TableHead>
-                <TableHead className="text-right">Realized Profit</TableHead>
-                <TableHead className="text-right pr-6">Latest Unrealized</TableHead>
+                <SortableTableHead className="pl-6" sortKey="platform" activeSort={platformSortState.sort} activeDir={platformSortState.dir} searchParams={resolvedSearchParams} prefix="platform">Platform</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="netInvested" activeSort={platformSortState.sort} activeDir={platformSortState.dir} searchParams={resolvedSearchParams} prefix="platform">Net Invested</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="realized" activeSort={platformSortState.sort} activeDir={platformSortState.dir} searchParams={resolvedSearchParams} prefix="platform">Realized Profit</SortableTableHead>
+                <SortableTableHead className="text-right pr-6" sortKey="unrealized" activeSort={platformSortState.sort} activeDir={platformSortState.dir} searchParams={resolvedSearchParams} prefix="platform">Latest Unrealized</SortableTableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {platforms.map((platform: any) => (
+              {sortedPlatforms.map((platform: any) => (
                 <TableRow key={platform.id}>
                   <TableCell className="pl-6 font-medium">{platform.name}</TableCell>
                   <TableCell className="text-right">{formatMoney(platform.netInvested)}</TableCell>
@@ -77,7 +101,7 @@ export default async function ReportsPage() {
                   <TableCell className={`text-right pr-6 font-semibold ${platform.unrealizedProfit >= 0 ? "text-blue-400" : "text-red-400"}`}>{formatMoney(platform.unrealizedProfit)}</TableCell>
                 </TableRow>
               ))}
-              {platforms.length === 0 && (
+              {sortedPlatforms.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={4} className="text-center text-muted-foreground py-12">No platforms recorded.</TableCell>
                 </TableRow>
@@ -93,14 +117,14 @@ export default async function ReportsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="pl-6">Week Ending</TableHead>
-                <TableHead className="text-right">Net Asset Value</TableHead>
-                <TableHead className="text-right">Total Units</TableHead>
-                <TableHead className="text-right pr-6">NAV / Unit</TableHead>
+                <SortableTableHead className="pl-6" sortKey="week" activeSort={navSortState.sort} activeDir={navSortState.dir} searchParams={resolvedSearchParams} prefix="nav">Week Ending</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="nav" activeSort={navSortState.sort} activeDir={navSortState.dir} searchParams={resolvedSearchParams} prefix="nav">Net Asset Value</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="units" activeSort={navSortState.sort} activeDir={navSortState.dir} searchParams={resolvedSearchParams} prefix="nav">Total Units</SortableTableHead>
+                <SortableTableHead className="text-right pr-6" sortKey="navPerUnit" activeSort={navSortState.sort} activeDir={navSortState.dir} searchParams={resolvedSearchParams} prefix="nav">NAV / Unit</SortableTableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {navWeeks.map((week: any) => (
+              {sortedNavWeeks.map((week: any) => (
                 <TableRow key={week.id}>
                   <TableCell className="pl-6">{week.week_ending}</TableCell>
                   <TableCell className="text-right">{formatMoney(week.net_asset_value)}</TableCell>
@@ -108,7 +132,7 @@ export default async function ReportsPage() {
                   <TableCell className="text-right pr-6 font-semibold text-primary">{Number(week.nav_per_unit).toFixed(6)}</TableCell>
                 </TableRow>
               ))}
-              {navWeeks.length === 0 && (
+              {sortedNavWeeks.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={4} className="text-center text-muted-foreground py-12">No NAV data.</TableCell>
                 </TableRow>

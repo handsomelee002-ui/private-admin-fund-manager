@@ -4,7 +4,9 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SettleClaimDialog } from "@/components/SettleClaimDialog";
 import { DeleteButton } from "@/components/DeleteButton";
+import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
+import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Handshake, Clock, CheckCircle, AlertCircle, DollarSign } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -31,8 +33,27 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-export default async function ClaimsPage() {
+const claimSorts = ["investor", "claimDate", "gross", "fee", "net", "settled", "outstanding", "status", "settledDate"] as const;
+
+export default async function ClaimsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const resolvedSearchParams = await searchParams;
+  const sortState = getSortState(resolvedSearchParams, claimSorts, { sort: "claimDate", dir: "desc" });
   const claims = await getAllClaims();
+  const sortedClaims = sortRows(claims, sortState, {
+    investor: (claim: any) => claim.investor_name,
+    claimDate: (claim: any) => claim.claim_date,
+    gross: (claim: any) => claim.locked_amount,
+    fee: (claim: any) => claim.brokerage_fee,
+    net: (claim: any) => parseFloat(claim.locked_amount) - parseFloat(claim.brokerage_fee || "0"),
+    settled: (claim: any) => claim.settled_amount,
+    outstanding: (claim: any) => Math.max(0, parseFloat(claim.locked_amount) - parseFloat(claim.brokerage_fee || "0") - parseFloat(claim.settled_amount)),
+    status: (claim: any) => claim.status,
+    settledDate: (claim: any) => claim.settled_date,
+  });
 
   const totalLocked   = claims.reduce((s: number, c: any) => s + parseFloat(c.locked_amount), 0);
   const totalSettled  = claims.reduce((s: number, c: any) => s + parseFloat(c.settled_amount), 0);
@@ -125,21 +146,21 @@ export default async function ClaimsPage() {
           <Table>
             <TableHeader>
               <TableRow className="border-b border-border/50 hover:bg-transparent">
-                <TableHead className="pl-6">Investor</TableHead>
-                <TableHead>Claim Date</TableHead>
-                <TableHead className="text-right">Gross (IOU)</TableHead>
-                <TableHead className="text-right">Perf. Fee</TableHead>
-                <TableHead className="text-right">Net Payable</TableHead>
-                <TableHead className="text-right">Settled</TableHead>
-                <TableHead className="text-right">Outstanding</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Settled On</TableHead>
+                <SortableTableHead className="pl-6" sortKey="investor" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Investor</SortableTableHead>
+                <SortableTableHead sortKey="claimDate" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Claim Date</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="gross" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Gross (IOU)</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="fee" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Perf. Fee</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="net" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Net Payable</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="settled" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Settled</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="outstanding" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Outstanding</SortableTableHead>
+                <SortableTableHead sortKey="status" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Status</SortableTableHead>
+                <SortableTableHead sortKey="settledDate" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Settled On</SortableTableHead>
                 <TableHead>Notes</TableHead>
                 <TableHead className="text-right pr-6">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {claims.map((c: any) => {
+              {sortedClaims.map((c: any) => {
                 const locked       = parseFloat(c.locked_amount);
                 const brokerageFee = parseFloat(c.brokerage_fee || "0");
                 const netPayable   = locked - brokerageFee;
@@ -195,7 +216,7 @@ export default async function ClaimsPage() {
                   </TableRow>
                 );
               })}
-              {claims.length === 0 && (
+              {sortedClaims.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={11} className="text-center text-muted-foreground py-16 text-sm">
                     No profit claims recorded yet. Lock a claim from an investor&apos;s profile when they withdraw capital.

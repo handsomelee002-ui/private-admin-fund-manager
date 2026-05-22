@@ -12,12 +12,22 @@ import { getInvestors } from "@/actions/investors";
 import { BrokerageFeeConfig } from "@/components/BrokerageFeeConfig";
 import { AddBonusForm } from "@/components/AddBonusForm";
 import { DeleteButton } from "@/components/DeleteButton";
+import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
+import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Percent, DollarSign, TrendingDown, TrendingUp, Gift, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function SettingsPage() {
+const bonusSorts = ["investor", "ledger", "date", "amount"] as const;
+
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const resolvedSearchParams = await searchParams;
+  const sortState = getSortState(resolvedSearchParams, bonusSorts, { sort: "date", dir: "desc" });
   // ── Config ───────────────────────────────────────────────────────────────────
   const brokerageFeeRate = await getBrokerageFeeRate();
 
@@ -64,6 +74,12 @@ export default async function SettingsPage() {
 
   // ── Total Bonuses Paid ───────────────────────────────────────────────────────
   const bonusPayments = await getAllBonusPayments();
+  const sortedBonusPayments = sortRows(bonusPayments, sortState, {
+    investor: (bonus: any) => bonus.investor_name,
+    ledger: (bonus: any) => bonus.ledger_type,
+    date: (bonus: any) => bonus.date,
+    amount: (bonus: any) => bonus.amount,
+  });
   const totalBonusPaid = bonusPayments.reduce(
     (sum: number, b: any) => sum + (b.ledger_type === "equity" ? parseFloat(b.amount) : 0),
     0,
@@ -220,16 +236,16 @@ export default async function SettingsPage() {
           <Table>
             <TableHeader>
               <TableRow className="border-b border-border/50 hover:bg-transparent">
-                <TableHead className="pl-6">Investor</TableHead>
-                <TableHead>Ledger</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
+                <SortableTableHead className="pl-6" sortKey="investor" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Investor</SortableTableHead>
+                <SortableTableHead sortKey="ledger" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Ledger</SortableTableHead>
+                <SortableTableHead sortKey="date" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Date</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
                 <TableHead>Notes</TableHead>
                 <TableHead className="text-right pr-6">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {bonusPayments.map((b: any) => (
+              {sortedBonusPayments.map((b: any) => (
                 <TableRow key={b.id} className="hover:bg-muted/20 transition-colors border-border/30">
                   <TableCell className="pl-6">
                     <div className="flex items-center gap-2">
@@ -267,7 +283,7 @@ export default async function SettingsPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {bonusPayments.length === 0 && (
+              {sortedBonusPayments.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center text-muted-foreground py-16 text-sm">
                     No bonus payments yet. Use &quot;Add Bonus&quot; to distribute a special payment.
