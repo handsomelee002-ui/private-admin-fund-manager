@@ -9,7 +9,7 @@ import { AddFixedSavingsMovementForm } from "@/components/AddFixedSavingsMovemen
 import { getInvestors } from "@/actions/investors";
 import { getInvestorStatement } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
-import { ArrowLeft, Banknote, Percent, Wallet } from "lucide-react";
+import { ArrowLeft, Banknote, Percent, TrendingUp, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -41,7 +41,14 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-5">
+        <Card className="bg-card/50 border-border/50">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Net Invested</CardTitle>
+            <TrendingUp className="h-4 w-4 text-sky-400" />
+          </CardHeader>
+          <CardContent><div className="text-2xl font-bold text-sky-400">{formatMoney(statement.netInvestedCapital)}</div></CardContent>
+        </Card>
         <Card className="bg-card/50 border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm text-muted-foreground">Market Value</CardTitle>
@@ -95,7 +102,7 @@ export default async function InvestorDetailPage({ params }: { params: Promise<{
                 <TableRow key={row.id}>
                   <TableCell className="pl-6">{row.date}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{row.category}</TableCell>
-                  <TableCell><Badge variant={["UnitIssue", "Deposit", "Bonus"].includes(row.type) ? "default" : "destructive"}>{row.type}</Badge></TableCell>
+                  <TableCell><Badge variant={["UnitIssue", "BonusIssue", "Deposit", "Bonus"].includes(row.type) ? "default" : "destructive"}>{row.type}</Badge></TableCell>
                   <TableCell className="text-right">{row.units ? formatUnits(row.units) : "-"}</TableCell>
                   <TableCell className="text-right">{row.navPerUnit ? Number(row.navPerUnit).toFixed(6) : "-"}</TableCell>
                   <TableCell className={`text-right font-semibold ${row.amount >= 0 ? "" : "text-red-400"}`}>{formatMoney(row.amount)}</TableCell>

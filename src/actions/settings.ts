@@ -2,6 +2,7 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
+import { issueUnitsForDeposit, redeemUnitsForWithdrawal } from "@/lib/accounting";
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
@@ -99,9 +100,41 @@ async function insertBonusRecord(
   notes: string,
 ) {
   if (ledgerType === "equity") {
+    const latestNav = await sql`
+      SELECT id, nav_per_unit
+      FROM nav_weeks
+      WHERE status = 'locked'
+      ORDER BY week_ending DESC
+      LIMIT 1
+    `;
+    const navWeek = latestNav.rows[0];
+    if (!navWeek) {
+      throw new Error("Equity bonuses require at least one locked weekly NAV.");
+    }
+    const navPerUnit = parseFloat(navWeek.nav_per_unit);
+    const absAmount = Math.abs(amount);
+    const isReversal = amount < 0;
+    const redemption = isReversal
+      ? redeemUnitsForWithdrawal({
+          requestedAmount: absAmount,
+          navPerUnit,
+          availableUnits: await getInvestorUnitBalance(investorId),
+        })
+      : null;
+    const units = redemption?.unitsRedeemed ?? issueUnitsForDeposit({ amount: absAmount, navPerUnit });
+    const grossAmount = redemption?.grossAmount ?? absAmount;
     const r = await sql`
-      INSERT INTO capital_ledger (investor_id, date, type, amount, notes)
-      VALUES (${investorId}, ${date}, 'Bonus', ${amount}, ${notes})
+      INSERT INTO investor_unit_ledger (investor_id, nav_week_id, date, type, units, nav_per_unit, gross_amount, notes)
+      VALUES (
+        ${investorId},
+        ${navWeek.id},
+        ${date},
+        ${isReversal ? "UnitRedemption" : "UnitIssue"},
+        ${units},
+        ${navPerUnit},
+        ${grossAmount},
+        ${notes}
+      )
       RETURNING id
     `;
     const sourceId = r.rows[0]?.id;
@@ -122,6 +155,15 @@ async function insertBonusRecord(
       VALUES (${investorId}, 'fixed_savings', ${sourceId}, ${amount}, ${date}, ${notes})
     `;
   }
+}
+
+async function getInvestorUnitBalance(investorId: string) {
+  const res = await sql`
+    SELECT COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as total
+    FROM investor_unit_ledger
+    WHERE investor_id = ${investorId}
+  `;
+  return parseFloat(res.rows[0]?.total || "0");
 }
 
 export async function addBonusPayment(formData: FormData) {
@@ -207,6 +249,7 @@ export async function deleteBonusPayment(id: string) {
       const { source_id, ledger_type } = log.rows[0];
       if (source_id) {
         if (ledger_type === "equity") {
+          await sql`DELETE FROM investor_unit_ledger WHERE id = ${source_id}`;
           await sql`DELETE FROM capital_ledger WHERE id = ${source_id} AND type = 'Bonus'`;
         } else {
           await sql`DELETE FROM fixed_savings_ledger WHERE id = ${source_id} AND type = 'Bonus'`;

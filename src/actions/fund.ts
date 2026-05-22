@@ -29,6 +29,8 @@ function revalidateFundViews(investorId?: string) {
   revalidatePath("/");
   revalidatePath("/nav");
   revalidatePath("/capital");
+  revalidatePath("/settings");
+  revalidatePath("/claims");
   revalidatePath("/fixed-savings");
   revalidatePath("/investors");
   revalidatePath("/reports");
@@ -86,7 +88,7 @@ export async function recordCashMovementAction(formData: FormData) {
       return { error: "Investor, date, and movement type are required." };
     }
     const withdrawAll = type === "Withdrawal" && formData.get("withdraw_all") === "true";
-    await recordCashMovement({
+    const result = await recordCashMovement({
       investorId,
       date,
       type,
@@ -94,6 +96,7 @@ export async function recordCashMovementAction(formData: FormData) {
       withdrawAll,
       notes: formData.get("notes")?.toString() || "",
     });
+    if ("error" in result) return result;
     revalidateFundViews(investorId);
     return { success: true };
   } catch (error) {

@@ -39,6 +39,7 @@ export default async function InvestorsPage() {
                 <TableHead>Joined</TableHead>
                 <TableHead className="text-right">Units</TableHead>
                 <TableHead className="text-right">Ownership</TableHead>
+                <TableHead className="text-right">Net Invested</TableHead>
                 <TableHead className="text-right">Market Value</TableHead>
                 <TableHead className="text-right">Fixed Savings</TableHead>
                 <TableHead className="text-right pr-6">Actions</TableHead>
@@ -63,6 +64,7 @@ export default async function InvestorsPage() {
                   <TableCell className="text-right">
                     <Badge variant="outline">{investor.ownershipPercent.toFixed(4)}%</Badge>
                   </TableCell>
+                  <TableCell className="text-right font-semibold">{formatMoney(investor.netInvestedCapital)}</TableCell>
                   <TableCell className="text-right font-semibold">{formatMoney(investor.marketValue)}</TableCell>
                   <TableCell className="text-right font-semibold text-amber-400">{formatMoney(investor.fixedSavingsBalance)}</TableCell>
                   <TableCell className="text-right pr-6">
@@ -75,7 +77,7 @@ export default async function InvestorsPage() {
               ))}
               {investors.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground py-12">
+                  <TableCell colSpan={8} className="text-center text-muted-foreground py-12">
                     No investors found.
                   </TableCell>
                 </TableRow>

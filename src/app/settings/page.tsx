@@ -33,16 +33,24 @@ export default async function SettingsPage() {
 
   // ── Brokerage earned from settled profit claims (pre-calculated at lock) ─────
   let claimsBrokerageEarned = 0;
+  let withdrawalBrokerageEarned = 0;
   try {
     const claimsFeesRes = await sql`
       SELECT COALESCE(SUM(brokerage_fee), 0) as total
       FROM investor_profit_claims
       WHERE status = 'settled'
     `;
-    claimsBrokerageEarned = parseFloat(claimsFeesRes.rows[0]?.total || 0);
+    claimsBrokerageEarned = parseFloat(claimsFeesRes.rows[0]?.total || "0");
+  } catch { /* table may not exist yet */ }
+  try {
+    const withdrawalFeesRes = await sql`
+      SELECT COALESCE(SUM(fee_amount), 0) as total
+      FROM performance_fees
+    `;
+    withdrawalBrokerageEarned = parseFloat(withdrawalFeesRes.rows[0]?.total || "0");
   } catch { /* table may not exist yet */ }
 
-  const brokerageFeeEarned = platformBrokerageEarned + claimsBrokerageEarned;
+  const brokerageFeeEarned = platformBrokerageEarned + claimsBrokerageEarned + withdrawalBrokerageEarned;
   const totalRealized = netRealized; // for display
 
   // ── Total Interest Owed to All Investors ─────────────────────────────────────
@@ -115,7 +123,7 @@ export default async function SettingsPage() {
             <CardContent>
               <div className="text-xl font-bold text-emerald-400">{fmt(brokerageFeeEarned)}</div>
               <p className="text-[10px] text-muted-foreground mt-1">
-                Platform: {fmt(platformBrokerageEarned)} + Claims: {fmt(claimsBrokerageEarned)}
+                Platform: {fmt(platformBrokerageEarned)} + Claims: {fmt(claimsBrokerageEarned)} + Withdrawals: {fmt(withdrawalBrokerageEarned)}
               </p>
               <p className="text-[10px] text-muted-foreground">Net realized: {totalRealized >= 0 ? "+" : ""}{fmt(totalRealized)}</p>
             </CardContent>

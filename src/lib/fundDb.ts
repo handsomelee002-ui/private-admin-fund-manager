@@ -45,6 +45,14 @@ type FixedSavingsLedgerRow = {
   interest_rate?: string | number | null;
 };
 
+type EquityUnitLedgerRow = {
+  date: string;
+  type: string;
+  units: string | number;
+  gross_amount: string | number;
+  is_bonus?: boolean | string | number | null;
+};
+
 type FixedSavingsInput = {
   investorId: string;
   date: string;
@@ -115,6 +123,38 @@ function ledgerAmount(row: FixedSavingsLedgerRow) {
 function ledgerRate(row: FixedSavingsLedgerRow, fallback = 0) {
   const rawRate = row.annual_rate_percent ?? row.interest_rate ?? fallback;
   return parseFloat(String(rawRate || "0"));
+}
+
+function calculateEquityCapitalPosition(rows: EquityUnitLedgerRow[]) {
+  let units = 0;
+  let investedCapital = 0;
+
+  for (const row of rows) {
+    const movementUnits = roundUnits(parseFloat(String(row.units || "0")));
+    const grossAmount = roundMoney(parseFloat(String(row.gross_amount || "0")));
+
+    if (row.type === "UnitIssue") {
+      units = roundUnits(units + movementUnits);
+      if (!row.is_bonus) {
+        investedCapital = roundMoney(investedCapital + grossAmount);
+      }
+    } else if (row.type === "UnitRedemption" && units > 0) {
+      const unitsRedeemed = Math.min(movementUnits, units);
+      const redeemedBasis = row.is_bonus ? 0 : roundMoney((investedCapital / units) * unitsRedeemed);
+      units = roundUnits(units - unitsRedeemed);
+      investedCapital = roundMoney(Math.max(0, investedCapital - redeemedBasis));
+    }
+  }
+
+  return {
+    units,
+    investedCapital,
+  };
+}
+
+async function getBrokerageFeeRateValue() {
+  const res = await sql`SELECT value FROM fund_config WHERE key = 'brokerage_fee_pct'`;
+  return parseFloat(res.rows[0]?.value ?? DEFAULT_BROKERAGE_FEE_RATE);
 }
 
 export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], endDate = todayIso()) {
@@ -578,12 +618,23 @@ export async function recordCashMovement(input: CashMovementInput) {
   let ledgerType = "UnitIssue";
   let units = 0;
   let grossAmount = roundMoney(input.amount);
+  let brokerageFee = 0;
+  let realizedGain = 0;
 
   if (input.type === "Deposit") {
     units = issueUnitsForDeposit({ amount: input.amount, navPerUnit });
   } else {
     ledgerType = "UnitRedemption";
-    const availableUnits = await getInvestorUnits(input.investorId);
+    const priorLedger = await sql`
+      SELECT iul.type, iul.units, iul.gross_amount, TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
+        CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
+      FROM investor_unit_ledger iul
+      LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
+      WHERE iul.investor_id = ${input.investorId}
+      ORDER BY iul.date ASC, iul.created_at ASC
+    `;
+    const equityPosition = calculateEquityCapitalPosition(priorLedger.rows as EquityUnitLedgerRow[]);
+    const availableUnits = roundUnits(equityPosition.units);
     if (input.withdrawAll) {
       if (availableUnits <= 0) throw new Error("No units available to redeem.");
       units = availableUnits;
@@ -597,21 +648,65 @@ export async function recordCashMovement(input: CashMovementInput) {
       units = redemption.unitsRedeemed;
       grossAmount = redemption.grossAmount;
     }
+    const redeemedBasis = roundMoney(availableUnits > 0 ? (equityPosition.investedCapital / availableUnits) * units : 0);
+    realizedGain = roundMoney(Math.max(0, grossAmount - redeemedBasis));
+    if (realizedGain > 0) {
+      const brokerageRate = await getBrokerageFeeRateValue();
+      brokerageFee = roundMoney(realizedGain * (brokerageRate / 100));
+      if (brokerageFee > 0) {
+        await sql`
+          INSERT INTO performance_fees (investor_id, nav_week_id, crystallized_gain, fee_rate_percent, fee_amount, date, notes)
+          VALUES (
+            ${input.investorId},
+            ${navWeek.id},
+            ${realizedGain},
+            ${brokerageRate},
+            ${brokerageFee},
+            ${input.date},
+            ${`Withdrawal brokerage fee on realized gain RM ${realizedGain.toFixed(2)}`}
+          )
+        `;
+      }
+    }
   }
 
   const unitLedger = await sql`
     INSERT INTO investor_unit_ledger (investor_id, nav_week_id, date, type, units, nav_per_unit, gross_amount, notes)
-    VALUES (${input.investorId}, ${navWeek.id}, ${input.date}, ${ledgerType}, ${units}, ${navPerUnit}, ${grossAmount}, ${input.notes || ""})
+    VALUES (
+      ${input.investorId},
+      ${navWeek.id},
+      ${input.date},
+      ${ledgerType},
+      ${units},
+      ${navPerUnit},
+      ${grossAmount},
+      ${input.type === "Withdrawal" && brokerageFee > 0
+        ? `${input.notes || "Withdrawal"} | Fee RM ${brokerageFee.toFixed(2)} on realized gain RM ${realizedGain.toFixed(2)}`
+        : input.notes || ""}
+    )
     RETURNING id
   `;
   await sql`
     INSERT INTO cash_movements (investor_id, nav_week_id, unit_ledger_id, date, type, amount, status, notes)
-    VALUES (${input.investorId}, ${navWeek.id}, ${unitLedger.rows[0].id}, ${input.date}, ${input.type}, ${grossAmount}, 'settled', ${input.notes || ""})
+    VALUES (
+      ${input.investorId},
+      ${navWeek.id},
+      ${unitLedger.rows[0].id},
+      ${input.date},
+      ${input.type},
+      ${grossAmount},
+      'settled',
+      ${input.type === "Withdrawal" && brokerageFee > 0
+        ? `${input.notes || "Withdrawal"} | Brokerage fee RM ${brokerageFee.toFixed(2)}`
+        : input.notes || ""}
+    )
   `;
   await writeAuditEvent("cash_movement.settle", "cash_movements", unitLedger.rows[0].id, {
     type: input.type,
     amount: grossAmount,
     units,
+    brokerageFee,
+    realizedGain,
   });
   return { success: true };
 }
@@ -685,7 +780,7 @@ export async function getFixedSavingsLedger() {
 }
 
 export async function getInvestorsWithBalances() {
-  const [res, savings] = await Promise.all([
+  const [res, savings, equityLedger] = await Promise.all([
     sql`
       WITH latest_nav AS (
         SELECT nav_per_unit
@@ -718,12 +813,26 @@ export async function getInvestorsWithBalances() {
       FROM fixed_savings_ledger
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
     `,
+    sql`
+      SELECT iul.investor_id, iul.type, iul.units, iul.gross_amount, TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
+        CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
+      FROM investor_unit_ledger iul
+      LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
+      ORDER BY iul.date ASC, iul.created_at ASC
+    `,
   ]);
   const savingsByInvestor = calculateFixedSavingsLiability(savings.rows as FixedSavingsLedgerRow[]).byInvestor;
+  const equityRowsByInvestor = new Map<string, EquityUnitLedgerRow[]>();
+  for (const row of equityLedger.rows as (EquityUnitLedgerRow & { investor_id: string })[]) {
+    const rows = equityRowsByInvestor.get(row.investor_id) ?? [];
+    rows.push(row);
+    equityRowsByInvestor.set(row.investor_id, rows);
+  }
   return res.rows.map((row: any) => {
     const units = roundUnits(parseFloat(row.units || "0"));
     const totalUnits = roundUnits(parseFloat(row.total_units || "0"));
     const navPerUnit = parseFloat(row.nav_per_unit || "1");
+    const equityPosition = calculateEquityCapitalPosition(equityRowsByInvestor.get(row.id) ?? []);
     const savingsSummary = savingsByInvestor.get(row.id) ?? {
       principal: 0,
       accruedInterest: 0,
@@ -734,6 +843,7 @@ export async function getInvestorsWithBalances() {
     return {
       ...row,
       units,
+      netInvestedCapital: equityPosition.investedCapital,
       marketValue: roundMoney(units * navPerUnit),
       ownershipPercent: calculateOwnershipPercent({ investorUnits: units, totalUnits }),
       fixedSavingsPrincipal: savingsSummary.principal,
@@ -744,7 +854,7 @@ export async function getInvestorsWithBalances() {
 }
 
 export async function getInvestorStatement(investorId: string) {
-  const [summary, unitLedger, cash, savings, bonuses] = await Promise.all([
+  const [summary, unitLedger, cash, savings, bonuses, fees] = await Promise.all([
     sql`
       WITH latest_nav AS (
         SELECT id,
@@ -777,10 +887,12 @@ export async function getInvestorStatement(investorId: string) {
       WHERE i.id = ${investorId}
     `,
     sql`
-      SELECT *, TO_CHAR(date, 'YYYY-MM-DD') as date
-      FROM investor_unit_ledger
-      WHERE investor_id = ${investorId}
-      ORDER BY investor_unit_ledger.date DESC, investor_unit_ledger.created_at DESC
+      SELECT iul.*, TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
+        CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
+      FROM investor_unit_ledger iul
+      LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
+      WHERE iul.investor_id = ${investorId}
+      ORDER BY iul.date DESC, iul.created_at DESC
     `,
     sql`
       SELECT *, TO_CHAR(date, 'YYYY-MM-DD') as date
@@ -795,10 +907,18 @@ export async function getInvestorStatement(investorId: string) {
       ORDER BY fixed_savings_ledger.date DESC, fixed_savings_ledger.created_at DESC
     `,
     sql`
-      SELECT id, ledger_type, amount, TO_CHAR(date, 'YYYY-MM-DD') as date, notes, created_at
-      FROM bonus_payments
+      SELECT bp.id, bp.ledger_type, bp.amount, TO_CHAR(bp.date, 'YYYY-MM-DD') as date, bp.notes, bp.created_at,
+        iul.id as source_unit_id
+      FROM bonus_payments bp
+      LEFT JOIN investor_unit_ledger iul ON iul.id = bp.source_id
+      WHERE bp.investor_id = ${investorId}
+      ORDER BY bp.date DESC, bp.created_at DESC
+    `,
+    sql`
+      SELECT id, crystallized_gain, fee_rate_percent, fee_amount, TO_CHAR(date, 'YYYY-MM-DD') as date, notes, created_at
+      FROM performance_fees
       WHERE investor_id = ${investorId}
-      ORDER BY bonus_payments.date DESC, bonus_payments.created_at DESC
+      ORDER BY performance_fees.date DESC, performance_fees.created_at DESC
     `,
   ]);
   const row = summary.rows[0] ?? null;
@@ -809,12 +929,20 @@ export async function getInvestorStatement(investorId: string) {
   const units = roundUnits(parseFloat(row.units || "0"));
   const totalUnits = roundUnits(parseFloat(row.total_fund_units || "0"));
   const navPerUnit = parseFloat(row.nav_per_unit || "1");
+  const equityPosition = calculateEquityCapitalPosition(
+    [...unitLedger.rows]
+      .sort((a: any, b: any) => {
+        const dateOrder = String(a.date).localeCompare(String(b.date));
+        if (dateOrder !== 0) return dateOrder;
+        return String(a.created_at || "").localeCompare(String(b.created_at || ""));
+      }) as EquityUnitLedgerRow[],
+  );
   const activityLedger = [
     ...unitLedger.rows.map((movement: any) => ({
       id: `unit-${movement.id}`,
       date: movement.date,
       category: "Equity Units",
-      type: movement.type,
+      type: movement.is_bonus && movement.type === "UnitIssue" ? "BonusIssue" : movement.type,
       amount: parseFloat(movement.gross_amount || "0"),
       units: parseFloat(movement.units || "0"),
       navPerUnit: parseFloat(movement.nav_per_unit || "0"),
@@ -834,16 +962,29 @@ export async function getInvestorStatement(investorId: string) {
         notes: movement.notes,
         createdAt: movement.created_at,
       })),
-    ...bonuses.rows.map((bonus: any) => ({
-      id: `bonus-${bonus.id}`,
-      date: bonus.date,
-      category: bonus.ledger_type === "equity" ? "Equity Bonus" : "Fixed Savings Bonus",
-      type: "Bonus",
-      amount: parseFloat(bonus.amount || "0"),
+    ...bonuses.rows
+      .filter((bonus: any) => bonus.ledger_type !== "equity" || !bonus.source_unit_id)
+      .map((bonus: any) => ({
+        id: `bonus-${bonus.id}`,
+        date: bonus.date,
+        category: bonus.ledger_type === "equity" ? "Equity Bonus" : "Fixed Savings Bonus",
+        type: "Bonus",
+        amount: parseFloat(bonus.amount || "0"),
+        units: null,
+        navPerUnit: null,
+        notes: bonus.notes,
+        createdAt: bonus.created_at,
+      })),
+    ...fees.rows.map((fee: any) => ({
+      id: `fee-${fee.id}`,
+      date: fee.date,
+      category: "Brokerage Fee",
+      type: "Fee",
+      amount: -parseFloat(fee.fee_amount || "0"),
       units: null,
       navPerUnit: null,
-      notes: bonus.notes,
-      createdAt: bonus.created_at,
+      notes: fee.notes || `Realized gain RM ${Number(fee.crystallized_gain || 0).toFixed(2)} at ${Number(fee.fee_rate_percent || 0).toFixed(2)}%`,
+      createdAt: fee.created_at,
     })),
   ].sort((a: any, b: any) => {
     const dateOrder = String(b.date).localeCompare(String(a.date));
@@ -855,12 +996,14 @@ export async function getInvestorStatement(investorId: string) {
     investor,
     latestNav: row.latest_nav,
     units,
+    netInvestedCapital: equityPosition.investedCapital,
     marketValue: roundMoney(units * navPerUnit),
     ownershipPercent: calculateOwnershipPercent({ investorUnits: units, totalUnits }),
     unitLedger: unitLedger.rows,
     cashMovements: cash.rows,
     savingsLedger: savings.rows,
     bonusLedger: bonuses.rows,
+    performanceFees: fees.rows,
     activityLedger,
     savingsPrincipal: savingsSummary.principal,
     savingsInterest: savingsSummary.payableInterest,

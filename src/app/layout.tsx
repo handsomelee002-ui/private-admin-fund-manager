@@ -7,7 +7,6 @@ import { Navbar } from "@/components/Navbar";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
 const inter = Inter({ subsets: ["latin"] });
-const stripExtensionHydrationAttrs = process.env.NODE_ENV !== "production";
 
 export const metadata: Metadata = {
   title: "Private Fund Manager",
@@ -22,12 +21,11 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${inter.className} min-h-screen bg-background flex`} suppressHydrationWarning>
-        {stripExtensionHydrationAttrs ? (
-          <Script
-            id="strip-extension-hydration-attrs"
-            strategy="beforeInteractive"
-            dangerouslySetInnerHTML={{
-              __html: `
+        <Script
+          id="strip-extension-hydration-attrs"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `
               (() => {
                 const clean = (root) => {
                   if (!root || !root.querySelectorAll) return;
@@ -65,9 +63,8 @@ export default function RootLayout({
                 }, { once: true });
               })();
             `,
-            }}
-          />
-        ) : null}
+          }}
+        />
         <ThemeProvider>
           <Sidebar />
           <main className="flex-1 flex flex-col h-screen overflow-hidden">
