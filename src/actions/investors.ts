@@ -2,10 +2,11 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { requireAdmin } from "@/lib/auth";
+import { generatePortalAccessId, requireAdmin } from "@/lib/auth";
 import { getInvestorsWithBalances } from "@/lib/fundDb";
 
 export async function getInvestors() {
+  await requireAdmin();
   try {
     return await getInvestorsWithBalances();
   } catch (error) {
@@ -20,17 +21,43 @@ export async function addInvestor(formData: FormData) {
   if (!name) return { error: "Name is required" };
 
   try {
+    const portalAccessId = generatePortalAccessId();
     const existing = await sql`SELECT id FROM investors WHERE name = ${name}`;
     if (existing.rows.length > 0) {
       return { error: "An investor with this name already exists." };
     }
 
-    await sql`INSERT INTO investors (name) VALUES (${name})`;
+    await sql`
+      INSERT INTO investors (name, portal_access_id, portal_access_rotated_at)
+      VALUES (${name}, ${portalAccessId}, NOW())
+    `;
     revalidatePath("/investors");
     return { success: true };
   } catch (error) {
     console.error("Database Error:", error);
     return { error: "Failed to add investor." };
+  }
+}
+
+export async function rotateInvestorPortalAccess(id: string) {
+  await requireAdmin();
+  const portalAccessId = generatePortalAccessId();
+
+  try {
+    const updated = await sql`
+      UPDATE investors
+      SET portal_access_id = ${portalAccessId}, portal_access_rotated_at = NOW()
+      WHERE id = ${id}
+      RETURNING id
+    `;
+    if (updated.rows.length === 0) return { error: "Investor not found." };
+
+    revalidatePath("/investors");
+    revalidatePath(`/investors/${id}`);
+    return { success: true, portalAccessId };
+  } catch (error) {
+    console.error("Database Error:", error);
+    return { error: "Failed to rotate portal access." };
   }
 }
 

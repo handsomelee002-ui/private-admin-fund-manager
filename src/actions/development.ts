@@ -15,8 +15,8 @@ function revalidateAll() {
 
 export async function importDummyDataAction(formData: FormData) {
   try {
-    assertDevelopmentDataToolsEnabled();
     await requireAdmin();
+    assertDevelopmentDataToolsEnabled();
     if (formData.get("confirmation")?.toString() !== SEED_CONFIRMATION) {
       return { error: `Type ${SEED_CONFIRMATION} to import dummy data.` };
     }
@@ -30,8 +30,8 @@ export async function importDummyDataAction(formData: FormData) {
 
 export async function initializeDatabaseAction(formData: FormData) {
   try {
-    assertDevelopmentDataToolsEnabled();
     await requireAdmin();
+    assertDevelopmentDataToolsEnabled();
     if (formData.get("confirmation")?.toString() !== INIT_CONFIRMATION) {
       return { error: `Type ${INIT_CONFIRMATION} to initialize the database.` };
     }
@@ -45,8 +45,8 @@ export async function initializeDatabaseAction(formData: FormData) {
 
 export async function dropAllTablesAction(formData: FormData) {
   try {
-    assertDevelopmentDataToolsEnabled();
     await requireAdmin();
+    assertDevelopmentDataToolsEnabled();
     if (formData.get("confirmation")?.toString() !== DROP_CONFIRMATION) {
       return { error: `Type ${DROP_CONFIRMATION} to drop all fund tables.` };
     }
@@ -60,8 +60,8 @@ export async function dropAllTablesAction(formData: FormData) {
 
 export async function cleanAllDataAction(formData: FormData) {
   try {
-    assertDevelopmentDataToolsEnabled();
     await requireAdmin();
+    assertDevelopmentDataToolsEnabled();
     if (formData.get("confirmation")?.toString() !== CLEAN_CONFIRMATION) {
       return { error: `Type ${CLEAN_CONFIRMATION} to clean all data.` };
     }

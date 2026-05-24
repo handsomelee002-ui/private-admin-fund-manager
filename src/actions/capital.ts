@@ -3,8 +3,10 @@
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { getBrokerageFeeRate } from "@/actions/settings";
+import { requireAdmin } from "@/lib/auth";
 
 export async function getCapitalLedger() {
+  await requireAdmin();
   try {
     const data = await sql`
       SELECT 
@@ -26,6 +28,7 @@ export async function getCapitalLedger() {
 }
 
 export async function getCapitalLedgerByInvestor(investorId: string) {
+  await requireAdmin();
   try {
     const data = await sql`
       SELECT 
@@ -46,6 +49,7 @@ export async function getCapitalLedgerByInvestor(investorId: string) {
 }
 
 export async function addCapitalRecord(formData: FormData) {
+  await requireAdmin();
   const investorId = formData.get("investor_id")?.toString();
   const date = formData.get("date")?.toString();
   const type = formData.get("type")?.toString();
@@ -171,6 +175,7 @@ export async function addCapitalRecord(formData: FormData) {
 }
 
 export async function deleteCapitalRecord(id: string) {
+  await requireAdmin();
   try {
     await sql`DELETE FROM capital_ledger WHERE id = ${id}`;
     revalidatePath("/capital");

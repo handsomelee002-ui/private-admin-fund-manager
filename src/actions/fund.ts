@@ -36,7 +36,6 @@ function revalidateFundViews(investorId?: string) {
   revalidatePath("/reports");
   if (investorId) {
     revalidatePath(`/investors/${investorId}`);
-    revalidatePath(`/portal/${investorId}`);
   }
 }
 

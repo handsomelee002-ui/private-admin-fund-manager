@@ -33,7 +33,6 @@ function revalidateFinancialViews(investorId?: string | null, platformId?: strin
   revalidatePath("/trading");
   if (investorId) {
     revalidatePath(`/investors/${investorId}`);
-    revalidatePath(`/portal/${investorId}`);
   }
   if (platformId) revalidatePath(`/trading/${platformId}`);
 }
@@ -65,6 +64,7 @@ async function assertNoLockedNavOnOrAfter(date: string) {
 }
 
 export async function getAdminAuditLogs() {
+  await requireAdmin();
   await ensureAuditColumns();
   const logs = await sql`
     SELECT

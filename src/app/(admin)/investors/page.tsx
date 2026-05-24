@@ -6,6 +6,7 @@ import { AddInvestorForm } from "@/components/AddInvestorForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { EditNameDialog } from "@/components/EditNameDialog";
 import { SortableTableHead } from "@/components/SortableTableHead";
+import { PortalAccessControl } from "@/components/PortalAccessControl";
 import { deleteInvestor, getInvestors, updateInvestorName } from "@/actions/investors";
 import { formatMoney, formatUnits } from "@/lib/formatting";
 import { getSortState, sortRows } from "@/lib/tableSorting";
@@ -61,6 +62,7 @@ export default async function InvestorsPage({
                 <SortableTableHead className="text-right" sortKey="netInvested" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Net Invested</SortableTableHead>
                 <SortableTableHead className="text-right" sortKey="marketValue" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Market Value</SortableTableHead>
                 <SortableTableHead className="text-right" sortKey="fixedSavings" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Fixed Savings</SortableTableHead>
+                <TableHead className="text-right">Portal</TableHead>
                 <TableHead className="text-right pr-6">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -86,6 +88,9 @@ export default async function InvestorsPage({
                   <TableCell className="text-right font-semibold">{formatMoney(investor.netInvestedCapital)}</TableCell>
                   <TableCell className="text-right font-semibold">{formatMoney(investor.marketValue)}</TableCell>
                   <TableCell className="text-right font-semibold text-amber-400">{formatMoney(investor.fixedSavingsBalance)}</TableCell>
+                  <TableCell className="text-right">
+                    <PortalAccessControl investorId={investor.id} initialPortalAccessId={investor.portal_access_id} />
+                  </TableCell>
                   <TableCell className="text-right pr-6">
                     <div className="flex justify-end gap-2">
                       <EditNameDialog id={investor.id} currentName={investor.name} title="Edit Investor Name" updateAction={updateInvestorName} />
@@ -96,7 +101,7 @@ export default async function InvestorsPage({
               ))}
               {sortedInvestors.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center text-muted-foreground py-12">
+                  <TableCell colSpan={9} className="text-center text-muted-foreground py-12">
                     No investors found.
                   </TableCell>
                 </TableRow>

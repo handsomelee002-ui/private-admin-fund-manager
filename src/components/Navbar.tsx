@@ -1,4 +1,6 @@
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { logoutAdmin } from "@/actions/auth";
+import { Button } from "@/components/ui/button";
 
 export function Navbar() {
   return (
@@ -13,6 +15,9 @@ export function Navbar() {
             <div className="h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center text-primary font-bold text-sm">
               A
             </div>
+            <form action={logoutAdmin}>
+              <Button type="submit" variant="outline" size="sm">Log out</Button>
+            </form>
           </div>
         </div>
       </div>

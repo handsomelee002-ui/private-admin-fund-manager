@@ -5,7 +5,7 @@ import { Database } from "lucide-react";
 export const dynamic = "force-dynamic";
 
 export default function DevelopmentPage() {
-  const enabled = process.env.NODE_ENV !== "production" || process.env.ALLOW_DEV_DATA_TOOLS === "true";
+  const enabled = process.env.NODE_ENV !== "production";
 
   return (
     <div className="space-y-6">
@@ -24,7 +24,7 @@ export default function DevelopmentPage() {
         <CardContent className="space-y-4">
           {!enabled && (
             <div className="rounded-md border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-              Development data tools are disabled in production unless ALLOW_DEV_DATA_TOOLS=true.
+              Development data tools are disabled in production.
             </div>
           )}
           <DevelopmentDataTools />

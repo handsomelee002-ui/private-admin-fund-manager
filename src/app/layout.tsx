@@ -2,8 +2,6 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
-import { Sidebar } from "@/components/Sidebar";
-import { Navbar } from "@/components/Navbar";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -20,7 +18,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.className} min-h-screen bg-background flex`} suppressHydrationWarning>
+      <body className={`${inter.className} min-h-screen bg-background`} suppressHydrationWarning>
         <Script
           id="strip-extension-hydration-attrs"
           strategy="beforeInteractive"
@@ -66,13 +64,7 @@ export default function RootLayout({
           }}
         />
         <ThemeProvider>
-          <Sidebar />
-          <main className="flex-1 flex flex-col h-screen overflow-hidden">
-            <Navbar />
-            <div className="flex-1 overflow-y-auto p-8">
-              {children}
-            </div>
-          </main>
+          {children}
         </ThemeProvider>
       </body>
     </html>

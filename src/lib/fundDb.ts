@@ -8,6 +8,7 @@ import {
   roundMoney,
   roundUnits,
 } from "@/lib/accounting";
+import { requireAdmin } from "@/lib/auth";
 
 export type CashMovementType = "Deposit" | "Withdrawal";
 export type NavStatus = "draft" | "locked";
@@ -287,14 +288,27 @@ export async function initializeFreshFundDatabase() {
   });
 }
 
+async function ensureInvestorPortalAccessColumns() {
+  await sql`ALTER TABLE investors ADD COLUMN IF NOT EXISTS portal_access_id TEXT`;
+  await sql`ALTER TABLE investors ADD COLUMN IF NOT EXISTS portal_access_rotated_at TIMESTAMPTZ`;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS investors_portal_access_id_key
+    ON investors (portal_access_id)
+    WHERE portal_access_id IS NOT NULL
+  `;
+}
+
 export async function ensureFreshFundSchema() {
   await sql`
     CREATE TABLE IF NOT EXISTS investors (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
+      portal_access_id TEXT UNIQUE,
+      portal_access_rotated_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `;
+  await ensureInvestorPortalAccessColumns();
   await sql`
     CREATE TABLE IF NOT EXISTS nav_weeks (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -555,6 +569,7 @@ export async function getLatestLockedNavWeek() {
 }
 
 export async function getNavWeeks() {
+  await requireAdmin();
   const res = await sql`
     SELECT id,
       TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
@@ -803,6 +818,7 @@ export async function recordFixedSavings(input: FixedSavingsInput) {
 }
 
 export async function getCashMovements() {
+  await requireAdmin();
   await ensureAuditColumns();
   const res = await sql`
     SELECT cm.*, i.name as investor_name, TO_CHAR(cm.date, 'YYYY-MM-DD') as date, nw.nav_per_unit
@@ -815,6 +831,7 @@ export async function getCashMovements() {
 }
 
 export async function getFixedSavingsLedger() {
+  await requireAdmin();
   await ensureAuditColumns();
   const res = await sql`
     SELECT fsl.*, i.name as investor_name, TO_CHAR(fsl.date, 'YYYY-MM-DD') as date
@@ -826,7 +843,9 @@ export async function getFixedSavingsLedger() {
 }
 
 export async function getInvestorsWithBalances() {
+  await requireAdmin();
   await ensureAuditColumns();
+  await ensureInvestorPortalAccessColumns();
   const [res, savings, equityLedger] = await Promise.all([
     sql`
       WITH latest_nav AS (
@@ -846,7 +865,8 @@ export async function getInvestorsWithBalances() {
         FROM investor_unit_ledger
         GROUP BY investor_id
       )
-      SELECT i.id, i.name, TO_CHAR(i.created_at, 'YYYY-MM-DD') as joined,
+      SELECT i.id, i.name, i.portal_access_id, i.portal_access_rotated_at,
+        TO_CHAR(i.created_at, 'YYYY-MM-DD') as joined,
         COALESCE(iu.units, 0) as units,
         COALESCE(fu.total_units, 0) as total_units,
         COALESCE((SELECT nav_per_unit FROM latest_nav), 1) as nav_per_unit
@@ -901,7 +921,6 @@ export async function getInvestorsWithBalances() {
 }
 
 export async function getInvestorStatement(investorId: string) {
-  await ensureAuditColumns();
   const [summary, unitLedger, cash, savings, bonuses, fees] = await Promise.all([
     sql`
       WITH latest_nav AS (
@@ -1064,7 +1083,19 @@ export async function getInvestorStatement(investorId: string) {
   };
 }
 
+export async function getInvestorStatementByPortalAccessId(portalAccessId: string) {
+  const result = await sql`
+    SELECT id
+    FROM investors
+    WHERE portal_access_id = ${portalAccessId}
+    LIMIT 1
+  `;
+  const investorId = result.rows[0]?.id;
+  return investorId ? getInvestorStatement(investorId) : null;
+}
+
 export async function getFundSummaryMetrics() {
+  await requireAdmin();
   await ensureAuditColumns();
   const [summary, savings] = await Promise.all([
     sql`
@@ -1115,6 +1146,7 @@ export async function getFundSummaryMetrics() {
 }
 
 export async function getDashboardSummary() {
+  await requireAdmin();
   const [summary, investors] = await Promise.all([
     getFundSummaryMetrics(),
     getInvestorsWithBalances(),

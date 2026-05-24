@@ -4,10 +4,12 @@ import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { issueUnitsForDeposit, redeemUnitsForWithdrawal } from "@/lib/accounting";
 import { writeAuditEvent } from "@/lib/fundDb";
+import { requireAdmin } from "@/lib/auth";
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
 export async function ensureSettingsTables() {
+  await requireAdmin();
   await sql`
     CREATE TABLE IF NOT EXISTS fund_config (
       key        TEXT PRIMARY KEY,
@@ -44,11 +46,13 @@ export async function ensureSettingsTables() {
 // ── Fund Config ───────────────────────────────────────────────────────────────
 
 export async function getBrokerageFeeRate(): Promise<number> {
+  await requireAdmin();
   const res = await sql`SELECT value FROM fund_config WHERE key = 'brokerage_fee_pct'`;
   return parseFloat(res.rows[0]?.value ?? "2.0");
 }
 
 export async function updateBrokerageFeeRate(formData: FormData) {
+  await requireAdmin();
   const rateStr = formData.get("brokerage_fee_pct")?.toString();
   if (!rateStr) return { error: "Rate is required" };
   const rate = parseFloat(rateStr);
@@ -66,6 +70,7 @@ export async function updateBrokerageFeeRate(formData: FormData) {
 // ── Bonus Payments ────────────────────────────────────────────────────────────
 
 export async function getAllBonusPayments() {
+  await requireAdmin();
   await ensureSettingsTables();
   const res = await sql`
     SELECT
@@ -85,6 +90,7 @@ export async function getAllBonusPayments() {
 }
 
 export async function getBonusByInvestor(investorId: string) {
+  await requireAdmin();
   const res = await sql`
     SELECT id, ledger_type, amount,
            TO_CHAR(date, 'YYYY-MM-DD') as date, notes
@@ -187,6 +193,7 @@ async function getInvestorUnitBalance(investorId: string) {
 }
 
 export async function addBonusPayment(formData: FormData) {
+  await requireAdmin();
   await ensureSettingsTables();
   const targetType  = formData.get("target_type")?.toString() as "specific" | "all";
   const investorId  = formData.get("investor_id")?.toString();
@@ -261,6 +268,7 @@ export async function addBonusPayment(formData: FormData) {
 }
 
 export async function deleteBonusPayment(_id: string) {
+  await requireAdmin();
   void _id;
   return { error: "Financial bonus records cannot be deleted. Use Admin Logs revert instead." };
 }

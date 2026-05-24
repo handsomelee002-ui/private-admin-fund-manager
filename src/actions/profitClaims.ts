@@ -3,9 +3,11 @@
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { getBrokerageFeeRate } from "@/actions/settings";
+import { requireAdmin } from "@/lib/auth";
 
 // ── Schema Migration ─────────────────────────────────────────────────────────
 export async function ensureClaimsTable() {
+  await requireAdmin();
   await sql`
     CREATE TABLE IF NOT EXISTS investor_profit_claims (
       id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -30,6 +32,7 @@ export async function ensureClaimsTable() {
 // ── Queries ──────────────────────────────────────────────────────────────────
 
 export async function getAllClaims() {
+  await requireAdmin();
   const data = await sql`
     SELECT
       ipc.id,
@@ -51,6 +54,7 @@ export async function getAllClaims() {
 }
 
 export async function getClaimsByInvestor(investorId: string) {
+  await requireAdmin();
   const data = await sql`
     SELECT
       id,
@@ -72,6 +76,7 @@ export async function getClaimsByInvestor(investorId: string) {
 // ── Mutations ────────────────────────────────────────────────────────────────
 
 export async function addProfitClaim(formData: FormData) {
+  await requireAdmin();
   const investorId  = formData.get("investor_id")?.toString();
   const amountStr   = formData.get("locked_amount")?.toString();
   const claimDate   = formData.get("claim_date")?.toString();
@@ -114,6 +119,7 @@ export async function addProfitClaim(formData: FormData) {
 //     and a BrokerageIncome entry representing the fee earned
 //
 export async function settleClaim(formData: FormData) {
+  await requireAdmin();
   const id               = formData.get("id")?.toString();
   const settledAmountStr = formData.get("settled_amount")?.toString();
   const settledDate      = formData.get("settled_date")?.toString();
@@ -209,6 +215,7 @@ export async function settleClaim(formData: FormData) {
 }
 
 export async function deleteClaim(id: string) {
+  await requireAdmin();
   try {
     await sql`DELETE FROM investor_profit_claims WHERE id = ${id}`;
     revalidatePath("/claims");

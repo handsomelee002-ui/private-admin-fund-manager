@@ -9,6 +9,7 @@ import { AddFixedSavingsMovementForm } from "@/components/AddFixedSavingsMovemen
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestors } from "@/actions/investors";
 import { getInvestorStatement } from "@/lib/fundDb";
+import { requireAdmin } from "@/lib/auth";
 import { formatMoney, formatUnits } from "@/lib/formatting";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { ArrowLeft, Banknote, Percent, TrendingUp, Wallet } from "lucide-react";
@@ -24,6 +25,7 @@ export default async function InvestorDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  await requireAdmin();
   const { id } = await params;
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, activitySorts, { sort: "date", dir: "desc" });

@@ -3,9 +3,11 @@
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { ensureAuditColumns, writeAuditEvent } from "@/lib/fundDb";
+import { requireAdmin } from "@/lib/auth";
 
 // Auto-migrate: add realized_profit column if not present
 export async function ensureRealizedProfitColumn() {
+  await requireAdmin();
   await sql`
     ALTER TABLE platform_transactions
     ADD COLUMN IF NOT EXISTS realized_profit NUMERIC(15, 4) DEFAULT NULL;
@@ -17,6 +19,7 @@ export async function ensureRealizedProfitColumn() {
 // --- PLATFORMS ---
 
 export async function getPlatforms() {
+  await requireAdmin();
   try {
     await ensureAuditColumns();
     const data = await sql`
@@ -70,6 +73,7 @@ export async function getPlatforms() {
 }
 
 export async function getPlatform(id: string) {
+  await requireAdmin();
   try {
     const data = await sql`SELECT id, name, TO_CHAR(created_at, 'YYYY-MM-DD') as created_at FROM platforms WHERE id = ${id}`;
     return data.rows[0];
@@ -80,6 +84,7 @@ export async function getPlatform(id: string) {
 }
 
 export async function addPlatform(formData: FormData) {
+  await requireAdmin();
   const name = formData.get("name")?.toString()?.trim();
   if (!name) return { error: "Platform name is required" };
 
@@ -100,6 +105,7 @@ export async function addPlatform(formData: FormData) {
 }
 
 export async function updatePlatformName(formData: FormData) {
+  await requireAdmin();
   const id = formData.get("id")?.toString();
   const name = formData.get("name")?.toString()?.trim();
   if (!id || !name) return { error: "ID and new name are required" };
@@ -118,6 +124,7 @@ export async function updatePlatformName(formData: FormData) {
 }
 
 export async function deletePlatform(id: string) {
+  await requireAdmin();
   try {
     await sql`DELETE FROM platforms WHERE id = ${id}`;
     revalidatePath("/trading");
@@ -132,6 +139,7 @@ export async function deletePlatform(id: string) {
 // --- TRANSACTIONS ---
 
 export async function getPlatformTransactions(platformId: string) {
+  await requireAdmin();
   try {
     await ensureAuditColumns();
     const data = await sql`
@@ -157,6 +165,7 @@ export async function getPlatformTransactions(platformId: string) {
 }
 
 export async function addPlatformTransaction(formData: FormData) {
+  await requireAdmin();
   const platformId = formData.get("platform_id")?.toString();
   const date = formData.get("date")?.toString();
   const type = formData.get("type")?.toString();
@@ -206,6 +215,7 @@ export async function addPlatformTransaction(formData: FormData) {
 }
 
 export async function deletePlatformTransaction(_id: string) {
+  await requireAdmin();
   void _id;
   return { error: "Financial transactions cannot be deleted. Use Admin Logs revert instead." };
 }
@@ -213,6 +223,7 @@ export async function deletePlatformTransaction(_id: string) {
 // --- PERFORMANCE ---
 
 export async function getPlatformNavSnapshots(platformId: string) {
+  await requireAdmin();
   try {
     const data = await sql`
       SELECT 

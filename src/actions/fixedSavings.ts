@@ -2,6 +2,7 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
+import { requireAdmin } from "@/lib/auth";
 
 // ---------------------------------------------------------------------------
 // Schema guard — runs silently before any query, no-op after first time
@@ -11,6 +12,7 @@ import { revalidatePath } from "next/cache";
 // ---------------------------------------------------------------------------
 
 export async function getFixedSavingsLedger() {
+  await requireAdmin();
   try {
     const data = await sql`
       SELECT 
@@ -33,6 +35,7 @@ export async function getFixedSavingsLedger() {
 }
 
 export async function getFixedSavingsByInvestor(investorId: string) {
+  await requireAdmin();
   try {
     const data = await sql`
       SELECT 
@@ -58,6 +61,7 @@ export async function getFixedSavingsByInvestor(investorId: string) {
 // ---------------------------------------------------------------------------
 
 export async function addFixedSavingsRecord(formData: FormData) {
+  await requireAdmin();
   const investorId = formData.get("investor_id")?.toString();
   const date = formData.get("date")?.toString();
   const type = formData.get("type")?.toString();
@@ -94,6 +98,7 @@ export async function addFixedSavingsRecord(formData: FormData) {
 }
 
 export async function deleteFixedSavingsRecord(_id: string) {
+  await requireAdmin();
   void _id;
   return { error: "Financial savings records cannot be deleted. Use Admin Logs revert instead." };
 }
