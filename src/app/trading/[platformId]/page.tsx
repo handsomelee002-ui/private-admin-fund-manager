@@ -3,14 +3,12 @@ import {
   getPlatform,
   getPlatformTransactions,
   getPlatformNavSnapshots,
-  deletePlatformTransaction,
 } from "@/actions/trading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AddPlatformTransactionForm } from "@/components/AddPlatformTransactionForm";
 import { PlatformTransactionsChart, PlatformNavSnapshotChart } from "@/components/PlatformCharts";
-import { DeleteButton } from "@/components/DeleteButton";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { Badge } from "@/components/ui/badge";
 import { formatMoney } from "@/lib/formatting";
@@ -34,13 +32,15 @@ export default async function PlatformDetailsPage({
   const resolvedSearchParams = await searchParams;
   const transactionSortState = getSortState(resolvedSearchParams, transactionSorts, { sort: "date", dir: "desc" }, "tx");
   const snapshotSortState = getSortState(resolvedSearchParams, snapshotSorts, { sort: "week", dir: "desc" }, "snap");
+  const statusFilter = typeof resolvedSearchParams.status === "string" ? resolvedSearchParams.status : "active";
 
   const platform = await getPlatform(platformId);
   if (!platform) return notFound();
 
   const transactions = await getPlatformTransactions(platformId);
   const snapshots = await getPlatformNavSnapshots(platformId);
-  const sortedTransactions = sortRows(transactions, transactionSortState, {
+  const visibleTransactions = statusFilter === "all" ? transactions : transactions.filter((transaction: any) => transaction.audit_status === "active");
+  const sortedTransactions = sortRows(visibleTransactions, transactionSortState, {
     date: (transaction: any) => transaction.date,
     type: (transaction: any) => transaction.type,
     notes: (transaction: any) => transaction.notes,
@@ -187,7 +187,13 @@ export default async function PlatformDetailsPage({
             {/* Table */}
             <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm overflow-hidden">
               <CardHeader className="pb-0">
-                <CardTitle className="text-base">Transaction History</CardTitle>
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle className="text-base">Transaction History</CardTitle>
+                  <div className="flex items-center gap-2 text-sm">
+                    <Link className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}`}>Active</Link>
+                    <Link className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}?status=all`}>All</Link>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
@@ -198,7 +204,6 @@ export default async function PlatformDetailsPage({
                       <SortableTableHead sortKey="notes" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Notes</SortableTableHead>
                       <SortableTableHead className="text-right" sortKey="amount" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Amount</SortableTableHead>
                       <SortableTableHead className="text-right" sortKey="realized" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Realized</SortableTableHead>
-                      <TableHead className="text-right pr-6">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -221,6 +226,11 @@ export default async function PlatformDetailsPage({
                             )}
                             {t.type}
                           </Badge>
+                          {t.audit_status !== "active" && (
+                            <Badge variant="outline" className="ml-2 text-[10px] h-5 px-1.5">
+                              {t.audit_status === "reversal" ? "Reversal" : "Reverted"}
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell className="text-muted-foreground text-xs">{t.notes || "—"}</TableCell>
                         <TableCell className="text-right font-medium tabular-nums text-sm">
@@ -229,14 +239,11 @@ export default async function PlatformDetailsPage({
                         <TableCell className={`text-right font-medium tabular-nums text-sm ${parseFloat(t.realized_profit || "0") >= 0 ? "text-violet-400" : "text-red-400"}`}>
                           {t.realized_profit ? fmt(parseFloat(t.realized_profit)) : "-"}
                         </TableCell>
-                        <TableCell className="text-right pr-6">
-                          <DeleteButton id={t.id} deleteAction={deletePlatformTransaction} />
-                        </TableCell>
                       </TableRow>
                     ))}
                     {sortedTransactions.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-muted-foreground py-12 text-sm">
+                        <TableCell colSpan={5} className="text-center text-muted-foreground py-12 text-sm">
                           No transactions recorded.
                         </TableCell>
                       </TableRow>

@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AddFixedSavingsMovementForm } from "@/components/AddFixedSavingsMovementForm";
@@ -21,7 +22,9 @@ export default async function FixedSavingsPage({
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, fixedSavingsSorts, { sort: "date", dir: "desc" });
   const [records, investors] = await Promise.all([getFixedSavingsLedger(), getInvestors()]);
-  const sortedRecords = sortRows(records, sortState, {
+  const statusFilter = typeof resolvedSearchParams.status === "string" ? resolvedSearchParams.status : "active";
+  const visibleRecords = statusFilter === "all" ? records : records.filter((record: any) => record.audit_status === "active");
+  const sortedRecords = sortRows(visibleRecords, sortState, {
     date: (record: any) => record.date,
     investor: (record: any) => record.investor_name,
     type: (record: any) => record.type,
@@ -36,7 +39,11 @@ export default async function FixedSavingsPage({
           <h1 className="text-3xl font-bold tracking-tight">Fixed Savings</h1>
           <p className="text-muted-foreground mt-1 text-sm">Liability book excluded from equity unit NAV.</p>
         </div>
-        <AddFixedSavingsMovementForm investors={investors} />
+        <div className="flex items-center gap-2">
+          <Link className={statusFilter === "active" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/fixed-savings">Active</Link>
+          <Link className={statusFilter === "all" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/fixed-savings?status=all">All</Link>
+          <AddFixedSavingsMovementForm investors={investors} />
+        </div>
       </div>
 
       <Card className="bg-card/50 border-border/50">
@@ -65,6 +72,7 @@ export default async function FixedSavingsPage({
                   <TableCell className="font-medium">{record.investor_name}</TableCell>
                   <TableCell>
                     <Badge variant={record.type === "Deposit" ? "default" : "destructive"}>{record.type}</Badge>
+                    {record.audit_status !== "active" && <Badge variant="outline" className="ml-2">{record.audit_status === "reversal" ? "Reversal" : "Reverted"}</Badge>}
                   </TableCell>
                   <TableCell className="text-right font-semibold">{formatMoney(record.amount)}</TableCell>
                   <TableCell className="text-right">{record.annual_rate_percent ? `${Number(record.annual_rate_percent).toFixed(4)}%` : "-"}</TableCell>

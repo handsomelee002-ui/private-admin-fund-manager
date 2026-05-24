@@ -56,6 +56,7 @@ export default async function SettingsPage({
     const withdrawalFeesRes = await sql`
       SELECT COALESCE(SUM(fee_amount), 0) as total
       FROM performance_fees
+      WHERE audit_status <> 'reverted'
     `;
     withdrawalBrokerageEarned = parseFloat(withdrawalFeesRes.rows[0]?.total || "0");
   } catch { /* table may not exist yet */ }

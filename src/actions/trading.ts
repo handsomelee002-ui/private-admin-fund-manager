@@ -2,6 +2,7 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
+import { ensureAuditColumns, writeAuditEvent } from "@/lib/fundDb";
 
 // Auto-migrate: add realized_profit column if not present
 export async function ensureRealizedProfitColumn() {
@@ -9,12 +10,15 @@ export async function ensureRealizedProfitColumn() {
     ALTER TABLE platform_transactions
     ADD COLUMN IF NOT EXISTS realized_profit NUMERIC(15, 4) DEFAULT NULL;
   `;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
 }
 
 // --- PLATFORMS ---
 
 export async function getPlatforms() {
   try {
+    await ensureAuditColumns();
     const data = await sql`
       SELECT 
         p.id, 
@@ -129,6 +133,7 @@ export async function deletePlatform(id: string) {
 
 export async function getPlatformTransactions(platformId: string) {
   try {
+    await ensureAuditColumns();
     const data = await sql`
       SELECT 
         id, 
@@ -137,7 +142,9 @@ export async function getPlatformTransactions(platformId: string) {
         type, 
         amount,
         realized_profit,
-        notes 
+        notes,
+        audit_status,
+        reversal_of_id
       FROM platform_transactions
       WHERE platform_id = ${platformId}
       ORDER BY platform_transactions.date DESC, platform_transactions.created_at DESC;
@@ -173,10 +180,19 @@ export async function addPlatformTransaction(formData: FormData) {
   }
 
   try {
-    await sql`
+    await ensureAuditColumns();
+    const inserted = await sql`
       INSERT INTO platform_transactions (platform_id, date, type, amount, realized_profit, notes)
       VALUES (${platformId}, ${date}, ${type}, ${amount}, ${realizedProfit}, ${notes})
+      RETURNING id
     `;
+    await writeAuditEvent("platform_transaction.add", "platform_transactions", inserted.rows[0].id, {
+      platformId,
+      date,
+      type,
+      amount,
+      realizedProfit,
+    });
     revalidatePath(`/trading/${platformId}`);
     revalidatePath("/trading");
     revalidatePath("/nav");
@@ -189,20 +205,9 @@ export async function addPlatformTransaction(formData: FormData) {
   }
 }
 
-export async function deletePlatformTransaction(id: string) {
-  try {
-    const deleted = await sql`DELETE FROM platform_transactions WHERE id = ${id} RETURNING platform_id`;
-    const platformId = deleted.rows[0]?.platform_id;
-    if (platformId) revalidatePath(`/trading/${platformId}`);
-    revalidatePath("/trading");
-    revalidatePath("/nav");
-    revalidatePath("/");
-    revalidatePath("/reports");
-    return { success: true };
-  } catch (error) {
-    console.error("Database Error:", error);
-    return { error: "Failed to delete transaction." };
-  }
+export async function deletePlatformTransaction(_id: string) {
+  void _id;
+  return { error: "Financial transactions cannot be deleted. Use Admin Logs revert instead." };
 }
 
 // --- PERFORMANCE ---

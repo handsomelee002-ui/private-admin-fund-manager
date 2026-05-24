@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AddCashMovementForm } from "@/components/AddCashMovementForm";
@@ -24,7 +25,9 @@ export default async function CapitalLedgerPage({
     getCashMovements(),
     getInvestors(),
   ]);
-  const sortedRecords = sortRows(records, sortState, {
+  const statusFilter = typeof resolvedSearchParams.status === "string" ? resolvedSearchParams.status : "active";
+  const visibleRecords = statusFilter === "all" ? records : records.filter((record: any) => record.audit_status === "active");
+  const sortedRecords = sortRows(visibleRecords, sortState, {
     date: (record: any) => record.date,
     investor: (record: any) => record.investor_name,
     type: (record: any) => record.type,
@@ -39,7 +42,11 @@ export default async function CapitalLedgerPage({
           <h1 className="text-3xl font-bold tracking-tight">Capital</h1>
           <p className="text-muted-foreground mt-1 text-sm">Deposits issue units and withdrawals redeem units at the latest locked weekly NAV.</p>
         </div>
-        <AddCashMovementForm investors={investors} />
+        <div className="flex items-center gap-2">
+          <Link className={statusFilter === "active" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital">Active</Link>
+          <Link className={statusFilter === "all" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital?status=all">All</Link>
+          <AddCashMovementForm investors={investors} />
+        </div>
       </div>
 
       <Card className="bg-card/50 border-border/50">
@@ -68,6 +75,7 @@ export default async function CapitalLedgerPage({
                   <TableCell className="font-medium">{record.investor_name}</TableCell>
                   <TableCell>
                     <Badge variant={record.type === "Deposit" ? "default" : "destructive"}>{record.type}</Badge>
+                    {record.audit_status !== "active" && <Badge variant="outline" className="ml-2">{record.audit_status === "reversal" ? "Reversal" : "Reverted"}</Badge>}
                   </TableCell>
                   <TableCell className="text-right font-semibold">{formatMoney(record.amount)}</TableCell>
                   <TableCell className="text-right">{record.nav_per_unit ? Number(record.nav_per_unit).toFixed(6) : "-"}</TableCell>

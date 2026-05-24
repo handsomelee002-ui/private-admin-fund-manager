@@ -12,6 +12,7 @@ import {
   Building2,
   CalendarClock,
   Database,
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -23,6 +24,7 @@ const navigation = [
   { name: "Investors",      href: "/investors", icon: Users,           exact: false },
   { name: "Fixed Savings",  href: "/fixed-savings", icon: Wallet,      exact: false },
   { name: "Reports",        href: "/reports",  icon: BarChart2,       exact: false },
+  { name: "Admin Logs",     href: "/admin-logs", icon: ShieldCheck,    exact: false },
   { name: "Brokerage",      href: "/settings", icon: Settings,        exact: false },
   { name: "Settings",       href: "/development", icon: Database,     exact: false },
 ];

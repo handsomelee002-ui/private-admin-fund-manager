@@ -93,16 +93,7 @@ export async function addFixedSavingsRecord(formData: FormData) {
   }
 }
 
-export async function deleteFixedSavingsRecord(id: string) {
-  try {
-    await sql`DELETE FROM fixed_savings_ledger WHERE id = ${id}`;
-    revalidatePath("/fixed-savings");
-    revalidatePath("/investors");
-    revalidatePath("/");
-    revalidatePath("/reports");
-    return { success: true };
-  } catch (error) {
-    console.error("Database Error:", error);
-    return { error: "Failed to delete fixed savings record." };
-  }
+export async function deleteFixedSavingsRecord(_id: string) {
+  void _id;
+  return { error: "Financial savings records cannot be deleted. Use Admin Logs revert instead." };
 }

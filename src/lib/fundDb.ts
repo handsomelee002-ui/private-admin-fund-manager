@@ -43,6 +43,7 @@ type FixedSavingsLedgerRow = {
   amount: string | number;
   annual_rate_percent?: string | number | null;
   interest_rate?: string | number | null;
+  audit_status?: string | null;
 };
 
 type EquityUnitLedgerRow = {
@@ -51,6 +52,7 @@ type EquityUnitLedgerRow = {
   units: string | number;
   gross_amount: string | number;
   is_bonus?: boolean | string | number | null;
+  audit_status?: string | null;
 };
 
 type FixedSavingsInput = {
@@ -123,6 +125,33 @@ function ledgerAmount(row: FixedSavingsLedgerRow) {
 function ledgerRate(row: FixedSavingsLedgerRow, fallback = 0) {
   const rawRate = row.annual_rate_percent ?? row.interest_rate ?? fallback;
   return parseFloat(String(rawRate || "0"));
+}
+
+export async function ensureAuditColumns() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      actor_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `;
+  await sql`ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS reason TEXT`;
+  await sql`ALTER TABLE investor_unit_ledger ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
+  await sql`ALTER TABLE investor_unit_ledger ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+  await sql`ALTER TABLE cash_movements ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
+  await sql`ALTER TABLE cash_movements ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+  await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
+  await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+  await sql`ALTER TABLE performance_fees ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
+  await sql`ALTER TABLE performance_fees ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+  await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
+  await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
 }
 
 function calculateEquityCapitalPosition(rows: EquityUnitLedgerRow[]) {
@@ -483,6 +512,7 @@ export async function ensureFreshFundSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `;
+  await ensureAuditColumns();
 }
 
 export async function writeAuditEvent(action: string, entityType: string, entityId: string | null, details = {}) {
@@ -609,6 +639,7 @@ export async function lockNavWeek(id: string) {
 }
 
 export async function recordCashMovement(input: CashMovementInput) {
+  await ensureAuditColumns();
   const navWeek = await getLatestLockedNavWeek();
   if (!navWeek) {
     return { error: "Cash movements require at least one locked weekly NAV." };
@@ -620,13 +651,14 @@ export async function recordCashMovement(input: CashMovementInput) {
   let grossAmount = roundMoney(input.amount);
   let brokerageFee = 0;
   let realizedGain = 0;
+  let performanceFeeId: string | null = null;
 
   if (input.type === "Deposit") {
     units = issueUnitsForDeposit({ amount: input.amount, navPerUnit });
   } else {
     ledgerType = "UnitRedemption";
     const priorLedger = await sql`
-      SELECT iul.type, iul.units, iul.gross_amount, TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
+      SELECT iul.type, iul.units, iul.gross_amount, iul.audit_status, TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
         CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
       FROM investor_unit_ledger iul
       LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
@@ -654,7 +686,7 @@ export async function recordCashMovement(input: CashMovementInput) {
       const brokerageRate = await getBrokerageFeeRateValue();
       brokerageFee = roundMoney(realizedGain * (brokerageRate / 100));
       if (brokerageFee > 0) {
-        await sql`
+        const fee = await sql`
           INSERT INTO performance_fees (investor_id, nav_week_id, crystallized_gain, fee_rate_percent, fee_amount, date, notes)
           VALUES (
             ${input.investorId},
@@ -665,7 +697,9 @@ export async function recordCashMovement(input: CashMovementInput) {
             ${input.date},
             ${`Withdrawal brokerage fee on realized gain RM ${realizedGain.toFixed(2)}`}
           )
+          RETURNING id
         `;
+        performanceFeeId = fee.rows[0]?.id ?? null;
       }
     }
   }
@@ -686,7 +720,7 @@ export async function recordCashMovement(input: CashMovementInput) {
     )
     RETURNING id
   `;
-  await sql`
+  const cashMovement = await sql`
     INSERT INTO cash_movements (investor_id, nav_week_id, unit_ledger_id, date, type, amount, status, notes)
     VALUES (
       ${input.investorId},
@@ -700,18 +734,22 @@ export async function recordCashMovement(input: CashMovementInput) {
         ? `${input.notes || "Withdrawal"} | Brokerage fee RM ${brokerageFee.toFixed(2)}`
         : input.notes || ""}
     )
+    RETURNING id
   `;
-  await writeAuditEvent("cash_movement.settle", "cash_movements", unitLedger.rows[0].id, {
+  await writeAuditEvent("cash_movement.add", "cash_movements", cashMovement.rows[0].id, {
     type: input.type,
     amount: grossAmount,
     units,
     brokerageFee,
     realizedGain,
+    unitLedgerId: unitLedger.rows[0].id,
+    performanceFeeId,
   });
   return { success: true };
 }
 
 export async function recordFixedSavings(input: FixedSavingsInput) {
+  await ensureAuditColumns();
   let accountId: string | null = null;
   if (input.type === "Deposit") {
     const account = await sql`
@@ -738,9 +776,10 @@ export async function recordFixedSavings(input: FixedSavingsInput) {
     }
   }
 
-  await sql`
+  const ledger = await sql`
     INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, annual_rate_percent, notes)
     VALUES (${accountId}, ${input.investorId}, ${input.date}, ${input.type}, ${input.amount}, ${input.annualRatePercent ?? null}, ${input.notes || ""})
+    RETURNING id
   `;
   if (input.type === "Withdrawal" && accountId) {
     await sql`
@@ -754,11 +793,17 @@ export async function recordFixedSavings(input: FixedSavingsInput) {
         ) <= 0
     `;
   }
-  await writeAuditEvent("fixed_savings.record", "fixed_savings_ledger", accountId, { type: input.type, amount: input.amount });
+  await writeAuditEvent("fixed_savings.add", "fixed_savings_ledger", ledger.rows[0].id, {
+    accountId,
+    investorId: input.investorId,
+    type: input.type,
+    amount: input.amount,
+  });
   return { success: true };
 }
 
 export async function getCashMovements() {
+  await ensureAuditColumns();
   const res = await sql`
     SELECT cm.*, i.name as investor_name, TO_CHAR(cm.date, 'YYYY-MM-DD') as date, nw.nav_per_unit
     FROM cash_movements cm
@@ -770,6 +815,7 @@ export async function getCashMovements() {
 }
 
 export async function getFixedSavingsLedger() {
+  await ensureAuditColumns();
   const res = await sql`
     SELECT fsl.*, i.name as investor_name, TO_CHAR(fsl.date, 'YYYY-MM-DD') as date
     FROM fixed_savings_ledger fsl
@@ -780,6 +826,7 @@ export async function getFixedSavingsLedger() {
 }
 
 export async function getInvestorsWithBalances() {
+  await ensureAuditColumns();
   const [res, savings, equityLedger] = await Promise.all([
     sql`
       WITH latest_nav AS (
@@ -854,6 +901,7 @@ export async function getInvestorsWithBalances() {
 }
 
 export async function getInvestorStatement(investorId: string) {
+  await ensureAuditColumns();
   const [summary, unitLedger, cash, savings, bonuses, fees] = await Promise.all([
     sql`
       WITH latest_nav AS (
@@ -907,7 +955,7 @@ export async function getInvestorStatement(investorId: string) {
       ORDER BY fixed_savings_ledger.date DESC, fixed_savings_ledger.created_at DESC
     `,
     sql`
-      SELECT bp.id, bp.ledger_type, bp.amount, TO_CHAR(bp.date, 'YYYY-MM-DD') as date, bp.notes, bp.created_at,
+      SELECT bp.id, bp.ledger_type, bp.amount, TO_CHAR(bp.date, 'YYYY-MM-DD') as date, bp.notes, bp.created_at, bp.audit_status,
         iul.id as source_unit_id
       FROM bonus_payments bp
       LEFT JOIN investor_unit_ledger iul ON iul.id = bp.source_id
@@ -918,6 +966,7 @@ export async function getInvestorStatement(investorId: string) {
       SELECT id, crystallized_gain, fee_rate_percent, fee_amount, TO_CHAR(date, 'YYYY-MM-DD') as date, notes, created_at
       FROM performance_fees
       WHERE investor_id = ${investorId}
+        AND audit_status <> 'reverted'
       ORDER BY performance_fees.date DESC, performance_fees.created_at DESC
     `,
   ]);
@@ -947,6 +996,7 @@ export async function getInvestorStatement(investorId: string) {
       units: parseFloat(movement.units || "0"),
       navPerUnit: parseFloat(movement.nav_per_unit || "0"),
       notes: movement.notes,
+      auditStatus: movement.audit_status,
       createdAt: movement.created_at,
     })),
     ...savings.rows
@@ -960,6 +1010,7 @@ export async function getInvestorStatement(investorId: string) {
         units: null,
         navPerUnit: null,
         notes: movement.notes,
+        auditStatus: movement.audit_status,
         createdAt: movement.created_at,
       })),
     ...bonuses.rows
@@ -973,6 +1024,7 @@ export async function getInvestorStatement(investorId: string) {
         units: null,
         navPerUnit: null,
         notes: bonus.notes,
+        auditStatus: bonus.audit_status,
         createdAt: bonus.created_at,
       })),
     ...fees.rows.map((fee: any) => ({
@@ -984,6 +1036,7 @@ export async function getInvestorStatement(investorId: string) {
       units: null,
       navPerUnit: null,
       notes: fee.notes || `Realized gain RM ${Number(fee.crystallized_gain || 0).toFixed(2)} at ${Number(fee.fee_rate_percent || 0).toFixed(2)}%`,
+      auditStatus: "active",
       createdAt: fee.created_at,
     })),
   ].sort((a: any, b: any) => {
@@ -1012,6 +1065,7 @@ export async function getInvestorStatement(investorId: string) {
 }
 
 export async function getFundSummaryMetrics() {
+  await ensureAuditColumns();
   const [summary, savings] = await Promise.all([
     sql`
       WITH latest_nav AS (
@@ -1032,6 +1086,7 @@ export async function getFundSummaryMetrics() {
       fees AS (
         SELECT COALESCE(SUM(fee_amount), 0) as total
         FROM performance_fees
+        WHERE audit_status <> 'reverted'
       )
       SELECT
         (SELECT row_to_json(latest_nav) FROM latest_nav) as latest_nav,

@@ -27,12 +27,16 @@ export default async function InvestorDetailPage({
   const { id } = await params;
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, activitySorts, { sort: "date", dir: "desc" });
+  const statusFilter = typeof resolvedSearchParams.status === "string" ? resolvedSearchParams.status : "active";
   const [statement, investors] = await Promise.all([
     getInvestorStatement(id),
     getInvestors(),
   ]);
   if (!statement) notFound();
-  const sortedActivityLedger = sortRows(statement.activityLedger, sortState, {
+  const visibleActivityLedger = statusFilter === "all"
+    ? statement.activityLedger
+    : statement.activityLedger.filter((row: any) => row.auditStatus === "active");
+  const sortedActivityLedger = sortRows(visibleActivityLedger, sortState, {
     date: (row: any) => row.date,
     ledger: (row: any) => row.category,
     type: (row: any) => row.type,
@@ -103,7 +107,15 @@ export default async function InvestorDetailPage({
       </div>
 
       <Card className="bg-card/50 border-border/50">
-        <CardHeader><CardTitle className="text-base">Activity Ledger</CardTitle></CardHeader>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-base">Activity Ledger</CardTitle>
+            <div className="flex items-center gap-2 text-sm">
+              <Link className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}`}>Active</Link>
+              <Link className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}?status=all`}>All</Link>
+            </div>
+          </div>
+        </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader>
@@ -122,7 +134,10 @@ export default async function InvestorDetailPage({
                 <TableRow key={row.id}>
                   <TableCell className="pl-6">{row.date}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{row.category}</TableCell>
-                  <TableCell><Badge variant={["UnitIssue", "BonusIssue", "Deposit", "Bonus"].includes(row.type) ? "default" : "destructive"}>{row.type}</Badge></TableCell>
+                  <TableCell>
+                    <Badge variant={["UnitIssue", "BonusIssue", "Deposit", "Bonus"].includes(row.type) ? "default" : "destructive"}>{row.type}</Badge>
+                    {row.auditStatus !== "active" && <Badge variant="outline" className="ml-2">{row.auditStatus === "reversal" ? "Reversal" : "Reverted"}</Badge>}
+                  </TableCell>
                   <TableCell className="text-right">{row.units ? formatUnits(row.units) : "-"}</TableCell>
                   <TableCell className="text-right">{row.navPerUnit ? Number(row.navPerUnit).toFixed(6) : "-"}</TableCell>
                   <TableCell className={`text-right font-semibold ${row.amount >= 0 ? "" : "text-red-400"}`}>{formatMoney(row.amount)}</TableCell>

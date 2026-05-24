@@ -3,6 +3,7 @@
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { issueUnitsForDeposit, redeemUnitsForWithdrawal } from "@/lib/accounting";
+import { writeAuditEvent } from "@/lib/fundDb";
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,8 @@ export async function ensureSettingsTables() {
   await sql`
     ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS source_id UUID;
   `;
+  await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
+  await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
 }
 
 // ── Fund Config ───────────────────────────────────────────────────────────────
@@ -63,6 +66,7 @@ export async function updateBrokerageFeeRate(formData: FormData) {
 // ── Bonus Payments ────────────────────────────────────────────────────────────
 
 export async function getAllBonusPayments() {
+  await ensureSettingsTables();
   const res = await sql`
     SELECT
       bp.id,
@@ -138,10 +142,18 @@ async function insertBonusRecord(
       RETURNING id
     `;
     const sourceId = r.rows[0]?.id;
-    await sql`
+    const bonus = await sql`
       INSERT INTO bonus_payments (investor_id, ledger_type, source_id, amount, date, notes)
       VALUES (${investorId}, 'equity', ${sourceId}, ${amount}, ${date}, ${notes})
+      RETURNING id
     `;
+    await writeAuditEvent("bonus_payment.add", "bonus_payments", bonus.rows[0].id, {
+      investorId,
+      ledgerType,
+      sourceId,
+      amount,
+      date,
+    });
   } else {
     // fixed_savings bonus has NO interest rate — it's a flat bonus, doesn't accrue
     const r = await sql`
@@ -150,10 +162,18 @@ async function insertBonusRecord(
       RETURNING id
     `;
     const sourceId = r.rows[0]?.id;
-    await sql`
+    const bonus = await sql`
       INSERT INTO bonus_payments (investor_id, ledger_type, source_id, amount, date, notes)
       VALUES (${investorId}, 'fixed_savings', ${sourceId}, ${amount}, ${date}, ${notes})
+      RETURNING id
     `;
+    await writeAuditEvent("bonus_payment.add", "bonus_payments", bonus.rows[0].id, {
+      investorId,
+      ledgerType,
+      sourceId,
+      amount,
+      date,
+    });
   }
 }
 
@@ -167,6 +187,7 @@ async function getInvestorUnitBalance(investorId: string) {
 }
 
 export async function addBonusPayment(formData: FormData) {
+  await ensureSettingsTables();
   const targetType  = formData.get("target_type")?.toString() as "specific" | "all";
   const investorId  = formData.get("investor_id")?.toString();
   const ledgerType  = formData.get("ledger_type")?.toString() as "equity" | "fixed_savings";
@@ -239,30 +260,7 @@ export async function addBonusPayment(formData: FormData) {
   }
 }
 
-export async function deleteBonusPayment(id: string) {
-  try {
-    // Get source_id and ledger_type to delete from the correct ledger
-    const log = await sql`
-      SELECT source_id, ledger_type FROM bonus_payments WHERE id = ${id}
-    `;
-    if (log.rows.length > 0) {
-      const { source_id, ledger_type } = log.rows[0];
-      if (source_id) {
-        if (ledger_type === "equity") {
-          await sql`DELETE FROM investor_unit_ledger WHERE id = ${source_id}`;
-          await sql`DELETE FROM capital_ledger WHERE id = ${source_id} AND type = 'Bonus'`;
-        } else {
-          await sql`DELETE FROM fixed_savings_ledger WHERE id = ${source_id} AND type = 'Bonus'`;
-        }
-      }
-    }
-    await sql`DELETE FROM bonus_payments WHERE id = ${id}`;
-    revalidatePath("/settings");
-    revalidatePath("/investors");
-    revalidatePath("/");
-    return { success: true };
-  } catch (error) {
-    console.error("DB Error:", error);
-    return { error: "Failed to delete bonus." };
-  }
+export async function deleteBonusPayment(_id: string) {
+  void _id;
+  return { error: "Financial bonus records cannot be deleted. Use Admin Logs revert instead." };
 }
