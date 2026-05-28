@@ -8,6 +8,7 @@ import {
   recordCashMovement,
   recordFixedSavings,
 } from "@/lib/fundDb";
+import { getPlatforms } from "@/actions/trading";
 
 function parsePositiveMoney(value: FormDataEntryValue | null, label: string) {
   const amount = Number(value);
@@ -44,12 +45,26 @@ export async function createNavWeekAction(formData: FormData) {
     await requireAdmin();
     const weekEnding = formData.get("week_ending")?.toString();
     if (!weekEnding) return { error: "Week ending is required." };
-    const platformSnapshots = [...formData.entries()]
-      .filter(([key]) => key.startsWith("platform_unrealized_"))
-      .map(([key, value]) => ({
-        platformId: key.replace("platform_unrealized_", ""),
-        unrealizedProfit: parseMoney(value, "Unrealized profit"),
-      }));
+    const platformValueEntries = [...formData.entries()].filter(([key]) => key.startsWith("platform_value_"));
+    const platformMap: Map<string, any> = platformValueEntries.length > 0
+      ? new Map((await getPlatforms()).map((item: any) => [item.id, item]))
+      : new Map();
+    const platformSnapshots = platformValueEntries.length > 0
+      ? platformValueEntries.map(([key, value]) => {
+          const platformId = key.replace("platform_value_", "");
+          const platform = platformMap.get(platformId);
+          if (!platform) throw new Error("Invalid platform NAV value.");
+          return {
+            platformId,
+            unrealizedProfit: parseMoney(value, "Platform final value") - platform.netInvested,
+          };
+        })
+      : [...formData.entries()]
+          .filter(([key]) => key.startsWith("platform_unrealized_"))
+          .map(([key, value]) => ({
+            platformId: key.replace("platform_unrealized_", ""),
+            unrealizedProfit: parseMoney(value, "Unrealized profit"),
+          }));
 
     await createNavWeek({
       weekEnding,

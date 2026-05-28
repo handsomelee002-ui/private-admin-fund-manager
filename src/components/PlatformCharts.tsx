@@ -8,11 +8,11 @@ export function PlatformTransactionsChart({ data }: { data: any[] }) {
     const month = curr.date.substring(0, 7); // YYYY-MM
     if (!acc[month]) acc[month] = { month, deposit: 0, withdrawal: 0, net: 0 };
     
-    const amount = parseFloat(curr.amount);
-    if (curr.type === 'Deposit') {
+    const amount = parseFloat(curr.base_amount || curr.amount || "0");
+    if (["BROKER_DEPOSIT", "Deposit"].includes(curr.type)) {
       acc[month].deposit += amount;
       acc[month].net += amount;
-    } else {
+    } else if (["BROKER_WITHDRAWAL", "Withdraw"].includes(curr.type)) {
       acc[month].withdrawal += amount;
       acc[month].net -= amount;
     }

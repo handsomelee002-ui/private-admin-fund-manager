@@ -45,6 +45,10 @@ export function AddPlatformForm({ redirectToDetail = false }: { redirectToDetail
             <Label htmlFor="name">Platform Name</Label>
             <Input id="name" name="name" required placeholder="e.g., Interactive Brokers, Binance" />
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="default_currency">Default Currency</Label>
+            <Input id="default_currency" name="default_currency" required defaultValue="MYR" maxLength={10} />
+          </div>
           <div className="flex justify-end pt-4">
             <Button type="submit" disabled={loading}>
               {loading ? "Saving..." : "Save Platform"}

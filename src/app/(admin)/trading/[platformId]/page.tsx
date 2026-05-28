@@ -3,6 +3,7 @@ import {
   getPlatform,
   getPlatformTransactions,
   getPlatformNavSnapshots,
+  getPlatformPerformance,
 } from "@/actions/trading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
@@ -37,8 +38,11 @@ export default async function PlatformDetailsPage({
   const platform = await getPlatform(platformId);
   if (!platform) return notFound();
 
-  const transactions = await getPlatformTransactions(platformId);
-  const snapshots = await getPlatformNavSnapshots(platformId);
+  const [transactions, snapshots, performance] = await Promise.all([
+    getPlatformTransactions(platformId),
+    getPlatformNavSnapshots(platformId),
+    getPlatformPerformance(platformId),
+  ]);
   const visibleTransactions = statusFilter === "all" ? transactions : transactions.filter((transaction: any) => transaction.audit_status === "active");
   const sortedTransactions = sortRows(visibleTransactions, transactionSortState, {
     date: (transaction: any) => transaction.date,
@@ -54,14 +58,11 @@ export default async function PlatformDetailsPage({
     nav: (snapshot: any) => snapshot.nav_per_unit,
   });
 
-  // Stats
-  const netInvested = transactions.reduce((acc: number, t: any) => {
-    return t.type === "Deposit" ? acc + parseFloat(t.amount) : acc - parseFloat(t.amount);
-  }, 0);
-  const realizedProfit = transactions.reduce((acc: number, t: any) => acc + parseFloat(t.realized_profit || "0"), 0);
-  const latestUnrealized = snapshots.length > 0 ? parseFloat(snapshots[0].unrealized_profit) : 0;
-  const totalValue = netInvested + latestUnrealized;
-  const pnlPct = netInvested > 0 ? ((latestUnrealized / netInvested) * 100) : 0;
+  const netInvested = performance.netInvested;
+  const realizedProfit = performance.realizedProfit;
+  const latestUnrealized = performance.latestUnrealized;
+  const totalValue = performance.currentValue;
+  const pnlPct = performance.simpleRoi ?? 0;
 
   const fmt = formatMoney;
 
@@ -161,9 +162,12 @@ export default async function PlatformDetailsPage({
             <TabsTrigger value="snapshots" className="text-xs">NAV Snapshots</TabsTrigger>
           </TabsList>
 
-          <div>
+          <div className="flex gap-2">
             <TabsContent value="transactions" className="mt-0">
-              <AddPlatformTransactionForm platformId={platformId} />
+              <AddPlatformTransactionForm
+                platformId={platformId}
+                defaultCurrency="MYR"
+              />
             </TabsContent>
           </div>
         </div>
@@ -202,7 +206,7 @@ export default async function PlatformDetailsPage({
                       <SortableTableHead className="pl-6" sortKey="date" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Date</SortableTableHead>
                       <SortableTableHead sortKey="type" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Type</SortableTableHead>
                       <SortableTableHead sortKey="notes" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Notes</SortableTableHead>
-                      <SortableTableHead className="text-right" sortKey="amount" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Amount</SortableTableHead>
+                      <SortableTableHead className="text-right" sortKey="amount" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">RM Amount</SortableTableHead>
                       <SortableTableHead className="text-right" sortKey="realized" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Realized</SortableTableHead>
                     </TableRow>
                   </TableHeader>
@@ -214,17 +218,17 @@ export default async function PlatformDetailsPage({
                           <Badge
                             variant="outline"
                             className={`text-[10px] h-5 px-1.5 ${
-                              t.type === "Deposit"
+                              ["Deposit", "BROKER_DEPOSIT"].includes(t.type)
                                 ? "text-emerald-500 border-emerald-500/30 bg-emerald-500/5"
                                 : "text-orange-400 border-orange-400/30 bg-orange-400/5"
                             }`}
                           >
-                            {t.type === "Deposit" ? (
+                            {["Deposit", "BROKER_DEPOSIT"].includes(t.type) ? (
                               <ArrowDownRight className="h-2.5 w-2.5 mr-0.5" />
                             ) : (
                               <ArrowUpRight className="h-2.5 w-2.5 mr-0.5" />
                             )}
-                            {t.type}
+                            {String(t.type).replaceAll("_", " ")}
                           </Badge>
                           {t.audit_status !== "active" && (
                             <Badge variant="outline" className="ml-2 text-[10px] h-5 px-1.5">
@@ -234,7 +238,12 @@ export default async function PlatformDetailsPage({
                         </TableCell>
                         <TableCell className="text-muted-foreground text-xs">{t.notes || "—"}</TableCell>
                         <TableCell className="text-right font-medium tabular-nums text-sm">
-                          {fmt(parseFloat(t.amount))}
+                          {fmt(parseFloat(t.base_amount || t.amount || "0"))}
+                          {t.currency && t.currency !== "MYR" && (
+                            <div className="text-[10px] text-muted-foreground">
+                              {Number(t.amount || 0).toLocaleString()} {t.currency}
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className={`text-right font-medium tabular-nums text-sm ${parseFloat(t.realized_profit || "0") >= 0 ? "text-violet-400" : "text-red-400"}`}>
                           {t.realized_profit ? fmt(parseFloat(t.realized_profit)) : "-"}

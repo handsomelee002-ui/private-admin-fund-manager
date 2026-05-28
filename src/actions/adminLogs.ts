@@ -15,9 +15,13 @@ const REVERSIBLE_ACTIONS = new Set([
 function oppositeMovement(type: string) {
   if (type === "Deposit") return "Withdrawal";
   if (type === "Withdrawal") return "Deposit";
+  if (type === "BROKER_DEPOSIT") return "BROKER_WITHDRAWAL";
+  if (type === "BROKER_WITHDRAWAL") return "BROKER_DEPOSIT";
+  if (type === "BUY") return "SELL";
+  if (type === "SELL") return "BUY";
   if (type === "UnitIssue") return "UnitRedemption";
   if (type === "UnitRedemption") return "UnitIssue";
-  throw new Error("Unsupported transaction type.");
+  return "ADJUSTMENT";
 }
 
 function revalidateFinancialViews(investorId?: string | null, platformId?: string | null) {
@@ -93,7 +97,9 @@ export async function getAdminAuditLogs() {
 
 async function revertPlatformTransaction(auditEventId: string, entityId: string) {
   const original = await sql`
-    SELECT id, platform_id, TO_CHAR(date, 'YYYY-MM-DD') as date, type, amount, realized_profit, notes, audit_status
+    SELECT id, platform_id, account_id, asset_id, TO_CHAR(date, 'YYYY-MM-DD') as date, type, amount, currency, base_currency,
+      base_amount, fx_rate_to_base, quantity, price_per_unit, gross_amount, fee_amount, tax_amount, net_amount,
+      realized_profit, reference, status, notes, audit_status
     FROM platform_transactions
     WHERE id = ${entityId}
   `;
@@ -115,13 +121,31 @@ async function revertPlatformTransaction(auditEventId: string, entityId: string)
   await assertNoLockedNavOnOrAfter(tx.date);
 
   const reversal = await sql`
-    INSERT INTO platform_transactions (platform_id, date, type, amount, realized_profit, notes, audit_status, reversal_of_id)
+    INSERT INTO platform_transactions (
+      platform_id, account_id, asset_id, date, type, amount, currency, base_currency, base_amount,
+      fx_rate_to_base, quantity, price_per_unit, gross_amount, fee_amount, tax_amount, net_amount,
+      realized_profit, reference, status, notes, audit_status, reversal_of_id
+    )
     VALUES (
       ${tx.platform_id},
+      ${tx.account_id},
+      ${tx.asset_id},
       CURRENT_DATE,
       ${oppositeMovement(tx.type)},
       ${tx.amount},
+      ${tx.currency},
+      ${tx.base_currency},
+      ${tx.base_amount},
+      ${tx.fx_rate_to_base},
+      ${tx.quantity},
+      ${tx.price_per_unit},
+      ${tx.gross_amount},
+      ${tx.fee_amount},
+      ${tx.tax_amount},
+      ${tx.net_amount},
       ${tx.realized_profit === null ? null : -Number(tx.realized_profit)},
+      ${tx.reference},
+      ${tx.status},
       ${`Reversal of platform transaction ${tx.id}`},
       'reversal',
       ${tx.id}

@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus } from "lucide-react";
 
-export function CreateNavWeekForm({ platforms }: { platforms: { id: string; name: string; unrealizedProfit: number; netInvested: number }[] }) {
+export function CreateNavWeekForm({ platforms }: { platforms: { id: string; name: string; unrealizedProfit: number; netInvested: number; totalValue?: number }[] }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -43,7 +43,7 @@ export function CreateNavWeekForm({ platforms }: { platforms: { id: string; name
             </div>
           </div>
           <div className="space-y-3">
-            <Label>Platform Unrealized Profit</Label>
+            <Label>Platform Final Value (RM)</Label>
             {platforms.map((platform) => (
               <div key={platform.id} className="grid grid-cols-[1fr_160px] items-center gap-3">
                 <div>
@@ -51,10 +51,10 @@ export function CreateNavWeekForm({ platforms }: { platforms: { id: string; name
                   <div className="text-xs text-muted-foreground">Net invested RM {platform.netInvested.toLocaleString()}</div>
                 </div>
                 <Input
-                  name={`platform_unrealized_${platform.id}`}
+                  name={`platform_value_${platform.id}`}
                   type="number"
                   step="0.01"
-                  defaultValue={platform.unrealizedProfit}
+                  defaultValue={platform.totalValue ?? platform.netInvested + platform.unrealizedProfit}
                   required
                 />
               </div>
@@ -65,7 +65,7 @@ export function CreateNavWeekForm({ platforms }: { platforms: { id: string; name
           </div>
           <div className="space-y-2">
             <Label htmlFor="notes">Notes</Label>
-            <Input id="notes" name="notes" placeholder="Valuation source or adjustment reason" />
+            <Input id="notes" name="notes" placeholder="Statement date, FX source, or adjustment reason" />
           </div>
           <div className="flex justify-end">
             <Button type="submit" disabled={loading || platforms.length === 0}>{loading ? "Saving..." : "Save Draft"}</Button>

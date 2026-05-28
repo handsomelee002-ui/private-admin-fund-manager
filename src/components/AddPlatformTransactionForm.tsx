@@ -5,27 +5,35 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Plus, TrendingUp } from "lucide-react";
+import { Plus } from "lucide-react";
 import { addPlatformTransaction } from "@/actions/trading";
 
-export function AddPlatformTransactionForm({ platformId }: { platformId: string }) {
+const transactionTypes = [
+  { value: "BROKER_DEPOSIT", label: "Money In" },
+  { value: "BROKER_WITHDRAWAL", label: "Money Out" },
+  { value: "ADJUSTMENT", label: "Adjustment" },
+];
+
+export function AddPlatformTransactionForm({
+  platformId,
+  defaultCurrency = "MYR",
+}: {
+  platformId: string;
+  defaultCurrency?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [type, setType] = useState("Deposit");
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     setLoading(true);
-    const formData = new FormData(e.currentTarget);
+    const formData = new FormData(event.currentTarget);
     formData.append("platform_id", platformId);
-    const res = await addPlatformTransaction(formData);
+    formData.set("status", "SETTLED");
+    const result = await addPlatformTransaction(formData);
     setLoading(false);
-    if (res?.success) {
-      setOpen(false);
-      setType("Deposit");
-    } else {
-      alert(res?.error || "An error occurred");
-    }
+    if (result?.success) setOpen(false);
+    else alert(result?.error || "Failed to save transaction.");
   }
 
   return (
@@ -34,65 +42,64 @@ export function AddPlatformTransactionForm({ platformId }: { platformId: string 
         <Plus className="h-4 w-4" />
         Add Transaction
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
-          <DialogTitle>Add Capital Transaction</DialogTitle>
+          <DialogTitle>Add Platform Transaction</DialogTitle>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-4 pt-4">
-          <div className="space-y-2">
-            <Label htmlFor="date">Date</Label>
-            <Input id="date" name="date" type="date" required defaultValue={new Date().toISOString().split("T")[0]} />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="type">Type</Label>
-            <select
-              id="type"
-              name="type"
-              required
-              value={type}
-              onChange={(e) => setType(e.target.value)}
-              className="flex h-9 w-full items-center justify-between whitespace-nowrap rounded-md border border-input bg-card/50 px-3 py-2 text-sm shadow-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <option value="Deposit">Deposit (Capital In)</option>
-              <option value="Withdraw">Withdraw (Capital Out)</option>
-            </select>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="amount">Amount (RM)</Label>
-            <Input id="amount" name="amount" type="number" step="0.01" required placeholder="0.00" />
+        <form onSubmit={handleSubmit} className="space-y-4 pt-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="date">Date</Label>
+              <Input id="date" name="date" type="date" required defaultValue={new Date().toISOString().split("T")[0]} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="type">Type</Label>
+              <select id="type" name="type" required defaultValue="BROKER_DEPOSIT" className="h-9 w-full rounded-md border border-input bg-card/50 px-3 text-sm">
+                {transactionTypes.map((transactionType) => (
+                  <option key={transactionType.value} value={transactionType.value}>{transactionType.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
-          {/* Realized Profit — only shown for withdrawals */}
-          {type === "Withdraw" && (
-            <div className="p-3 bg-muted/50 rounded-md space-y-2 border border-emerald-500/20">
-              <div className="flex items-center gap-2 text-sm font-medium text-emerald-500">
-                <TrendingUp className="h-4 w-4" />
-                Realized Profit (Optional)
-              </div>
-              <p className="text-xs text-muted-foreground leading-tight">
-                If this withdrawal includes profit, enter the realized P&amp;L amount. Leave blank if it&apos;s a pure capital return.
-              </p>
-              <div className="space-y-1">
-                <Label className="text-xs">Realized Profit (RM)</Label>
-                <Input
-                  id="realized_profit"
-                  name="realized_profit"
-                  type="number"
-                  step="0.01"
-                  placeholder="e.g. 1500.00"
-                />
-              </div>
+          <div className="space-y-2">
+            <Label htmlFor="base_amount">RM Amount</Label>
+            <Input id="base_amount" name="base_amount" type="number" step="0.01" min="0.01" required placeholder="Final RM cost or RM received" />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="currency">Foreign Currency</Label>
+              <Input id="currency" name="currency" required defaultValue={defaultCurrency} maxLength={10} />
             </div>
-          )}
+            <div className="space-y-2">
+              <Label htmlFor="amount">Foreign Amount</Label>
+              <Input id="amount" name="amount" type="number" step="0.0001" placeholder="Final USD credited" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="fx_rate_to_base">FX To RM</Label>
+              <Input id="fx_rate_to_base" name="fx_rate_to_base" type="number" step="0.000001" placeholder="Auto" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="fee_amount">Fee Included (RM)</Label>
+              <Input id="fee_amount" name="fee_amount" type="number" step="0.01" min="0" defaultValue="0" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="reference">Reference</Label>
+              <Input id="reference" name="reference" placeholder="Bank, Wise, or broker reference" />
+            </div>
+          </div>
 
           <div className="space-y-2">
             <Label htmlFor="notes">Notes</Label>
-            <Input id="notes" name="notes" placeholder="Optional notes" />
+            <Input id="notes" name="notes" placeholder="Example: RM to Wise to IBKR, final USD credited" />
           </div>
+
           <div className="flex justify-end pt-2">
-            <Button type="submit" disabled={loading}>
-              {loading ? "Saving..." : "Save Transaction"}
-            </Button>
+            <Button type="submit" disabled={loading}>{loading ? "Saving..." : "Save Transaction"}</Button>
           </div>
         </form>
       </DialogContent>

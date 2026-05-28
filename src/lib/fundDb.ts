@@ -79,6 +79,8 @@ const RESETTABLE_FINANCIAL_TABLES = [
   "bonus_payments",
   "investor_profit_claims",
   "capital_ledger",
+  "platform_assets",
+  "platform_accounts",
   "platform_transactions",
   "platform_performance",
   "platforms",
@@ -443,7 +445,37 @@ export async function ensureFreshFundSchema() {
     CREATE TABLE IF NOT EXISTS platforms (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
+      base_currency TEXT NOT NULL DEFAULT 'MYR',
+      default_currency TEXT NOT NULL DEFAULT 'MYR',
       created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `;
+  await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS base_currency TEXT NOT NULL DEFAULT 'MYR'`;
+  await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS default_currency TEXT NOT NULL DEFAULT 'MYR'`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS platform_accounts (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      platform_id UUID NOT NULL REFERENCES platforms(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      account_type TEXT NOT NULL DEFAULT 'BROKER_CASH',
+      currency TEXT NOT NULL DEFAULT 'MYR',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(platform_id, name, currency)
+    );
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS platform_assets (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      platform_id UUID NOT NULL REFERENCES platforms(id) ON DELETE CASCADE,
+      symbol TEXT NOT NULL,
+      name TEXT,
+      asset_type TEXT NOT NULL DEFAULT 'SECURITY',
+      currency TEXT NOT NULL DEFAULT 'MYR',
+      latest_price NUMERIC(20, 8) NOT NULL DEFAULT 0,
+      latest_fx_rate_to_myr NUMERIC(20, 8) NOT NULL DEFAULT 1,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(platform_id, symbol, currency)
     );
   `;
   await sql`
@@ -461,15 +493,54 @@ export async function ensureFreshFundSchema() {
     CREATE TABLE IF NOT EXISTS platform_transactions (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
       platform_id UUID NOT NULL REFERENCES platforms(id) ON DELETE CASCADE,
+      account_id UUID REFERENCES platform_accounts(id) ON DELETE SET NULL,
+      asset_id UUID REFERENCES platform_assets(id) ON DELETE SET NULL,
       date DATE NOT NULL,
       type TEXT NOT NULL,
       amount NUMERIC(15, 4) NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'MYR',
+      base_currency TEXT NOT NULL DEFAULT 'MYR',
+      base_amount NUMERIC(20, 4) NOT NULL DEFAULT 0,
+      fx_rate_to_base NUMERIC(20, 8) NOT NULL DEFAULT 1,
+      from_currency TEXT,
+      to_currency TEXT,
+      from_amount NUMERIC(20, 8),
+      to_amount NUMERIC(20, 8),
+      quantity NUMERIC(24, 8),
+      price_per_unit NUMERIC(20, 8),
+      gross_amount NUMERIC(20, 4),
+      fee_amount NUMERIC(20, 4) NOT NULL DEFAULT 0,
+      tax_amount NUMERIC(20, 4) NOT NULL DEFAULT 0,
+      net_amount NUMERIC(20, 4),
       realized_profit NUMERIC(15, 4) DEFAULT NULL,
+      reference TEXT,
+      status TEXT NOT NULL DEFAULT 'SETTLED',
+      settlement_date DATE,
       notes TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS realized_profit NUMERIC(15, 4) DEFAULT NULL`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS account_id UUID REFERENCES platform_accounts(id) ON DELETE SET NULL`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS asset_id UUID REFERENCES platform_assets(id) ON DELETE SET NULL`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'MYR'`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS base_currency TEXT NOT NULL DEFAULT 'MYR'`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS base_amount NUMERIC(20, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS fx_rate_to_base NUMERIC(20, 8) NOT NULL DEFAULT 1`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS from_currency TEXT`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS to_currency TEXT`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS from_amount NUMERIC(20, 8)`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS to_amount NUMERIC(20, 8)`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS quantity NUMERIC(24, 8)`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS price_per_unit NUMERIC(20, 8)`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS gross_amount NUMERIC(20, 4)`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS fee_amount NUMERIC(20, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS tax_amount NUMERIC(20, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS net_amount NUMERIC(20, 4)`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS reference TEXT`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'SETTLED'`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS settlement_date DATE`;
+  await sql`UPDATE platform_transactions SET base_amount = amount WHERE base_amount = 0 AND amount <> 0`;
   await sql`
     CREATE TABLE IF NOT EXISTS trading_ledger (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -591,7 +662,14 @@ export async function createNavWeek(input: NavWeekInput) {
   const platforms = await sql`
     SELECT
       p.id,
-      COALESCE(SUM(CASE WHEN pt.type = 'Deposit' THEN pt.amount ELSE -pt.amount END), 0) as net_invested
+      COALESCE(SUM(
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END
+      ), 0) as net_invested
     FROM platforms p
     LEFT JOIN platform_transactions pt ON pt.platform_id = p.id
     GROUP BY p.id
