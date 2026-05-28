@@ -25,8 +25,8 @@ const navigation = [
   { name: "Fixed Savings",  href: "/fixed-savings", icon: Wallet,      exact: false },
   { name: "Reports",        href: "/reports",  icon: BarChart2,       exact: false },
   { name: "Admin Logs",     href: "/admin-logs", icon: ShieldCheck,    exact: false },
-  { name: "Brokerage",      href: "/settings", icon: Settings,        exact: false },
-  { name: "Settings",       href: "/development", icon: Database,     exact: false },
+  { name: "Brokerage",      href: "/brokerage", icon: Settings,       exact: false },
+  { name: "Settings",       href: "/settings", icon: Database,        exact: false },
 ];
 
 export function Sidebar() {

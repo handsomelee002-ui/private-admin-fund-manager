@@ -2,98 +2,172 @@
 
 import { useState } from "react";
 import { cleanAllDataAction, dropAllTablesAction, importDummyDataAction, initializeDatabaseAction } from "@/actions/development";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Database, Trash2 } from "lucide-react";
+import { Label } from "@/components/ui/label";
+import { AlertTriangle, Database, Trash2 } from "lucide-react";
 
-export function DevelopmentDataTools() {
+type DevelopmentDataToolsProps = {
+  adminPassword: string;
+  onProtectedActionSuccess: () => void;
+};
+
+export function DevelopmentDataTools({ adminPassword, onProtectedActionSuccess }: DevelopmentDataToolsProps) {
   const [initPhrase, setInitPhrase] = useState("");
   const [seedPhrase, setSeedPhrase] = useState("");
   const [cleanPhrase, setCleanPhrase] = useState("");
   const [dropPhrase, setDropPhrase] = useState("");
   const [loading, setLoading] = useState<"clean" | "drop" | "init" | "seed" | null>(null);
 
+  function withAdminPassword(formData: FormData) {
+    formData.set("admin_password", adminPassword);
+    return formData;
+  }
+
   async function runInitialize() {
-    const formData = new FormData();
+    const formData = withAdminPassword(new FormData());
     formData.set("confirmation", initPhrase);
     setLoading("init");
     const result = await initializeDatabaseAction(formData);
     setLoading(null);
-    if (result?.error) alert(result.error);
+    setInitPhrase("");
+    if (result?.error) {
+      alert(result.error);
+      return;
+    }
+    alert("Database initialized.");
+    onProtectedActionSuccess();
   }
 
   async function runSeed() {
-    const formData = new FormData();
+    const formData = withAdminPassword(new FormData());
     formData.set("confirmation", seedPhrase);
     setLoading("seed");
     const result = await importDummyDataAction(formData);
     setLoading(null);
-    if (result?.error) alert(result.error);
+    setSeedPhrase("");
+    if (result?.error) {
+      alert(result.error);
+      return;
+    }
+    alert("Dummy data imported.");
+    onProtectedActionSuccess();
   }
 
   async function runDrop() {
-    const formData = new FormData();
+    const formData = withAdminPassword(new FormData());
     formData.set("confirmation", dropPhrase);
     setLoading("drop");
     const result = await dropAllTablesAction(formData);
     setLoading(null);
-    if (result?.error) alert(result.error);
+    setDropPhrase("");
+    if (result?.error) {
+      alert(result.error);
+      return;
+    }
+    alert("Fund tables dropped.");
+    onProtectedActionSuccess();
   }
 
   async function runClean() {
-    const formData = new FormData();
+    const formData = withAdminPassword(new FormData());
     formData.set("confirmation", cleanPhrase);
     setLoading("clean");
     const result = await cleanAllDataAction(formData);
     setLoading(null);
-    if (result?.error) alert(result.error);
+    setCleanPhrase("");
+    if (result?.error) {
+      alert(result.error);
+      return;
+    }
+    alert("Fund records deleted.");
+    onProtectedActionSuccess();
   }
 
   return (
-    <div className="grid gap-4 xl:grid-cols-4">
-      <div className="rounded-md border border-red-500/30 bg-red-500/5 p-4 space-y-3">
-        <div className="flex items-center gap-2 font-semibold text-red-400">
-          <Trash2 className="h-4 w-4" />
-          Delete Records
+    <div className="space-y-4">
+      <div className="grid gap-4 xl:grid-cols-4">
+      <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-4 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 font-semibold text-red-400">
+              <Trash2 className="h-4 w-4" />
+              Delete Records
+            </div>
+            <p className="text-xs text-muted-foreground">Clear financial records while keeping database tables.</p>
+          </div>
+          <Badge variant="destructive">Danger</Badge>
         </div>
-        <Input value={cleanPhrase} onChange={(event) => setCleanPhrase(event.target.value)} placeholder="DELETE ALL FUND DATA" />
+        <div className="space-y-1.5">
+          <Label htmlFor="clean_confirmation">Confirmation</Label>
+          <Input id="clean_confirmation" value={cleanPhrase} onChange={(event) => setCleanPhrase(event.target.value)} placeholder="DELETE ALL FUND DATA" />
+        </div>
         <Button variant="destructive" onClick={runClean} disabled={loading !== null} className="gap-2">
           <Trash2 className="h-4 w-4" />
           {loading === "clean" ? "Deleting..." : "Delete Records"}
         </Button>
       </div>
-      <div className="rounded-md border border-red-500/30 bg-red-500/5 p-4 space-y-3">
-        <div className="flex items-center gap-2 font-semibold text-red-400">
-          <Trash2 className="h-4 w-4" />
-          Drop All Tables
+      <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-4 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 font-semibold text-red-400">
+              <AlertTriangle className="h-4 w-4" />
+              Drop All Tables
+            </div>
+            <p className="text-xs text-muted-foreground">Remove all fund tables from the database.</p>
+          </div>
+          <Badge variant="destructive">Critical</Badge>
         </div>
-        <Input value={dropPhrase} onChange={(event) => setDropPhrase(event.target.value)} placeholder="DROP ALL FUND TABLES" />
+        <div className="space-y-1.5">
+          <Label htmlFor="drop_confirmation">Confirmation</Label>
+          <Input id="drop_confirmation" value={dropPhrase} onChange={(event) => setDropPhrase(event.target.value)} placeholder="DROP ALL FUND TABLES" />
+        </div>
         <Button variant="destructive" onClick={runDrop} disabled={loading !== null} className="gap-2">
           <Trash2 className="h-4 w-4" />
           {loading === "drop" ? "Dropping..." : "Drop All Tables"}
         </Button>
       </div>
-      <div className="rounded-md border border-border/60 bg-card/50 p-4 space-y-3">
-        <div className="flex items-center gap-2 font-semibold">
-          <Database className="h-4 w-4 text-primary" />
-          Initialize Database
+      <div className="rounded-lg border border-border/60 bg-card/50 p-4 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 font-semibold">
+              <Database className="h-4 w-4 text-primary" />
+              Initialize Database
+            </div>
+            <p className="text-xs text-muted-foreground">Create or repair required database tables.</p>
+          </div>
+          <Badge variant="outline">Setup</Badge>
         </div>
-        <Input value={initPhrase} onChange={(event) => setInitPhrase(event.target.value)} placeholder="INITIALIZE DATABASE" />
+        <div className="space-y-1.5">
+          <Label htmlFor="init_confirmation">Confirmation</Label>
+          <Input id="init_confirmation" value={initPhrase} onChange={(event) => setInitPhrase(event.target.value)} placeholder="INITIALIZE DATABASE" />
+        </div>
         <Button onClick={runInitialize} disabled={loading !== null} className="gap-2">
           <Database className="h-4 w-4" />
           {loading === "init" ? "Initializing..." : "Initialize Database"}
         </Button>
       </div>
-      <div className="rounded-md border border-border/60 bg-card/50 p-4 space-y-3">
-        <div className="flex items-center gap-2 font-semibold">
-          <Database className="h-4 w-4 text-primary" />
-          Import Dummy Data
+      <div className="rounded-lg border border-border/60 bg-card/50 p-4 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 font-semibold">
+              <Database className="h-4 w-4 text-primary" />
+              Import Dummy Data
+            </div>
+            <p className="text-xs text-muted-foreground">Load sample records for local testing.</p>
+          </div>
+          <Badge variant="outline">Dev</Badge>
         </div>
-        <Input value={seedPhrase} onChange={(event) => setSeedPhrase(event.target.value)} placeholder="IMPORT DUMMY DATA" />
+        <div className="space-y-1.5">
+          <Label htmlFor="seed_confirmation">Confirmation</Label>
+          <Input id="seed_confirmation" value={seedPhrase} onChange={(event) => setSeedPhrase(event.target.value)} placeholder="IMPORT DUMMY DATA" />
+        </div>
         <Button onClick={runSeed} disabled={loading !== null} className="gap-2">
           <Database className="h-4 w-4" />
           {loading === "seed" ? "Importing..." : "Import Dummy Data"}
         </Button>
+      </div>
       </div>
     </div>
   );

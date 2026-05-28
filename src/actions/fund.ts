@@ -30,7 +30,7 @@ function revalidateFundViews(investorId?: string) {
   revalidatePath("/");
   revalidatePath("/nav");
   revalidatePath("/capital");
-  revalidatePath("/settings");
+  revalidatePath("/brokerage");
   revalidatePath("/claims");
   revalidatePath("/fixed-savings");
   revalidatePath("/investors");

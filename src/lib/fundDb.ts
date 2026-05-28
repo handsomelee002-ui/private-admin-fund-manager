@@ -9,6 +9,7 @@ import {
   roundUnits,
 } from "@/lib/accounting";
 import { requireAdmin } from "@/lib/auth";
+import { BACKUP_TABLES, assertBackupTableName } from "@/lib/backupTables";
 
 export type CashMovementType = "Deposit" | "Withdrawal";
 export type NavStatus = "draft" | "locked";
@@ -67,33 +68,10 @@ type FixedSavingsInput = {
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const DEFAULT_BROKERAGE_FEE_RATE = "2.0";
-const RESETTABLE_FINANCIAL_TABLES = [
-  "audit_events",
-  "performance_fees",
-  "nav_week_platform_snapshots",
-  "fixed_savings_ledger",
-  "fixed_savings_accounts",
-  "cash_movements",
-  "investor_unit_ledger",
-  "nav_weeks",
-  "bonus_payments",
-  "investor_profit_claims",
-  "capital_ledger",
-  "platform_assets",
-  "platform_accounts",
-  "platform_transactions",
-  "platform_performance",
-  "platforms",
-  "trading_ledger",
-  "cash_balances",
-  "investors",
-  "fund_config",
-] as const;
+const RESETTABLE_FINANCIAL_TABLES = BACKUP_TABLES;
 
 function assertResettableTableName(tableName: string) {
-  if (!RESETTABLE_FINANCIAL_TABLES.includes(tableName as (typeof RESETTABLE_FINANCIAL_TABLES)[number])) {
-    throw new Error(`Refusing to reset unapproved table: ${tableName}`);
-  }
+  assertBackupTableName(tableName);
 }
 
 async function existingResettableTables() {

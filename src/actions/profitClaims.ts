@@ -205,7 +205,7 @@ export async function settleClaim(formData: FormData) {
     revalidatePath("/investors");
     revalidatePath(`/investors/${investorId}`);
     revalidatePath("/reports");
-    revalidatePath("/settings");
+    revalidatePath("/brokerage");
     revalidatePath("/");
     return { success: true, netPaid: cappedAmount, brokerageFee: isFullySettled ? brokerageFee : 0 };
   } catch (error) {

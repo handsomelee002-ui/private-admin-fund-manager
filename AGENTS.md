@@ -217,6 +217,9 @@ For normal implementation tasks, respond only with:
 Verification result:
 - <Pass | Fail | Not run>: <check name and result, or "checks were not requested">
 
+Reason:
+- <short, precise explanation of why the issue happened or why the change was made>
+
 Remaining risks:
 - <risk or "None known">
 

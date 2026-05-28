@@ -109,7 +109,7 @@ export default async function Dashboard({
               {sortedInvestors.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={4} className="text-center text-muted-foreground py-12">
-                    No investors or units yet. Use Development to import dummy data or add investors manually.
+                    No investors or units yet. Use Settings to import dummy data or add investors manually.
                   </TableCell>
                 </TableRow>
               )}

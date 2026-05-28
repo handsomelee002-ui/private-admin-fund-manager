@@ -63,7 +63,7 @@ export async function updateBrokerageFeeRate(formData: FormData) {
     VALUES ('brokerage_fee_pct', ${rate.toString()}, NOW())
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
   `;
-  revalidatePath("/settings");
+  revalidatePath("/brokerage");
   return { success: true };
 }
 
@@ -255,7 +255,7 @@ export async function addBonusPayment(formData: FormData) {
       }
     }
 
-    revalidatePath("/settings");
+    revalidatePath("/brokerage");
     revalidatePath("/investors");
     revalidatePath("/capital");
     revalidatePath("/reports");

@@ -33,7 +33,7 @@ function revalidateFinancialViews(investorId?: string | null, platformId?: strin
   revalidatePath("/investors");
   revalidatePath("/nav");
   revalidatePath("/reports");
-  revalidatePath("/settings");
+  revalidatePath("/brokerage");
   revalidatePath("/trading");
   if (investorId) {
     revalidatePath(`/investors/${investorId}`);

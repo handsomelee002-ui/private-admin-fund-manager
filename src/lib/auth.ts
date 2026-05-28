@@ -39,6 +39,12 @@ export function verifyAdminPassword(password: string) {
   return expectedBytes.length === actualBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }
 
+export function assertAdminPassword(password: string | null | undefined) {
+  if (!password || !verifyAdminPassword(password)) {
+    throw new Error("Admin password is invalid.");
+  }
+}
+
 export function validateAdminCredentials(loginId: string, password: string) {
   return sameValue(loginId, requiredEnv("ADMIN_LOGIN_ID")) && verifyAdminPassword(password);
 }
