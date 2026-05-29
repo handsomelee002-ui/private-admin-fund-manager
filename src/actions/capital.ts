@@ -176,15 +176,6 @@ export async function addCapitalRecord(formData: FormData) {
 
 export async function deleteCapitalRecord(id: string) {
   await requireAdmin();
-  try {
-    await sql`DELETE FROM capital_ledger WHERE id = ${id}`;
-    revalidatePath("/capital");
-    revalidatePath("/investors");
-    revalidatePath("/");
-    revalidatePath("/reports");
-    return { success: true };
-  } catch (error) {
-    console.error("Database Error:", error);
-    return { error: "Failed to delete capital record." };
-  }
+  void id;
+  return { error: "Capital records cannot be hard-deleted. Use Admin Logs revert or a current-period adjustment." };
 }

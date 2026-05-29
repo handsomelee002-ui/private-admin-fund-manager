@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -21,8 +23,13 @@ export default async function InvestorPortalPage({
 }) {
   const { portal_access_id } = await params;
   const resolvedSearchParams = await searchParams;
+  const headerStore = await headers();
+  const forwardedFor = headerStore.get("x-forwarded-for")?.split(",")[0]?.trim();
+  const ip = forwardedFor || headerStore.get("x-real-ip") || "unknown";
+  const userAgent = headerStore.get("user-agent") || "unknown";
+  const clientKey = createHash("sha256").update(`${ip}|${userAgent}`).digest("base64url");
   const sortState = getSortState(resolvedSearchParams, activitySorts, { sort: "date", dir: "desc" });
-  const statement = await getInvestorStatementByPortalAccessId(portal_access_id);
+  const statement = await getInvestorStatementByPortalAccessId(portal_access_id, { clientKey, userAgent }).catch(() => null);
   if (!statement) notFound();
   const activeActivityLedger = statement.activityLedger.filter((row: any) => row.auditStatus === "active");
   const sortedActivityLedger = sortRows(activeActivityLedger, sortState, {

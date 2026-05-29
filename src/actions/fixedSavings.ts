@@ -25,6 +25,7 @@ export async function getFixedSavingsLedger() {
         fs.notes
       FROM fixed_savings_ledger fs
       JOIN investors i ON fs.investor_id = i.id
+      WHERE fs.audit_status = 'active'
       ORDER BY fs.date DESC, fs.created_at DESC;
     `;
     return data.rows;
@@ -47,6 +48,7 @@ export async function getFixedSavingsByInvestor(investorId: string) {
         notes
       FROM fixed_savings_ledger
       WHERE investor_id = ${investorId}
+        AND audit_status = 'active'
       ORDER BY fixed_savings_ledger.date DESC, fixed_savings_ledger.created_at DESC;
     `;
     return data.rows;

@@ -7,7 +7,8 @@ import {
 } from "@/lib/backupTables";
 
 type BackupPrimitive = string | number | boolean | null;
-type BackupRow = Record<string, BackupPrimitive>;
+type BackupJson = BackupPrimitive | BackupJson[] | { [key: string]: BackupJson };
+type BackupRow = Record<string, BackupJson>;
 
 export type FundBackupFile = {
   metadata: {
@@ -28,12 +29,72 @@ export type BackupPreview = {
   totalRows: number;
 };
 
+const BACKUP_TABLE_COLUMN_ALLOWLIST: Record<BackupTableName, readonly string[]> = {
+  investors: ["id", "name", "portal_access_id", "portal_access_rotated_at", "created_at"],
+  fund_config: ["key", "value", "updated_at"],
+  platforms: ["id", "name", "base_currency", "default_currency", "created_at"],
+  platform_accounts: ["id", "platform_id", "name", "account_type", "currency", "created_at"],
+  platform_assets: ["id", "platform_id", "symbol", "name", "asset_type", "currency", "latest_price", "latest_fx_rate_to_myr", "updated_at", "created_at"],
+  nav_weeks: ["id", "week_ending", "settlement_date", "gross_assets", "liabilities", "adjustments", "net_asset_value", "total_units", "nav_per_unit", "status", "locked_at", "notes", "created_at"],
+  nav_week_platform_snapshots: ["id", "nav_week_id", "platform_id", "net_invested", "unrealized_profit", "created_at"],
+  investor_unit_ledger: ["id", "investor_id", "nav_week_id", "date", "type", "units", "nav_per_unit", "gross_amount", "notes", "created_at", "audit_status", "reversal_of_id"],
+  cash_movements: ["id", "investor_id", "nav_week_id", "unit_ledger_id", "date", "type", "amount", "status", "notes", "created_at", "audit_status", "reversal_of_id"],
+  fixed_savings_accounts: ["id", "investor_id", "opened_at", "annual_rate_percent", "status", "created_at"],
+  fixed_savings_ledger: ["id", "account_id", "investor_id", "date", "type", "amount", "annual_rate_percent", "interest_rate", "notes", "created_at", "audit_status", "reversal_of_id"],
+  performance_fees: ["id", "investor_id", "nav_week_id", "crystallized_gain", "fee_rate_percent", "fee_amount", "date", "notes", "created_at", "audit_status", "reversal_of_id"],
+  bonus_payments: ["id", "investor_id", "ledger_type", "source_id", "amount", "date", "notes", "created_at", "audit_status", "reversal_of_id"],
+  investor_profit_claims: ["id", "investor_id", "locked_amount", "settled_amount", "brokerage_fee", "status", "claim_date", "settled_date", "notes", "created_at"],
+  capital_ledger: ["id", "investor_id", "date", "type", "amount", "notes", "receipt_url", "created_at"],
+  platform_transactions: [
+    "id", "platform_id", "date", "type", "amount", "realized_profit", "notes", "created_at", "account_id", "asset_id", "currency", "base_currency",
+    "base_amount", "fx_rate_to_base", "from_currency", "to_currency", "from_amount", "to_amount", "quantity", "price_per_unit", "gross_amount",
+    "fee_amount", "tax_amount", "net_amount", "reference", "status", "settlement_date", "audit_status", "reversal_of_id",
+  ],
+  platform_performance: ["id", "platform_id", "date", "net_invested", "unrealized_profit", "created_at"],
+  trading_ledger: ["id", "date", "platform", "ticker", "type", "currency", "price", "quantity", "amount_rm", "profit_loss", "date_closed", "receipt_url", "created_at"],
+  cash_balances: ["id", "account_name", "current_balance", "updated_at"],
+  audit_events: ["id", "actor_id", "action", "entity_type", "entity_id", "details", "created_at", "reason"],
+};
+
+const BACKUP_ENUMS: Partial<Record<BackupTableName, Record<string, readonly string[]>>> = {
+  nav_weeks: { status: ["draft", "locked"] },
+  investor_unit_ledger: { type: ["UnitIssue", "UnitRedemption"], audit_status: ["active", "reverted", "reversal"] },
+  cash_movements: { type: ["Deposit", "Withdrawal"], status: ["pending", "settled", "rejected"], audit_status: ["active", "reverted", "reversal"] },
+  fixed_savings_accounts: { status: ["active", "closed"] },
+  fixed_savings_ledger: { type: ["Deposit", "Withdrawal", "Bonus"], audit_status: ["active", "reverted", "reversal"] },
+  bonus_payments: { ledger_type: ["equity", "fixed_savings"], audit_status: ["active", "reverted", "reversal"] },
+  investor_profit_claims: { status: ["pending", "partial", "settled"] },
+  platform_accounts: { account_type: ["BANK", "WALLET", "BROKER_CASH", "BROKER_PORTFOLIO", "OTHER"] },
+  platform_transactions: {
+    type: ["TRANSFER", "FX_CONVERSION", "BROKER_DEPOSIT", "BROKER_WITHDRAWAL", "BUY", "SELL", "DIVIDEND", "INTEREST", "FEE", "TAX", "CORPORATE_ACTION", "ADJUSTMENT", "Deposit", "Withdraw"],
+    status: ["PENDING", "SETTLED", "CANCELLED"],
+    audit_status: ["active", "reverted", "reversal"],
+  },
+};
+
+const NUMERIC_COLUMN_PATTERN = /(^amount$|_amount$|^gross_assets$|^liabilities$|^adjustments$|^net_asset_value$|^total_units$|^nav_per_unit$|^units$|percent$|rate|price|quantity|profit|balance|fee|tax)/;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function assertPrimitive(value: unknown, fieldName: string): asserts value is BackupPrimitive {
   if (value === null || ["string", "number", "boolean"].includes(typeof value)) return;
+  throw new Error(`Backup contains unsupported value at ${fieldName}.`);
+}
+
+function assertJsonValue(value: unknown, fieldName: string): asserts value is BackupJson {
+  if (value === null || ["string", "number", "boolean"].includes(typeof value)) return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertJsonValue(item, `${fieldName}.${index}`));
+    return;
+  }
+  if (isRecord(value)) {
+    for (const [key, item] of Object.entries(value)) {
+      assertJsonValue(item, `${fieldName}.${key}`);
+    }
+    return;
+  }
   throw new Error(`Backup contains unsupported value at ${fieldName}.`);
 }
 
@@ -45,12 +106,31 @@ function assertValidExportDate(exportedAt: unknown): asserts exportedAt is strin
 
 function parseBackupRows(tableName: BackupTableName, rows: unknown): BackupRow[] {
   if (!Array.isArray(rows)) throw new Error(`Backup table ${tableName} must be an array.`);
+  const allowedColumns = new Set(BACKUP_TABLE_COLUMN_ALLOWLIST[tableName]);
+  const enumColumns = BACKUP_ENUMS[tableName] ?? {};
 
   return rows.map((row, rowIndex) => {
     if (!isRecord(row)) throw new Error(`Backup table ${tableName} has an invalid row.`);
     const parsedRow: BackupRow = {};
     for (const [columnName, value] of Object.entries(row)) {
-      assertPrimitive(value, `${tableName}.${rowIndex}.${columnName}`);
+      if (!allowedColumns.has(columnName)) {
+        throw new Error(`Backup table ${tableName} contains unsupported column ${columnName}.`);
+      }
+      if (columnName === "details") {
+        assertJsonValue(value, `${tableName}.${rowIndex}.${columnName}`);
+      } else {
+        assertPrimitive(value, `${tableName}.${rowIndex}.${columnName}`);
+      }
+      const enumValues = enumColumns[columnName];
+      if (enumValues && value !== null && !enumValues.includes(String(value))) {
+        throw new Error(`Backup table ${tableName} contains invalid ${columnName}.`);
+      }
+      if (value !== null && NUMERIC_COLUMN_PATTERN.test(columnName)) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+          throw new Error(`Backup table ${tableName} contains invalid numeric value at ${columnName}.`);
+        }
+      }
       parsedRow[columnName] = value;
     }
     return parsedRow;

@@ -1,115 +1,80 @@
 # Private Admin Fund Manager
 
-Private Admin Fund Manager is a Next.js admin application for managing a private fund with weekly unit-based NAV accounting, investor unit balances, fixed-savings liabilities, and development-only seed/reset utilities.
+Private Admin Fund Manager is a self-hosted Next.js application for administering a private unit-based fund. It tracks weekly NAV snapshots, investor units, deposits, withdrawals, fixed-savings liabilities, platform trading records, profit claims, performance fees, backups, audit events, and read-only investor portal links.
 
-The current accounting model is a fresh start. Legacy capital-ratio records, monthly NAV assumptions, profit-claim IOUs, and platform-ledger ownership calculations are no longer the source of truth.
+This project is operational software for private fund administration. It is not investment advice, tax advice, legal advice, a public fundraising platform, or a regulated custody product.
 
-## Core Accounting Model
+## Features
+
+- Weekly unit-based NAV accounting with draft and locked NAV weeks.
+- Investor unit balances, market value, ownership percentage, and statement history.
+- Deposits and withdrawals settled against the latest locked weekly NAV.
+- Fixed-savings deposits and withdrawals tracked outside equity NAV.
+- Trading platform, account, asset, transaction, and performance tracking.
+- Profit claim locking and settlement with configurable brokerage/performance fee.
+- Audit log and reversal workflows for supported financial records.
+- Read-only investor portal links with rotation and access logging.
+- Manual JSON backup export, validation, and restore.
+- Development-only schema initialization and destructive seed/reset tools.
+- Repeatable unit, DB feature, browser E2E, lint, typecheck, and build verification scripts.
+
+## Accounting Model
 
 - Equity investors own fund units.
-- Weekly NAV is the only equity accounting source of truth.
-- Deposits issue units at a locked weekly NAV per unit.
-- Withdrawals redeem units at a locked weekly NAV per unit.
-- Investor ownership is calculated from current unit balance divided by total fund units.
-- Fixed savings is a liability book and is excluded from equity NAV ownership.
-- Performance fees are tracked separately from investor unit ownership.
+- Weekly locked NAV is the equity accounting source of truth.
+- Deposits issue units at the latest locked NAV per unit.
+- Withdrawals redeem units at the latest locked NAV per unit.
+- Investor ownership is current investor units divided by total active fund units.
+- Fixed savings is treated as a liability book and excluded from equity NAV ownership.
+- Performance fees and profit claims are tracked separately from investor unit ownership.
+- Late investors do not receive gains earned before their unit issuance.
 
 Default operating cycle:
 
-1. Admin creates a draft weekly NAV using Friday close valuation.
-2. Admin reviews gross assets, liabilities, and adjustments.
-3. Admin locks the weekly NAV.
-4. Deposits and withdrawals settle against the locked NAV, normally on Monday.
+1. Create a draft weekly NAV using Friday close valuation.
+2. Review platform snapshots, gross assets, liabilities, and adjustments.
+3. Lock the weekly NAV.
+4. Settle deposits and withdrawals against the locked NAV.
+5. Review investor statements, fees, claims, and audit logs.
 
-## Main Modules
+## Access Model
 
-- `Dashboard`: Latest AUM, NAV per unit, total units, fixed-savings liability, and investor unit balances.
-- `Weekly NAV`: Create, review, and lock weekly NAV snapshots.
-- `Investors`: Manage investors and review unit ownership.
-- `Capital`: Settle deposits and withdrawals against locked NAV weeks.
-- `Fixed Savings`: Record fixed-savings deposits and withdrawals as liabilities.
-- `Reports`: NAV trend, AUM, units, fees, and fixed-savings liability.
-- `Development`: Import dummy data or clean all financial/configuration data in development.
-- `Investor Portal`: Read-only investor-facing statement accessed through a private opaque link.
-
-## Authentication And Authorization
-
-The application implements two access paths:
-
-| Path | Access | Behavior |
+| Path | Access | Purpose |
 | --- | --- | --- |
-| `/admin/login` | Public login page | Accepts the configured administrator ID and password and creates a signed admin session. |
-| `/login` | Public portal entry page | Accepts an investor portal access ID and navigates to its statement link. |
-| `/portal/[portal_access_id]` | Possession-based read access | Shows only the statement associated with a valid opaque portal access ID. |
-| `/`, `/investors`, `/nav`, `/capital`, `/trading`, `/claims`, `/fixed-savings`, `/reports`, `/settings`, `/admin-logs`, `/development` | Admin session only | Redirects unauthenticated visitors to `/admin/login`. |
+| `/admin/login` | Public | Administrator login using configured credentials. |
+| `/login` | Public | Investor portal access entry. |
+| `/portal/[portal_access_id]` | Private bearer link | Read-only investor statement for the matching portal access ID. |
+| `/`, `/investors`, `/nav`, `/capital`, `/trading`, `/claims`, `/fixed-savings`, `/reports`, `/settings`, `/admin-logs`, `/development` | Admin session | Administrative fund operations. |
 
-Administrative authentication:
+Administrative access uses:
 
-- The administrator signs in with `ADMIN_LOGIN_ID` and the plaintext password originally used to generate `ADMIN_PASSWORD_HASH`.
-- The server verifies the password against its `scrypt` hash and creates an expiring signed `HttpOnly` session cookie.
-- All financial read and mutation server actions require the administrator session, not merely the visible dashboard layout.
-- The navigation bar includes `Log out`, which clears the administrator session.
+- `ADMIN_LOGIN_ID`
+- `ADMIN_PASSWORD_HASH`
+- `AUTH_SESSION_SECRET`
+- Signed `HttpOnly` session cookies
+- Server-side authorization checks on administrative reads and mutations
 
-Investor statement access:
+Portal links are possession-based bearer links. Anyone with a valid portal URL can view that investor's read-only statement until the link is rotated.
 
-- A new investor is assigned a random `portal_access_id` when created from the administrator interface.
-- Existing investors can be assigned a link with `Generate` in the `Portal` column on `/investors`.
-- `Copy` supplies the private read-only link to send to the friend; `Open` previews it.
-- `Rotate` invalidates the previous link and generates a replacement.
-- Portal links are not user authentication: anyone holding a valid link can view that statement.
+## Security Notes
 
-## Fresh Schema
+This application handles sensitive financial records. Do not deploy it casually.
 
-The application creates and uses these fresh-model tables:
+Required before public exposure:
 
-- `investors`
-- `nav_weeks`
-- `investor_unit_ledger`
-- `cash_movements`
-- `fixed_savings_accounts`
-- `fixed_savings_ledger`
-- `performance_fees`
-- `audit_events`
+- Use HTTPS only.
+- Use a dedicated production database.
+- Rotate any credentials ever committed, shared, logged, or used in local testing.
+- Set strong production values for all authentication and database environment variables.
+- Keep `.env.local` and production secrets out of git.
+- Keep `NODE_ENV=production` in production.
+- Confirm destructive development tools are unavailable in production.
+- Restrict database credentials to the minimum required privilege.
+- Put the app behind additional network controls if possible.
+- Back up the database before schema changes, restores, or releases.
+- Treat portal URLs as sensitive secrets.
 
-The `investors` table also stores:
-
-- `portal_access_id`: a unique opaque identifier for a read-only statement link.
-- `portal_access_rotated_at`: the last issue/rotation timestamp for that link.
-
-Legacy tables may still exist in an old development database, but they are not the accounting source of truth for the redesigned pages and are included in the development cleaner.
-
-## Development Data Tools
-
-The `Development` page contains bootstrap and destructive data utilities:
-
-- `Initialize Database`: Creates the required schema and restores baseline configuration without running schema checks during normal page renders.
-- `Import Dummy Data`: Deletes all resettable financial/configuration data and seeds sample investors, NAV weeks, unit ledgers, fixed-savings records, and fee examples.
-- `Clean All Data`: Deletes fresh-model records, legacy capital/trading records, profit claims, bonus logs, platform records, cash balances, audit events, and brokerage-fee configuration, then restores the default brokerage fee.
-
-These actions are blocked whenever `NODE_ENV=production`.
-
-They also require admin authorization and a typed confirmation phrase:
-
-- `IMPORT DUMMY DATA`
-- `INITIALIZE DATABASE`
-- `DELETE ALL FUND DATA`
-
-Never expose these tools in production without an explicit operational reason.
-
-## Security Requirements
-
-This application handles financial records. Treat Server Actions as public mutation endpoints.
-
-Required controls:
-
-- Rotate any database credentials previously stored in `.env.local`.
-- Use password-authenticated administrator sessions for all administrative access.
-- Authorize every financial mutation server-side.
-- Treat `/portal/[portal_access_id]` as a read-only private bearer link and rotate it if exposed.
-- Keep development seed/reset tools disabled in production.
-- Do not send portal links to anyone who should not view the associated statement.
-
-Local and production administration require the same signed-session authentication configuration; there is no development authorization bypass.
+Do not expose this application as a multi-tenant public SaaS without redesigning authorization, tenancy, rate limiting, monitoring, data isolation, and operational controls.
 
 ## Environment Variables
 
@@ -124,7 +89,7 @@ POSTGRES_PASSWORD=...
 POSTGRES_DATABASE=...
 ```
 
-Administrator authentication configuration:
+Administrator authentication:
 
 ```env
 ADMIN_LOGIN_ID=your-private-admin-login-id
@@ -132,23 +97,15 @@ ADMIN_PASSWORD_HASH=scrypt\$generated-salt\$generated-hash
 AUTH_SESSION_SECRET=generated-session-signing-secret
 ```
 
-`ADMIN_LOGIN_ID` is a private identifier chosen by the administrator. Generate the password hash and signing-secret values locally:
+Generate the password hash and session secret locally:
 
 ```bash
 node scripts/generate-auth-config.mjs "a-private-password-of-at-least-12-characters"
 ```
 
-Example `.env.local` structure:
+In `.env.local`, escape each `$` in `ADMIN_PASSWORD_HASH` as `\$` because Next.js expands unescaped dollar sequences in environment files. In hosted environment variable settings, use the raw hash without backslashes unless the provider explicitly requires escaping.
 
-```env
-ADMIN_LOGIN_ID=admin-inxcllee
-ADMIN_PASSWORD_HASH=scrypt\$<generated-salt>\$<generated-hash>
-AUTH_SESSION_SECRET=<generated-random-secret>
-```
-
-The password entered at `/admin/login` is the same plaintext password supplied to `generate-auth-config.mjs`; do not save that plaintext password in the environment file. In `.env.local`, each `$` in `ADMIN_PASSWORD_HASH` must be escaped as `\$` because Next.js expands unescaped dollar sequences in environment files. Place the generated local values and `ADMIN_LOGIN_ID` in ignored `.env.local`; when entering `ADMIN_PASSWORD_HASH` directly in Vercel project environment settings, use the raw hash without the two backslashes.
-
-## Local Development
+## Installation
 
 Install dependencies:
 
@@ -156,7 +113,7 @@ Install dependencies:
 npm install
 ```
 
-Run the app:
+Run the development server:
 
 ```bash
 npm run dev
@@ -168,33 +125,46 @@ Open:
 http://localhost:3000
 ```
 
-Recommended first local workflow:
+## First-Time Setup
 
-1. Configure `ADMIN_LOGIN_ID`, `ADMIN_PASSWORD_HASH`, and `AUTH_SESSION_SECRET` in `.env.local`.
-2. Open `/admin/login` and sign in.
-3. Open `/development`.
-4. Type `INITIALIZE DATABASE`.
-5. Click `Initialize Database`.
-6. Type `IMPORT DUMMY DATA` when sample local data is required.
-7. Click `Import Dummy Data`.
-8. Review `/nav`, `/capital`, `/investors`, and `/reports`.
+1. Configure database environment variables.
+2. Configure `ADMIN_LOGIN_ID`, `ADMIN_PASSWORD_HASH`, and `AUTH_SESSION_SECRET`.
+3. Start the app.
+4. Sign in at `/admin/login`.
+5. Open `/development`.
+6. Run `Initialize Database`.
+7. Optionally run `Import Dummy Data` for local testing only.
+8. Review `/nav`, `/capital`, `/investors`, `/trading`, `/claims`, `/fixed-savings`, `/reports`, and `/settings`.
 
-From `/investors`, generate or rotate an investor's portal link and send that private read-only link to the intended friend; possession of that link grants statement visibility until rotation.
+The `/development` tools are destructive and are blocked in production.
 
-Example portal workflow:
+## Investor Portal Workflow
 
-1. Admin creates `Alice Tan` from `/investors`.
-2. The app stores an opaque portal identifier, such as `0wGnPq...`, against Alice's record.
-3. Admin uses `Copy` and sends a URL shaped like `http://localhost:3000/portal/0wGnPq...`.
-4. Alice sees only the read-only investor statement for the record tied to that URL.
-5. Admin uses `Rotate` if the link is shared accidentally; the former link no longer resolves.
+1. Create or open an investor from `/investors`.
+2. Generate or rotate the investor portal access link.
+3. Share only the intended read-only portal URL with the investor.
+4. Rotate the link immediately if it is exposed to the wrong person.
+
+Portal access is not a password login. It is a private bearer link.
 
 ## Verification
 
-Run accounting tests:
+Run unit tests:
 
 ```bash
 npm test
+```
+
+Run destructive DB-backed feature tests:
+
+```bash
+npm run test:feature
+```
+
+Run browser E2E tests:
+
+```bash
+npm run test:e2e
 ```
 
 Run lint:
@@ -203,48 +173,54 @@ Run lint:
 npm run lint
 ```
 
+Run TypeScript checks:
+
+```bash
+npm run typecheck
+```
+
 Run production build:
 
 ```bash
 npm run build
 ```
 
-Required verification before deployment:
+Run the full verification suite:
 
-- Confirm anonymous visits to admin pages redirect to `/admin/login`.
-- Confirm invalid administrator credentials do not create a session.
-- Confirm a valid administrator session can use required dashboard operations and can log out.
-- Confirm a generated investor portal link opens its corresponding read-only statement.
-- Confirm a rotated investor portal link invalidates the previous link.
-- Confirm `npm test`, `npm run lint`, and `npm run build` pass before deploying.
-
-## Accounting Examples
-
-Deposit:
-
-```text
-Locked NAV per unit: RM 1.250000
-Investor deposit: RM 5,000.00
-Units issued: 4,000.000000
+```bash
+npm run verify
 ```
 
-Withdrawal:
+`test:feature` and `test:e2e` intentionally reset, insert, update, and restore data in the configured database. Do not run them against data you need to preserve.
 
-```text
-Locked NAV per unit: RM 1.250000
-Investor requests: RM 3,125.00
-Units redeemed: 2,500.000000
-Cash paid: RM 3,125.00
-```
+## Release Checklist
 
-Late investor protection:
+- `npm run verify` passes.
+- Production database has a fresh backup.
+- Production secrets are configured in the hosting provider.
+- Local/test credentials are not reused in production.
+- Anonymous admin routes redirect to `/admin/login`.
+- Invalid admin credentials do not create a session.
+- A valid admin can complete required operational workflows.
+- Investor portal links show only the matching read-only statement.
+- Rotated portal links no longer resolve.
+- Development tools are blocked in production.
+- Backup export and restore process is documented for the operator.
 
-```text
-Founder deposits RM 10,000.00 at NAV 1.000000 and receives 10,000 units.
-Fund rises to RM 12,000.00, so NAV becomes 1.200000.
-Late investor deposits RM 6,000.00 and receives 5,000 units.
-Late investor does not receive the founder's prior RM 2,000.00 gain.
-```
+## Main Modules
+
+- Dashboard: AUM, NAV per unit, total units, liabilities, fees, and investor summary.
+- Weekly NAV: Draft, review, and lock weekly NAV snapshots.
+- Investors: Investor directory, unit balances, portal links, and statements.
+- Capital: Deposits and withdrawals settled against locked NAV.
+- Fixed Savings: Liability ledger for fixed-savings deposits and withdrawals.
+- Trading: Platform directory, transactions, assets, accounts, and performance.
+- Claims: Profit claim settlement and outstanding balances.
+- Brokerage: Fee configuration and bonus/payment workflows.
+- Reports: Fund-level trends and summary reporting.
+- Settings: Protected backup and operational tools.
+- Admin Logs: Audit trail and supported reversal controls.
+- Development: Local-only schema and seed/reset utilities.
 
 ## Technical Stack
 
@@ -255,12 +231,20 @@ Late investor does not receive the founder's prior RM 2,000.00 gain.
 - Tailwind CSS
 - shadcn-style UI components
 - Node.js built-in test runner
+- Headless Chromium/Edge browser E2E harness through Chrome DevTools Protocol
 
-## Production Notes
+## Production Limitations
 
-- Review every Server Action when adding new financial workflows.
-- Keep destructive data tools behind production gates.
-- Use database backups before any schema reset or destructive operation.
-- Maintain audit events for NAV locks, cash movements, fixed-savings records, seed imports, and data wipes.
-- Run schema initialization explicitly from `/development` or a deployment bootstrap job; normal page renders do not create or alter tables.
-- Financial pages are forced to dynamic rendering so database-backed views are resolved at request time instead of being prerendered during `next build`.
+- No multi-tenant isolation.
+- No public self-registration.
+- No payment processor integration.
+- No investor password accounts.
+- No formal compliance workflow.
+- No automated tax reporting.
+- No guarantee of regulatory suitability.
+
+These are deliberate boundaries. Expanding beyond private administration requires a separate security and compliance design.
+
+## License
+
+Add a license before publishing publicly. Without a license, public source code remains copyrighted and reuse rights are unclear.

@@ -1,4 +1,5 @@
 import { sql } from "@vercel/postgres";
+import { createHash } from "node:crypto";
 import {
   accrueDailyCompoundInterest,
   calculateNavPerUnit,
@@ -66,9 +67,17 @@ type FixedSavingsInput = {
   notes?: string;
 };
 
+type PortalAccessMeta = {
+  clientKey: string;
+  userAgent?: string;
+};
+
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const DEFAULT_BROKERAGE_FEE_RATE = "2.0";
 const RESETTABLE_FINANCIAL_TABLES = BACKUP_TABLES;
+const PORTAL_ACCESS_WINDOW_MINUTES = 15;
+const PORTAL_ACCESS_MAX_REQUESTS = 120;
+const PORTAL_ACCESS_WINDOW_INTERVAL = `${PORTAL_ACCESS_WINDOW_MINUTES} minutes`;
 
 function assertResettableTableName(tableName: string) {
   assertBackupTableName(tableName);
@@ -275,6 +284,60 @@ async function ensureInvestorPortalAccessColumns() {
     CREATE UNIQUE INDEX IF NOT EXISTS investors_portal_access_id_key
     ON investors (portal_access_id)
     WHERE portal_access_id IS NOT NULL
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS portal_access_events (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      investor_id UUID REFERENCES investors(id) ON DELETE SET NULL,
+      portal_access_hash TEXT NOT NULL,
+      client_key TEXT NOT NULL,
+      user_agent TEXT,
+      outcome TEXT NOT NULL CHECK (outcome IN ('success', 'not_found', 'rate_limited', 'rotated')),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS portal_access_events_client_created_idx ON portal_access_events (client_key, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS portal_access_events_portal_created_idx ON portal_access_events (portal_access_hash, created_at DESC)`;
+}
+
+function hashPortalAccessId(portalAccessId: string) {
+  return createHash("sha256").update(portalAccessId).digest("base64url");
+}
+
+async function assertPortalAccessAllowed(portalAccessHash: string, meta?: PortalAccessMeta) {
+  if (!meta?.clientKey) return;
+  const result = await sql`
+    SELECT COUNT(*)::int as requests
+    FROM portal_access_events
+    WHERE client_key = ${meta.clientKey}
+      AND created_at > NOW() - ${PORTAL_ACCESS_WINDOW_INTERVAL}::interval
+  `;
+  if (Number(result.rows[0]?.requests || 0) >= PORTAL_ACCESS_MAX_REQUESTS) {
+    await writePortalAccessEvent({
+      investorId: null,
+      portalAccessHash,
+      meta,
+      outcome: "rate_limited",
+    });
+    throw new Error("Too many portal access attempts. Try again later.");
+  }
+}
+
+async function writePortalAccessEvent({
+  investorId,
+  portalAccessHash,
+  meta,
+  outcome,
+}: {
+  investorId: string | null;
+  portalAccessHash: string;
+  meta?: PortalAccessMeta;
+  outcome: "success" | "not_found" | "rate_limited" | "rotated";
+}) {
+  if (!meta?.clientKey) return;
+  await sql`
+    INSERT INTO portal_access_events (investor_id, portal_access_hash, client_key, user_agent, outcome)
+    VALUES (${investorId}, ${portalAccessHash}, ${meta.clientKey}, ${meta.userAgent || null}, ${outcome})
   `;
 }
 
@@ -589,6 +652,7 @@ export async function getTotalUnits() {
   const res = await sql`
     SELECT COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as total
     FROM investor_unit_ledger
+    WHERE audit_status = 'active'
   `;
   return roundUnits(parseFloat(res.rows[0]?.total || "0"));
 }
@@ -598,6 +662,7 @@ export async function getInvestorUnits(investorId: string) {
     SELECT COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as total
     FROM investor_unit_ledger
     WHERE investor_id = ${investorId}
+      AND audit_status = 'active'
   `;
   return roundUnits(parseFloat(res.rows[0]?.total || "0"));
 }
@@ -834,7 +899,7 @@ export async function recordFixedSavings(input: FixedSavingsInput) {
       SELECT fsa.id,
         COALESCE(SUM(CASE WHEN fsl.type = 'Deposit' THEN fsl.amount WHEN fsl.type = 'Withdrawal' THEN -fsl.amount ELSE 0 END), 0) as balance
       FROM fixed_savings_accounts fsa
-      LEFT JOIN fixed_savings_ledger fsl ON fsl.account_id = fsa.id
+      LEFT JOIN fixed_savings_ledger fsl ON fsl.account_id = fsa.id AND fsl.audit_status = 'active'
       WHERE fsa.investor_id = ${input.investorId} AND fsa.status = 'active'
       GROUP BY fsa.id, fsa.opened_at
       HAVING COALESCE(SUM(CASE WHEN fsl.type = 'Deposit' THEN fsl.amount WHEN fsl.type = 'Withdrawal' THEN -fsl.amount ELSE 0 END), 0) >= ${input.amount}
@@ -861,6 +926,7 @@ export async function recordFixedSavings(input: FixedSavingsInput) {
           SELECT COALESCE(SUM(CASE WHEN type = 'Deposit' THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END), 0)
           FROM fixed_savings_ledger
           WHERE account_id = ${accountId}
+            AND audit_status = 'active'
         ) <= 0
     `;
   }
@@ -881,6 +947,7 @@ export async function getCashMovements() {
     FROM cash_movements cm
     JOIN investors i ON i.id = cm.investor_id
     LEFT JOIN nav_weeks nw ON nw.id = cm.nav_week_id
+    WHERE cm.audit_status = 'active'
     ORDER BY cm.date DESC, cm.created_at DESC
   `;
   return res.rows;
@@ -893,6 +960,7 @@ export async function getFixedSavingsLedger() {
     SELECT fsl.*, i.name as investor_name, TO_CHAR(fsl.date, 'YYYY-MM-DD') as date
     FROM fixed_savings_ledger fsl
     JOIN investors i ON i.id = fsl.investor_id
+    WHERE fsl.audit_status = 'active'
     ORDER BY fsl.date DESC, fsl.created_at DESC
   `;
   return res.rows;
@@ -914,11 +982,13 @@ export async function getInvestorsWithBalances() {
       fund_units AS (
         SELECT COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as total_units
         FROM investor_unit_ledger
+        WHERE audit_status = 'active'
       ),
       investor_units AS (
         SELECT investor_id,
           COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as units
         FROM investor_unit_ledger
+        WHERE audit_status = 'active'
         GROUP BY investor_id
       )
       SELECT i.id, i.name, i.portal_access_id, i.portal_access_rotated_at,
@@ -934,6 +1004,7 @@ export async function getInvestorsWithBalances() {
     sql`
       SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM fixed_savings_ledger
+      WHERE audit_status = 'active'
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
     `,
     sql`
@@ -941,6 +1012,7 @@ export async function getInvestorsWithBalances() {
         CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
       FROM investor_unit_ledger iul
       LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
+      WHERE iul.audit_status = 'active'
       ORDER BY iul.date ASC, iul.created_at ASC
     `,
   ]);
@@ -977,6 +1049,7 @@ export async function getInvestorsWithBalances() {
 }
 
 export async function getInvestorStatement(investorId: string) {
+  await ensureAuditColumns();
   const [summary, unitLedger, cash, savings, bonuses, fees] = await Promise.all([
     sql`
       WITH latest_nav AS (
@@ -993,11 +1066,13 @@ export async function getInvestorStatement(investorId: string) {
       fund_units AS (
         SELECT COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as total_units
         FROM investor_unit_ledger
+        WHERE audit_status = 'active'
       ),
       investor_units AS (
         SELECT COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as units
         FROM investor_unit_ledger
         WHERE investor_id = ${investorId}
+          AND audit_status = 'active'
       )
       SELECT i.id, i.name, TO_CHAR(i.created_at, 'YYYY-MM-DD') as joined,
         COALESCE(iu.units, 0) as units,
@@ -1015,18 +1090,21 @@ export async function getInvestorStatement(investorId: string) {
       FROM investor_unit_ledger iul
       LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
       WHERE iul.investor_id = ${investorId}
+        AND iul.audit_status = 'active'
       ORDER BY iul.date DESC, iul.created_at DESC
     `,
     sql`
       SELECT *, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM cash_movements
       WHERE investor_id = ${investorId}
+        AND audit_status = 'active'
       ORDER BY cash_movements.date DESC, cash_movements.created_at DESC
     `,
     sql`
       SELECT *, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM fixed_savings_ledger
       WHERE investor_id = ${investorId}
+        AND audit_status = 'active'
       ORDER BY fixed_savings_ledger.date DESC, fixed_savings_ledger.created_at DESC
     `,
     sql`
@@ -1035,6 +1113,7 @@ export async function getInvestorStatement(investorId: string) {
       FROM bonus_payments bp
       LEFT JOIN investor_unit_ledger iul ON iul.id = bp.source_id
       WHERE bp.investor_id = ${investorId}
+        AND bp.audit_status = 'active'
       ORDER BY bp.date DESC, bp.created_at DESC
     `,
     sql`
@@ -1139,7 +1218,10 @@ export async function getInvestorStatement(investorId: string) {
   };
 }
 
-export async function getInvestorStatementByPortalAccessId(portalAccessId: string) {
+export async function getInvestorStatementByPortalAccessId(portalAccessId: string, meta?: PortalAccessMeta) {
+  await ensureInvestorPortalAccessColumns();
+  const portalAccessHash = hashPortalAccessId(portalAccessId);
+  await assertPortalAccessAllowed(portalAccessHash, meta);
   const result = await sql`
     SELECT id
     FROM investors
@@ -1147,6 +1229,12 @@ export async function getInvestorStatementByPortalAccessId(portalAccessId: strin
     LIMIT 1
   `;
   const investorId = result.rows[0]?.id;
+  await writePortalAccessEvent({
+    investorId: investorId ?? null,
+    portalAccessHash,
+    meta,
+    outcome: investorId ? "success" : "not_found",
+  });
   return investorId ? getInvestorStatement(investorId) : null;
 }
 
@@ -1169,6 +1257,7 @@ export async function getFundSummaryMetrics() {
       fund_units AS (
         SELECT COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as total_units
         FROM investor_unit_ledger
+        WHERE audit_status = 'active'
       ),
       fees AS (
         SELECT COALESCE(SUM(fee_amount), 0) as total
@@ -1183,6 +1272,7 @@ export async function getFundSummaryMetrics() {
     sql`
       SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM fixed_savings_ledger
+      WHERE audit_status = 'active'
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
     `,
   ]);

@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/scratch/browser-e2e-profile/
+/scratch/browser-e2e-next.log
 
 # next.js
 /.next/

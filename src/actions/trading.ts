@@ -251,13 +251,8 @@ export async function updatePlatformName(formData: FormData) {
 
 export async function deletePlatform(id: string) {
   await requireAdmin();
-  try {
-    await sql`DELETE FROM platforms WHERE id = ${id}`;
-    revalidateTrading();
-    return { success: true };
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : "Failed to delete platform." };
-  }
+  void id;
+  return { error: "Platforms cannot be hard-deleted because transaction history depends on them. Disable new activity or use reversing transactions." };
 }
 
 export async function addPlatformAccount(formData: FormData) {

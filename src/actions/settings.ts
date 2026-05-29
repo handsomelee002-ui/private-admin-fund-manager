@@ -84,6 +84,7 @@ export async function getAllBonusPayments() {
       bp.created_at
     FROM bonus_payments bp
     LEFT JOIN investors i ON bp.investor_id = i.id
+    WHERE bp.audit_status = 'active'
     ORDER BY bp.created_at DESC;
   `;
   return res.rows;
@@ -91,11 +92,13 @@ export async function getAllBonusPayments() {
 
 export async function getBonusByInvestor(investorId: string) {
   await requireAdmin();
+  await ensureSettingsTables();
   const res = await sql`
     SELECT id, ledger_type, amount,
            TO_CHAR(date, 'YYYY-MM-DD') as date, notes
     FROM bonus_payments
     WHERE investor_id = ${investorId}
+      AND audit_status = 'active'
     ORDER BY bonus_payments.date DESC;
   `;
   return res.rows;
@@ -188,6 +191,7 @@ async function getInvestorUnitBalance(investorId: string) {
     SELECT COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as total
     FROM investor_unit_ledger
     WHERE investor_id = ${investorId}
+      AND audit_status = 'active'
   `;
   return parseFloat(res.rows[0]?.total || "0");
 }
@@ -227,6 +231,7 @@ export async function addBonusPayment(formData: FormData) {
               SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END)
                 * COALESCE((SELECT nav_per_unit FROM latest_nav), 1) as net
             FROM investor_unit_ledger
+            WHERE audit_status = 'active'
             GROUP BY investor_id
             HAVING SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END) > 0
           `
@@ -234,6 +239,7 @@ export async function addBonusPayment(formData: FormData) {
             SELECT investor_id,
               SUM(CASE WHEN type = 'Deposit' THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END) as net
             FROM fixed_savings_ledger
+            WHERE audit_status = 'active'
             GROUP BY investor_id
             HAVING SUM(CASE WHEN type = 'Deposit' THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END) > 0
           `;

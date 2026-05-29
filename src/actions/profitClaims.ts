@@ -216,14 +216,6 @@ export async function settleClaim(formData: FormData) {
 
 export async function deleteClaim(id: string) {
   await requireAdmin();
-  try {
-    await sql`DELETE FROM investor_profit_claims WHERE id = ${id}`;
-    revalidatePath("/claims");
-    revalidatePath("/investors");
-    revalidatePath("/reports");
-    return { success: true };
-  } catch (error) {
-    console.error("DB Error:", error);
-    return { error: "Failed to delete claim." };
-  }
+  void id;
+  return { error: "Profit claims cannot be hard-deleted. Settle, reverse through audit controls, or create a correcting claim." };
 }

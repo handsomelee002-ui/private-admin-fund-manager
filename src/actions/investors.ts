@@ -1,9 +1,14 @@
 "use server";
 
+import { createHash } from "node:crypto";
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { generatePortalAccessId, requireAdmin } from "@/lib/auth";
-import { getInvestorsWithBalances } from "@/lib/fundDb";
+import { ensureAuditColumns, getInvestorsWithBalances, writeAuditEvent } from "@/lib/fundDb";
+
+function hashPortalAccessId(portalAccessId: string | null | undefined) {
+  return portalAccessId ? createHash("sha256").update(portalAccessId).digest("base64url") : null;
+}
 
 export async function getInvestors() {
   await requireAdmin();
@@ -41,6 +46,7 @@ export async function addInvestor(formData: FormData) {
 
 export async function rotateInvestorPortalAccess(id: string) {
   await requireAdmin();
+  await ensureAuditColumns();
   const portalAccessId = generatePortalAccessId();
 
   try {
@@ -48,10 +54,13 @@ export async function rotateInvestorPortalAccess(id: string) {
       UPDATE investors
       SET portal_access_id = ${portalAccessId}, portal_access_rotated_at = NOW()
       WHERE id = ${id}
-      RETURNING id
+      RETURNING id, portal_access_id
     `;
     if (updated.rows.length === 0) return { error: "Investor not found." };
 
+    await writeAuditEvent("portal_access.rotate", "investors", id, {
+      newPortalAccessHash: hashPortalAccessId(portalAccessId),
+    });
     revalidatePath("/investors");
     revalidatePath(`/investors/${id}`);
     return { success: true, portalAccessId };
@@ -63,14 +72,8 @@ export async function rotateInvestorPortalAccess(id: string) {
 
 export async function deleteInvestor(id: string) {
   await requireAdmin();
-  try {
-    await sql`DELETE FROM investors WHERE id = ${id}`;
-    revalidatePath("/investors");
-    return { success: true };
-  } catch (error) {
-    console.error("Database Error:", error);
-    return { error: "Failed to delete investor." };
-  }
+  void id;
+  return { error: "Investor records cannot be hard-deleted in production. Use reversible ledger adjustments and mark the investor inactive in a dedicated workflow." };
 }
 
 export async function updateInvestorName(formData: FormData) {
