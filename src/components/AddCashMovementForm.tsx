@@ -4,6 +4,7 @@ import { useState } from "react";
 import { recordCashMovementAction } from "@/actions/fund";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { InvestorSelect, investorDisplayName, type InvestorOption } from "@/components/InvestorSelect";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -13,7 +14,7 @@ export function AddCashMovementForm({
   investors,
   defaultInvestorId,
 }: {
-  investors: any[];
+  investors: InvestorOption[];
   defaultInvestorId?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -32,7 +33,7 @@ export function AddCashMovementForm({
     setLoading(true);
     const result = await recordCashMovementAction(formData);
     setLoading(false);
-    if (result?.success) setOpen(false);
+    if ("success" in result && result.success) setOpen(false);
     else alert(result?.error || "Failed to record cash movement.");
   }
 
@@ -50,16 +51,9 @@ export function AddCashMovementForm({
           <div className="space-y-2">
             <Label>Investor</Label>
             {defaultInvestorId ? (
-              <Input value={selectedInvestor?.name || "Selected investor"} readOnly />
+              <Input value={investorDisplayName(selectedInvestor)} readOnly />
             ) : (
-              <Select value={investorId} onValueChange={(value) => setInvestorId(value || "")}>
-                <SelectTrigger><SelectValue placeholder="Select investor" /></SelectTrigger>
-                <SelectContent>
-                  {investors.map((investor) => (
-                    <SelectItem key={investor.id} value={investor.id}>{investor.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <InvestorSelect investors={investors} value={investorId} onValueChange={setInvestorId} />
             )}
           </div>
           <div className="grid grid-cols-2 gap-4">

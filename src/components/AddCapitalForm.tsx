@@ -8,8 +8,9 @@ import { Label } from "@/components/ui/label";
 import { Plus } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { addCapitalRecord } from "@/actions/capital";
+import { InvestorSelect, type InvestorOption } from "@/components/InvestorSelect";
 
-export function AddCapitalForm({ investors, defaultInvestorId }: { investors: any[], defaultInvestorId?: string }) {
+export function AddCapitalForm({ investors, defaultInvestorId }: { investors: InvestorOption[], defaultInvestorId?: string }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [investorId, setInvestorId] = useState<string>(defaultInvestorId || "");
@@ -75,18 +76,12 @@ export function AddCapitalForm({ investors, defaultInvestorId }: { investors: an
           <form onSubmit={handleSubmit} className="space-y-4 pt-4">
             <div className="space-y-2">
               <Label>Investor</Label>
-              <Select value={investorId} onValueChange={(val) => setInvestorId(val || "")} disabled={!!defaultInvestorId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select investor">
-                    {investorId ? investors.find(i => i.id === investorId)?.name : "Select investor"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {investors.map((inv) => (
-                    <SelectItem key={inv.id} value={inv.id}>{inv.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <InvestorSelect
+                investors={investors}
+                value={investorId}
+                onValueChange={setInvestorId}
+                disabled={!!defaultInvestorId}
+              />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">

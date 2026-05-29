@@ -7,13 +7,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { addFixedSavingsRecord } from "@/actions/fixedSavings";
+import { InvestorSelect, type InvestorOption } from "@/components/InvestorSelect";
 import { PlusCircle, Percent, TrendingUp } from "lucide-react";
 
 export function AddFixedSavingsForm({
   investors,
   defaultInvestorId,
 }: {
-  investors: any[];
+  investors: InvestorOption[];
   defaultInvestorId?: string;
   /** @deprecated no longer used – interest is computed dynamically */
   currentBalance?: number;
@@ -75,22 +76,12 @@ export function AddFixedSavingsForm({
           {!defaultInvestorId && (
             <div className="space-y-2">
               <Label>Investor</Label>
-              <Select
+              <InvestorSelect
+                investors={investors}
                 value={investorId}
-                onValueChange={(val) => { if (val) setInvestorId(val); }}
-                required
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select investor..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {investors.map((i) => (
-                    <SelectItem key={i.id} value={i.id}>
-                      {i.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                onValueChange={setInvestorId}
+                placeholder="Select investor..."
+              />
             </div>
           )}
 
