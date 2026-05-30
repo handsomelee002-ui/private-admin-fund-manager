@@ -52,7 +52,7 @@ export default async function InvestorDetailPage({
       <div className="flex items-start justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <Link href="/investors">
+            <Link href="/investors" prefetch={false}>
               <Button variant="outline" size="sm">
                 <ArrowLeft className="h-4 w-4" />
               </Button>
@@ -113,8 +113,8 @@ export default async function InvestorDetailPage({
           <div className="flex items-center justify-between gap-3">
             <CardTitle className="text-base">Activity Ledger</CardTitle>
             <div className="flex items-center gap-2 text-sm">
-              <Link className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}`}>Active</Link>
-              <Link className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}?status=all`}>All</Link>
+              <Link className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}`} prefetch={false}>Active</Link>
+              <Link className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}?status=all`} prefetch={false}>All</Link>
             </div>
           </div>
         </CardHeader>

@@ -40,8 +40,8 @@ export default async function FixedSavingsPage({
           <p className="text-muted-foreground mt-1 text-sm">Liability book excluded from equity unit NAV.</p>
         </div>
         <div className="flex items-center gap-2">
-          <Link className={statusFilter === "active" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/fixed-savings">Active</Link>
-          <Link className={statusFilter === "all" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/fixed-savings?status=all">All</Link>
+          <Link className={statusFilter === "active" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/fixed-savings" prefetch={false}>Active</Link>
+          <Link className={statusFilter === "all" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/fixed-savings?status=all" prefetch={false}>All</Link>
           <AddFixedSavingsMovementForm investors={investors} />
         </div>
       </div>

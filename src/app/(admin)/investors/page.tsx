@@ -70,7 +70,7 @@ export default async function InvestorsPage({
               {sortedInvestors.map((investor: any) => (
                 <TableRow key={investor.id} className="group">
                   <TableCell className="pl-6">
-                    <Link href={`/investors/${investor.id}`} className="flex items-center gap-3 w-fit">
+                    <Link href={`/investors/${investor.id}`} prefetch={false} className="flex items-center gap-3 w-fit">
                       <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center font-bold text-primary text-sm">
                         {investor.name.charAt(0).toUpperCase()}
                       </div>

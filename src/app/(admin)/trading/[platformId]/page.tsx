@@ -73,6 +73,7 @@ export default async function PlatformDetailsPage({
         <div className="flex items-center gap-4">
           <Link
             href="/trading"
+            prefetch={false}
             className="h-9 w-9 rounded-full border border-border/50 bg-card/50 flex items-center justify-center text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -194,8 +195,8 @@ export default async function PlatformDetailsPage({
                 <div className="flex items-center justify-between gap-3">
                   <CardTitle className="text-base">Transaction History</CardTitle>
                   <div className="flex items-center gap-2 text-sm">
-                    <Link className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}`}>Active</Link>
-                    <Link className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}?status=all`}>All</Link>
+                    <Link className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}`} prefetch={false}>Active</Link>
+                    <Link className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}?status=all`} prefetch={false}>All</Link>
                   </div>
                 </div>
               </CardHeader>

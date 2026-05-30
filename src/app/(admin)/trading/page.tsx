@@ -147,6 +147,7 @@ export default async function TradingLedgerPage({
                     <TableCell className="pl-6">
                       <Link
                         href={`/trading/${platform.id}`}
+                        prefetch={false}
                         className="flex items-center gap-2 w-fit"
                       >
                         <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">

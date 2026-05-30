@@ -12,7 +12,7 @@ export default function PortalLoginPage() {
         <CardContent className="space-y-5">
           <PortalAccessEntryForm />
           <p className="text-center text-sm text-muted-foreground">
-            Administrator? <Link className="text-primary hover:underline" href="/admin/login">Sign in</Link>
+            Administrator? <Link className="text-primary hover:underline" href="/admin/login" prefetch={false}>Sign in</Link>
           </p>
         </CardContent>
       </Card>

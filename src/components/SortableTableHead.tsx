@@ -45,6 +45,7 @@ export function SortableTableHead({
     <TableHead className={className}>
       <Link
         href={`?${params.toString()}`}
+        prefetch={false}
         className={cn(
           "inline-flex items-center gap-1 rounded-sm hover:text-foreground",
           className?.includes("text-right") && "justify-end w-full",

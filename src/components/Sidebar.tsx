@@ -50,6 +50,7 @@ export function Sidebar() {
               <Link
                 key={item.name}
                 href={item.href}
+                prefetch={false}
                 className={cn(
                   isActive
                     ? "bg-primary/10 text-primary font-semibold"

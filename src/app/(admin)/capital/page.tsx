@@ -43,8 +43,8 @@ export default async function CapitalLedgerPage({
           <p className="text-muted-foreground mt-1 text-sm">Deposits issue units and withdrawals redeem units at the latest locked weekly NAV.</p>
         </div>
         <div className="flex items-center gap-2">
-          <Link className={statusFilter === "active" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital">Active</Link>
-          <Link className={statusFilter === "all" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital?status=all">All</Link>
+          <Link className={statusFilter === "active" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital" prefetch={false}>Active</Link>
+          <Link className={statusFilter === "all" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital?status=all" prefetch={false}>All</Link>
           <AddCashMovementForm investors={investors} />
         </div>
       </div>
