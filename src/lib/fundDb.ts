@@ -155,6 +155,14 @@ async function ensureAuditColumnsUncached() {
   await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+  await sql`CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events (created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS audit_events_action_created_at_idx ON audit_events (action, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS audit_events_reversal_original_idx ON audit_events ((details->>'originalAuditEventId')) WHERE action LIKE '%.revert'`;
+  await sql`CREATE INDEX IF NOT EXISTS platform_transactions_latest_active_idx ON platform_transactions (platform_id, date DESC, created_at DESC) WHERE audit_status = 'active'`;
+  await sql`CREATE INDEX IF NOT EXISTS cash_movements_latest_active_idx ON cash_movements (investor_id, date DESC, created_at DESC) WHERE audit_status = 'active'`;
+  await sql`CREATE INDEX IF NOT EXISTS investor_unit_ledger_latest_active_idx ON investor_unit_ledger (investor_id, date DESC, created_at DESC) WHERE audit_status = 'active'`;
+  await sql`CREATE INDEX IF NOT EXISTS fixed_savings_account_latest_active_idx ON fixed_savings_ledger (account_id, date DESC, created_at DESC) WHERE audit_status = 'active' AND account_id IS NOT NULL`;
+  await sql`CREATE INDEX IF NOT EXISTS fixed_savings_legacy_latest_active_idx ON fixed_savings_ledger (investor_id, date DESC, created_at DESC) WHERE audit_status = 'active' AND account_id IS NULL`;
 }
 
 export async function ensureAuditColumns() {

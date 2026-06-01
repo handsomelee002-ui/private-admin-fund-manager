@@ -21,6 +21,7 @@ type AuditLogDetails = {
   readableDetails?: Record<string, unknown>;
   canRevert?: boolean;
   has_revert?: boolean;
+  revertSupport?: string;
 };
 
 function formatValue(value: unknown): string {
@@ -42,16 +43,6 @@ function flattenReadableDetails(value: unknown, prefix = ""): { label: string; v
     }
     return [{ label, value: formatValue(item) }];
   });
-}
-
-function revertSupportText(log: AuditLogDetails) {
-  if (log.action.endsWith(".revert")) return "No. Reversal records are audit evidence and cannot be reverted from this row.";
-  if (log.has_revert) return "No. This event already has a reversal record.";
-  if (log.action === "platform_transaction.add") return "Yes, if it is the latest active platform transaction and no locked NAV depends on its date.";
-  if (log.action === "cash_movement.add") return "Yes, if it is the latest active investor cash movement, no later unit activity depends on it, and no locked NAV depends on its date.";
-  if (log.action === "fixed_savings.add") return "Yes, if it is the latest active fixed-savings movement for that account/investor.";
-  if (log.action === "bonus_payment.add") return "Equity bonus only. Fixed-savings bonus reversal is not implemented yet.";
-  return "No. This action is informational, configuration, setup, or structural audit history.";
 }
 
 export function AuditLogDetailsButton({ log }: { log: AuditLogDetails }) {
@@ -106,7 +97,7 @@ export function AuditLogDetailsButton({ log }: { log: AuditLogDetails }) {
           <div>
             <div className="mb-1 text-muted-foreground">Revert Support</div>
             <div className="rounded-md border border-border/50 bg-muted/20 p-2">
-              {revertSupportText(log)}
+              {log.revertSupport || "This audit event cannot be reverted."}
             </div>
           </div>
           <div>

@@ -5,12 +5,34 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
 import { ensureAuditColumns, writeAuditEvent } from "@/lib/fundDb";
 
-const REVERSIBLE_ACTIONS = new Set([
+const REVERSIBLE_ACTION_LIST = [
   "platform_transaction.add",
   "cash_movement.add",
   "fixed_savings.add",
   "bonus_payment.add",
-]);
+] as const;
+const REVERSIBLE_ACTIONS = new Set<string>(REVERSIBLE_ACTION_LIST);
+type AdminLogStatusFilter = "all" | "active" | "blocked" | "reverted" | "reversal";
+
+const REVERT_REASONS = {
+  unsupported: "This audit event is informational or structural history and cannot be reverted.",
+  reversalRecord: "Reversal records are audit evidence and cannot be reverted.",
+  alreadyReverted: "This event has already been reverted.",
+  missingEntity: "The source financial record no longer exists, so this audit event cannot be safely reverted.",
+  inactiveEntity: "Only active financial records can be reverted.",
+  platformLatest: "Only the latest active platform transaction for the platform can be reverted.",
+  investorLatestCash: "Only the latest active investor cash movement for the investor can be reverted.",
+  laterInvestorUnits: "Later investor unit activity depends on this cash movement.",
+  fixedSavingsLatest: "Only the latest active fixed-savings movement for the account or legacy investor balance can be reverted.",
+  fixedSavingsBonus: "Fixed-savings bonus reversal is not implemented; use an explicit current-period adjustment.",
+  equityBonusLatest: "Only the latest active equity bonus unit movement for the investor can be reverted.",
+  lockedHistory: "Later locked financial history depends on this record; use a current-period adjustment instead.",
+} as const;
+
+type RevertEligibility = {
+  canRevert: boolean;
+  revertSupport: string;
+};
 
 function collectEntityIds(rows: any[], entityType: string) {
   return rows
@@ -28,10 +50,115 @@ async function lookupById(query: string, ids: string[]) {
   return new Map(result.rows.map((row: any) => [row.id, row]));
 }
 
+async function latestLockedNavWeekEnding() {
+  const result = await sql`SELECT TO_CHAR(MAX(week_ending), 'YYYY-MM-DD') as week_ending FROM nav_weeks WHERE status = 'locked'`;
+  return result.rows[0]?.week_ending as string | null;
+}
+
+function lockedNavDependsOn(date: string | null | undefined, latestLockedWeekEnding: string | null) {
+  return Boolean(date && latestLockedWeekEnding && latestLockedWeekEnding >= date);
+}
+
+function auditStatus(row: any): Exclude<AdminLogStatusFilter, "all"> {
+  if (row.action.endsWith(".revert")) return "reversal";
+  if (row.has_revert) return "reverted";
+  if (!row.canRevert) return "blocked";
+  return "active";
+}
+
+async function latestActivePlatformTransactionIds(platformIds: string[]) {
+  if (platformIds.length === 0) return new Map<string, string>();
+  const result = await sql.query(`
+    SELECT DISTINCT ON (platform_id) platform_id, id
+    FROM platform_transactions
+    WHERE platform_id = ANY($1::uuid[])
+      AND audit_status = 'active'
+    ORDER BY platform_id, date DESC, created_at DESC
+  `, [platformIds]);
+  return new Map(result.rows.map((row: any) => [row.platform_id, row.id]));
+}
+
+async function latestActiveCashMovementIds(investorIds: string[]) {
+  if (investorIds.length === 0) return new Map<string, string>();
+  const result = await sql.query(`
+    SELECT DISTINCT ON (investor_id) investor_id, id
+    FROM cash_movements
+    WHERE investor_id = ANY($1::uuid[])
+      AND audit_status = 'active'
+    ORDER BY investor_id, date DESC, created_at DESC
+  `, [investorIds]);
+  return new Map(result.rows.map((row: any) => [row.investor_id, row.id]));
+}
+
+async function cashMovementsWithLaterUnitActivity(cashMovementIds: string[]) {
+  if (cashMovementIds.length === 0) return new Set<string>();
+  const result = await sql.query(`
+    SELECT cm.id
+    FROM cash_movements cm
+    JOIN investor_unit_ledger source_iul ON source_iul.id = cm.unit_ledger_id
+    WHERE cm.id = ANY($1::uuid[])
+      AND EXISTS (
+        SELECT 1
+        FROM investor_unit_ledger iul
+        WHERE iul.investor_id = cm.investor_id
+          AND iul.audit_status = 'active'
+          AND iul.id <> cm.unit_ledger_id
+          AND (
+            iul.date > cm.date
+            OR (iul.date = cm.date AND iul.created_at > source_iul.created_at)
+          )
+      )
+  `, [cashMovementIds]);
+  return new Set(result.rows.map((row: any) => row.id as string));
+}
+
+async function latestActiveFixedSavingsLedgerIds(rows: any[]) {
+  const accountIds = uniqueIds(rows.map((row) => row.account_id));
+  const legacyInvestorIds = uniqueIds(rows.filter((row) => !row.account_id).map((row) => row.investor_id));
+  const latest = new Map<string, string>();
+
+  if (accountIds.length > 0) {
+    const result = await sql.query(`
+      SELECT DISTINCT ON (account_id) account_id, id
+      FROM fixed_savings_ledger
+      WHERE account_id = ANY($1::uuid[])
+        AND audit_status = 'active'
+      ORDER BY account_id, date DESC, created_at DESC
+    `, [accountIds]);
+    for (const row of result.rows as any[]) latest.set(`account:${row.account_id}`, row.id);
+  }
+
+  if (legacyInvestorIds.length > 0) {
+    const result = await sql.query(`
+      SELECT DISTINCT ON (investor_id) investor_id, id
+      FROM fixed_savings_ledger
+      WHERE investor_id = ANY($1::uuid[])
+        AND account_id IS NULL
+        AND audit_status = 'active'
+      ORDER BY investor_id, date DESC, created_at DESC
+    `, [legacyInvestorIds]);
+    for (const row of result.rows as any[]) latest.set(`legacy:${row.investor_id}`, row.id);
+  }
+
+  return latest;
+}
+
+async function latestActiveInvestorUnitLedgerIds(investorIds: string[]) {
+  if (investorIds.length === 0) return new Map<string, string>();
+  const result = await sql.query(`
+    SELECT DISTINCT ON (investor_id) investor_id, id
+    FROM investor_unit_ledger
+    WHERE investor_id = ANY($1::uuid[])
+      AND audit_status = 'active'
+    ORDER BY investor_id, date DESC, created_at DESC
+  `, [investorIds]);
+  return new Map(result.rows.map((row: any) => [row.investor_id, row.id]));
+}
+
 async function enrichAuditLogs(rows: any[]) {
   const platformTransactions = await lookupById(`
-    SELECT pt.id, TO_CHAR(pt.date, 'YYYY-MM-DD') as date, pt.type, pt.amount, pt.currency, pt.base_amount,
-      pt.status, p.name as platform_name, pa.name as account_name, passet.symbol as asset_symbol
+    SELECT pt.id, pt.platform_id, TO_CHAR(pt.date, 'YYYY-MM-DD') as date, pt.type, pt.amount, pt.currency, pt.base_amount,
+      pt.status, pt.audit_status, p.name as platform_name, pa.name as account_name, passet.symbol as asset_symbol
     FROM platform_transactions pt
     LEFT JOIN platforms p ON p.id = pt.platform_id
     LEFT JOIN platform_accounts pa ON pa.id = pt.account_id
@@ -39,7 +166,8 @@ async function enrichAuditLogs(rows: any[]) {
     WHERE pt.id = ANY($1::uuid[])
   `, collectEntityIds(rows, "platform_transactions"));
   const cashMovements = await lookupById(`
-    SELECT cm.id, TO_CHAR(cm.date, 'YYYY-MM-DD') as date, cm.type, cm.amount, cm.status,
+    SELECT cm.id, cm.investor_id, cm.unit_ledger_id, TO_CHAR(cm.date, 'YYYY-MM-DD') as date, cm.type, cm.amount, cm.status,
+      cm.audit_status,
       i.name as investor_name, TO_CHAR(nw.week_ending, 'YYYY-MM-DD') as nav_week_ending
     FROM cash_movements cm
     LEFT JOIN investors i ON i.id = cm.investor_id
@@ -47,7 +175,8 @@ async function enrichAuditLogs(rows: any[]) {
     WHERE cm.id = ANY($1::uuid[])
   `, collectEntityIds(rows, "cash_movements"));
   const fixedSavings = await lookupById(`
-    SELECT fsl.id, TO_CHAR(fsl.date, 'YYYY-MM-DD') as date, fsl.type, fsl.amount, fsl.annual_rate_percent,
+    SELECT fsl.id, fsl.account_id, fsl.investor_id, TO_CHAR(fsl.date, 'YYYY-MM-DD') as date, fsl.type, fsl.amount, fsl.annual_rate_percent,
+      fsl.audit_status,
       i.name as investor_name, fsa.status as account_status
     FROM fixed_savings_ledger fsl
     LEFT JOIN investors i ON i.id = fsl.investor_id
@@ -55,7 +184,8 @@ async function enrichAuditLogs(rows: any[]) {
     WHERE fsl.id = ANY($1::uuid[])
   `, collectEntityIds(rows, "fixed_savings_ledger"));
   const bonusPayments = await lookupById(`
-    SELECT bp.id, bp.ledger_type, bp.amount, TO_CHAR(bp.date, 'YYYY-MM-DD') as date,
+    SELECT bp.id, bp.investor_id, bp.ledger_type, bp.source_id, bp.amount, TO_CHAR(bp.date, 'YYYY-MM-DD') as date,
+      bp.audit_status,
       i.name as investor_name
     FROM bonus_payments bp
     LEFT JOIN investors i ON i.id = bp.investor_id
@@ -83,6 +213,48 @@ async function enrichAuditLogs(rows: any[]) {
   const detailPlatformIds = uniqueIds(rows.map((row) => row.details?.platformId));
   const investors = await lookupById("SELECT id, name FROM investors WHERE id = ANY($1::uuid[])", detailInvestorIds);
   const platforms = await lookupById("SELECT id, name FROM platforms WHERE id = ANY($1::uuid[])", detailPlatformIds);
+  const latestLockedWeekEnding = await latestLockedNavWeekEnding();
+  const platformLatestIds = await latestActivePlatformTransactionIds(uniqueIds([...platformTransactions.values()].map((row: any) => row.platform_id)));
+  const cashLatestIds = await latestActiveCashMovementIds(uniqueIds([...cashMovements.values()].map((row: any) => row.investor_id)));
+  const cashIdsWithLaterUnits = await cashMovementsWithLaterUnitActivity([...cashMovements.keys()]);
+  const fixedSavingsLatestIds = await latestActiveFixedSavingsLedgerIds([...fixedSavings.values()]);
+  const investorLatestUnitLedgerIds = await latestActiveInvestorUnitLedgerIds(uniqueIds([...bonusPayments.values()].map((row: any) => row.investor_id)));
+
+  function eligibility(row: any, entity: any): RevertEligibility {
+    if (row.action.endsWith(".revert")) return { canRevert: false, revertSupport: REVERT_REASONS.reversalRecord };
+    if (row.has_revert) return { canRevert: false, revertSupport: REVERT_REASONS.alreadyReverted };
+    if (!REVERSIBLE_ACTIONS.has(row.action) || !row.entity_id) return { canRevert: false, revertSupport: REVERT_REASONS.unsupported };
+    if (!entity) return { canRevert: false, revertSupport: REVERT_REASONS.missingEntity };
+    if (entity.audit_status !== "active") return { canRevert: false, revertSupport: REVERT_REASONS.inactiveEntity };
+
+    if (row.action === "platform_transaction.add") {
+      if (platformLatestIds.get(entity.platform_id) !== entity.id) return { canRevert: false, revertSupport: REVERT_REASONS.platformLatest };
+      if (lockedNavDependsOn(entity.date, latestLockedWeekEnding)) return { canRevert: false, revertSupport: REVERT_REASONS.lockedHistory };
+      return { canRevert: true, revertSupport: "Able to revert: this is the latest active platform transaction and no locked NAV depends on its date." };
+    }
+
+    if (row.action === "cash_movement.add") {
+      if (cashLatestIds.get(entity.investor_id) !== entity.id) return { canRevert: false, revertSupport: REVERT_REASONS.investorLatestCash };
+      if (cashIdsWithLaterUnits.has(entity.id)) return { canRevert: false, revertSupport: REVERT_REASONS.laterInvestorUnits };
+      if (lockedNavDependsOn(entity.date, latestLockedWeekEnding)) return { canRevert: false, revertSupport: REVERT_REASONS.lockedHistory };
+      return { canRevert: true, revertSupport: "Able to revert: this is the latest active investor cash movement, no later unit activity depends on it, and no locked NAV depends on its date." };
+    }
+
+    if (row.action === "fixed_savings.add") {
+      const latestKey = entity.account_id ? `account:${entity.account_id}` : `legacy:${entity.investor_id}`;
+      if (fixedSavingsLatestIds.get(latestKey) !== entity.id) return { canRevert: false, revertSupport: REVERT_REASONS.fixedSavingsLatest };
+      return { canRevert: true, revertSupport: "Able to revert: this is the latest active fixed-savings movement for the account or legacy investor balance." };
+    }
+
+    if (row.action === "bonus_payment.add") {
+      if (entity.ledger_type !== "equity") return { canRevert: false, revertSupport: REVERT_REASONS.fixedSavingsBonus };
+      if (investorLatestUnitLedgerIds.get(entity.investor_id) !== entity.source_id) return { canRevert: false, revertSupport: REVERT_REASONS.equityBonusLatest };
+      if (lockedNavDependsOn(entity.date, latestLockedWeekEnding)) return { canRevert: false, revertSupport: REVERT_REASONS.lockedHistory };
+      return { canRevert: true, revertSupport: "Able to revert: this is the latest active equity bonus unit movement and no locked NAV depends on its date." };
+    }
+
+    return { canRevert: false, revertSupport: REVERT_REASONS.unsupported };
+  }
 
   return rows.map((row) => {
     const details = row.details ?? {};
@@ -103,10 +275,12 @@ async function enrichAuditLogs(rows: any[]) {
     if (row.action === "bonus_payment.add" && details.ledgerType === "fixed_savings") {
       readable.revertNote = "Fixed-savings bonus revert is not implemented; use an explicit current-period adjustment until this reversal path is added.";
     }
+    const revertEligibility = eligibility(row, entity);
     return {
       ...row,
       readableDetails: readable,
-      canRevert: REVERSIBLE_ACTIONS.has(row.action) && !row.has_revert,
+      canRevert: revertEligibility.canRevert,
+      revertSupport: revertEligibility.revertSupport,
     };
   });
 }
@@ -149,7 +323,7 @@ async function assertNotAlreadyReverted(auditEventId: string) {
     LIMIT 1
   `;
   if (existing.rows.length > 0) {
-    throw new Error("This transaction has already been reverted.");
+    throw new Error(REVERT_REASONS.alreadyReverted);
   }
 }
 
@@ -162,14 +336,63 @@ async function assertNoLockedNavOnOrAfter(date: string) {
     LIMIT 1
   `;
   if (locked.rows.length > 0) {
-    throw new Error("This transaction cannot be reverted because later locked financial history depends on it. Use a current-period adjustment instead.");
+    throw new Error(REVERT_REASONS.lockedHistory);
   }
 }
 
-export async function getAdminAuditLogs() {
-  await requireAdmin();
-  await ensureAuditColumns();
-  const logs = await sql`
+async function getPagedAuditRows(status: Extract<AdminLogStatusFilter, "all" | "reverted" | "reversal">, page: number, pageSize: number) {
+  const offset = (page - 1) * pageSize;
+  const statusWhere = {
+    all: "",
+    reverted: "WHERE has_revert = true AND action NOT LIKE '%.revert'",
+    reversal: "WHERE action LIKE '%.revert'",
+  }[status];
+  const countQuery = status === "all"
+    ? sql.query("SELECT COUNT(*)::int as count FROM audit_events")
+    : sql.query(`
+      SELECT COUNT(*)::int as count
+      FROM (
+        SELECT ae.action,
+          EXISTS (
+            SELECT 1
+            FROM audit_events reversal
+            WHERE reversal.action LIKE '%.revert'
+              AND reversal.details->>'originalAuditEventId' = ae.id::text
+          ) as has_revert
+        FROM audit_events ae
+      ) logs
+      ${statusWhere}
+    `);
+  const logsQuery = sql.query(`
+    SELECT id, actor_id, action, entity_type, entity_id, details, TO_CHAR(created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at, has_revert
+    FROM (
+      SELECT
+        ae.id,
+        ae.actor_id,
+        ae.action,
+        ae.entity_type,
+        ae.entity_id,
+        ae.details,
+        ae.created_at,
+        EXISTS (
+          SELECT 1
+          FROM audit_events reversal
+          WHERE reversal.action LIKE '%.revert'
+            AND reversal.details->>'originalAuditEventId' = ae.id::text
+        ) as has_revert
+      FROM audit_events ae
+    ) logs
+    ${statusWhere}
+    ORDER BY logs.created_at DESC
+    LIMIT $1 OFFSET $2
+  `, [pageSize, offset]);
+  const [count, logs] = await Promise.all([countQuery, logsQuery]);
+  return { rows: logs.rows, total: Number(count.rows[0]?.count || 0) };
+}
+
+async function getEligibleAuditRows(status: Extract<AdminLogStatusFilter, "active" | "blocked">, page: number, pageSize: number) {
+  const candidateLimit = 500;
+  const candidates = await sql.query(`
     SELECT
       ae.id,
       ae.actor_id,
@@ -178,17 +401,45 @@ export async function getAdminAuditLogs() {
       ae.entity_id,
       ae.details,
       TO_CHAR(ae.created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at,
-      EXISTS (
+      false as has_revert
+    FROM audit_events ae
+    WHERE ae.action = ANY($1::text[])
+      AND NOT EXISTS (
         SELECT 1
         FROM audit_events reversal
         WHERE reversal.action LIKE '%.revert'
           AND reversal.details->>'originalAuditEventId' = ae.id::text
-      ) as has_revert
-    FROM audit_events ae
+      )
     ORDER BY ae.created_at DESC
-    LIMIT 500
-  `;
-  return enrichAuditLogs(logs.rows);
+    LIMIT $2
+  `, [REVERSIBLE_ACTION_LIST, candidateLimit]);
+  const enriched = await enrichAuditLogs(candidates.rows);
+  const filtered = enriched.filter((row) => auditStatus(row) === status);
+  return {
+    rows: filtered.slice((page - 1) * pageSize, page * pageSize),
+    total: filtered.length,
+  };
+}
+
+export async function getAdminAuditLogs({
+  status = "all",
+  page = 1,
+  pageSize = 12,
+}: {
+  status?: AdminLogStatusFilter;
+  page?: number;
+  pageSize?: number;
+} = {}) {
+  await requireAdmin();
+  await ensureAuditColumns();
+  const safePage = Number.isInteger(page) && page > 0 ? page : 1;
+  const safePageSize = Number.isInteger(pageSize) && pageSize > 0 && pageSize <= 50 ? pageSize : 12;
+  if (status === "active" || status === "blocked") {
+    const result = await getEligibleAuditRows(status, safePage, safePageSize);
+    return { logs: result.rows, total: result.total };
+  }
+  const result = await getPagedAuditRows(status, safePage, safePageSize);
+  return { logs: await enrichAuditLogs(result.rows), total: result.total };
 }
 
 async function revertPlatformTransaction(auditEventId: string, entityId: string) {
@@ -201,7 +452,7 @@ async function revertPlatformTransaction(auditEventId: string, entityId: string)
   `;
   const tx = original.rows[0];
   if (!tx) throw new Error("Platform transaction not found.");
-  if (tx.audit_status !== "active") throw new Error("Only active transactions can be reverted.");
+  if (tx.audit_status !== "active") throw new Error(REVERT_REASONS.inactiveEntity);
 
   const latest = await sql`
     SELECT id
@@ -212,7 +463,7 @@ async function revertPlatformTransaction(auditEventId: string, entityId: string)
     LIMIT 1
   `;
   if (latest.rows[0]?.id !== tx.id) {
-    throw new Error("Only the latest platform transaction can be reverted.");
+    throw new Error(REVERT_REASONS.platformLatest);
   }
   await assertNoLockedNavOnOrAfter(tx.date);
 
@@ -262,14 +513,14 @@ async function revertCashMovement(auditEventId: string, entityId: string, detail
   const original = await sql`
     SELECT cm.id, cm.investor_id, cm.nav_week_id, cm.unit_ledger_id, TO_CHAR(cm.date, 'YYYY-MM-DD') as date,
       cm.type, cm.amount, cm.notes, cm.audit_status,
-      iul.type as unit_type, iul.units, iul.nav_per_unit, iul.gross_amount
+      iul.type as unit_type, iul.units, iul.nav_per_unit, iul.gross_amount, iul.created_at as unit_created_at
     FROM cash_movements cm
     JOIN investor_unit_ledger iul ON iul.id = cm.unit_ledger_id
     WHERE cm.id = ${entityId}
   `;
   const movement = original.rows[0];
   if (!movement) throw new Error("Investor transaction not found.");
-  if (movement.audit_status !== "active") throw new Error("Only active transactions can be reverted.");
+  if (movement.audit_status !== "active") throw new Error(REVERT_REASONS.inactiveEntity);
 
   const latestCash = await sql`
     SELECT id
@@ -280,18 +531,23 @@ async function revertCashMovement(auditEventId: string, entityId: string, detail
     LIMIT 1
   `;
   if (latestCash.rows[0]?.id !== movement.id) {
-    throw new Error("Only the latest investor transaction can be reverted.");
+    throw new Error(REVERT_REASONS.investorLatestCash);
   }
   const laterUnits = await sql`
-    SELECT id
-    FROM investor_unit_ledger
-    WHERE investor_id = ${movement.investor_id}
-      AND audit_status = 'active'
-      AND (date > ${movement.date} OR (date = ${movement.date} AND id <> ${movement.unit_ledger_id}))
+    SELECT iul.id
+    FROM investor_unit_ledger iul
+    JOIN investor_unit_ledger source_iul ON source_iul.id = ${movement.unit_ledger_id}
+    WHERE iul.investor_id = ${movement.investor_id}
+      AND iul.audit_status = 'active'
+      AND iul.id <> ${movement.unit_ledger_id}
+      AND (
+        iul.date > ${movement.date}
+        OR (iul.date = ${movement.date} AND iul.created_at > source_iul.created_at)
+      )
     LIMIT 1
   `;
   if (laterUnits.rows.length > 0) {
-    throw new Error("This transaction cannot be reverted because later investor unit activity depends on it.");
+    throw new Error(REVERT_REASONS.laterInvestorUnits);
   }
   await assertNoLockedNavOnOrAfter(movement.date);
 
@@ -358,7 +614,7 @@ async function revertFixedSavings(auditEventId: string, entityId: string) {
   `;
   const movement = original.rows[0];
   if (!movement) throw new Error("Fixed savings transaction not found.");
-  if (movement.audit_status !== "active") throw new Error("Only active transactions can be reverted.");
+  if (movement.audit_status !== "active") throw new Error(REVERT_REASONS.inactiveEntity);
 
   const latest = movement.account_id
     ? await sql`
@@ -379,7 +635,7 @@ async function revertFixedSavings(auditEventId: string, entityId: string) {
         LIMIT 1
       `;
   if (latest.rows[0]?.id !== movement.id) {
-    throw new Error("Only the latest fixed savings movement can be reverted.");
+    throw new Error(REVERT_REASONS.fixedSavingsLatest);
   }
 
   const reversal = await sql`
@@ -428,9 +684,9 @@ async function revertBonusPayment(auditEventId: string, entityId: string) {
   `;
   const bonus = original.rows[0];
   if (!bonus) throw new Error("Bonus payment not found.");
-  if (bonus.audit_status !== "active") throw new Error("Only active bonus payments can be reverted.");
+  if (bonus.audit_status !== "active") throw new Error(REVERT_REASONS.inactiveEntity);
   if (bonus.ledger_type !== "equity") {
-    throw new Error("Only equity bonus reversal is supported by this revert action.");
+    throw new Error(REVERT_REASONS.fixedSavingsBonus);
   }
   const latest = await sql`
     SELECT id
@@ -441,7 +697,7 @@ async function revertBonusPayment(auditEventId: string, entityId: string) {
     LIMIT 1
   `;
   if (latest.rows[0]?.id !== bonus.source_id) {
-    throw new Error("Only the latest equity bonus movement can be reverted.");
+    throw new Error(REVERT_REASONS.equityBonusLatest);
   }
   await assertNoLockedNavOnOrAfter(bonus.date);
 
@@ -486,7 +742,7 @@ export async function revertAuditLog(id: string) {
     `;
     const row = event.rows[0];
     if (!row || !REVERSIBLE_ACTIONS.has(row.action) || !row.entity_id) {
-      return { error: "This audit log cannot be reverted." };
+      return { error: REVERT_REASONS.unsupported };
     }
 
     if (row.action === "platform_transaction.add") {
