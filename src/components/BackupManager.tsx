@@ -175,7 +175,7 @@ export function BackupManager({ adminPassword, onProtectedActionSuccess }: Backu
                 Exported {new Date(preview.exportedAt).toLocaleString()} with {preview.totalRows} rows.
               </p>
               <p className="mt-1 text-xs text-amber-200">
-                Restore will replace the current database tables with this file's contents.
+                Restore will replace the current database tables with this file&apos;s contents.
               </p>
             </div>
             <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">

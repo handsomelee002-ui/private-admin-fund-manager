@@ -1172,11 +1172,14 @@ export async function getInvestorStatement(investorId: string) {
       ORDER BY cash_movements.date DESC, cash_movements.created_at DESC
     `,
     sql`
-      SELECT *, TO_CHAR(date, 'YYYY-MM-DD') as date
-      FROM fixed_savings_ledger
-      WHERE investor_id = ${investorId}
-        AND audit_status = 'active'
-      ORDER BY fixed_savings_ledger.date DESC, fixed_savings_ledger.created_at DESC
+      SELECT fsl.*,
+        COALESCE(fsl.annual_rate_percent, fsl.interest_rate, fsa.annual_rate_percent) as effective_annual_rate_percent,
+        TO_CHAR(fsl.date, 'YYYY-MM-DD') as date
+      FROM fixed_savings_ledger fsl
+      LEFT JOIN fixed_savings_accounts fsa ON fsa.id = fsl.account_id
+      WHERE fsl.investor_id = ${investorId}
+        AND fsl.audit_status = 'active'
+      ORDER BY fsl.date DESC, fsl.created_at DESC
     `,
     sql`
       SELECT bp.id, bp.ledger_type, bp.amount, TO_CHAR(bp.date, 'YYYY-MM-DD') as date, bp.notes, bp.created_at, bp.audit_status,
@@ -1234,6 +1237,9 @@ export async function getInvestorStatement(investorId: string) {
         amount: parseFloat(movement.amount || "0"),
         units: null,
         navPerUnit: null,
+        annualRatePercent: movement.type === "Deposit" && movement.effective_annual_rate_percent !== null
+          ? parseFloat(movement.effective_annual_rate_percent || "0")
+          : null,
         notes: movement.notes,
         auditStatus: movement.audit_status,
         createdAt: movement.created_at,
