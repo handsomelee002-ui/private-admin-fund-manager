@@ -2,6 +2,16 @@ import "server-only";
 
 type TimingMeta = Record<string, string | number | boolean | null | undefined>;
 
+function isRedirectError(error: unknown) {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "digest" in error &&
+      typeof (error as { digest?: unknown }).digest === "string" &&
+      (error as { digest: string }).digest.startsWith("NEXT_REDIRECT"),
+  );
+}
+
 export async function timeAsync<T>(label: string, work: () => Promise<T>, meta: TimingMeta = {}) {
   const started = performance.now();
   try {
@@ -14,12 +24,17 @@ export async function timeAsync<T>(label: string, work: () => Promise<T>, meta: 
     }));
     return result;
   } catch (error) {
-    console.error("[perf]", JSON.stringify({
+    const payload = {
       label,
       durationMs: Math.round(performance.now() - started),
-      status: "error",
+      status: isRedirectError(error) ? "redirect" : "error",
       ...meta,
-    }));
+    };
+    if (isRedirectError(error)) {
+      console.info("[perf]", JSON.stringify(payload));
+    } else {
+      console.error("[perf]", JSON.stringify(payload));
+    }
     throw error;
   }
 }

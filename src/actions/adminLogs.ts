@@ -155,7 +155,18 @@ async function latestActiveInvestorUnitLedgerIds(investorIds: string[]) {
   return new Map(result.rows.map((row: any) => [row.investor_id, row.id]));
 }
 
-async function enrichAuditLogs(rows: any[], { includeReadableDetails = true } = {}) {
+function decorateAuditLogRows(rows: any[]) {
+  return rows.map((row) => ({
+    ...row,
+    canRequestRevert: REVERSIBLE_ACTIONS.has(row.action) && !row.has_revert && !row.action.endsWith(".revert") && Boolean(row.entity_id),
+    canRevert: undefined,
+    revertSupport: REVERSIBLE_ACTIONS.has(row.action)
+      ? "Revert eligibility is checked when you click Revert or open the details."
+      : REVERT_REASONS.unsupported,
+  }));
+}
+
+async function enrichAuditLogs(rows: any[], { includeReadableDetails = true, includeEligibility = true } = {}) {
   const platformTransactions = await lookupById(`
     SELECT pt.id, pt.platform_id, TO_CHAR(pt.date, 'YYYY-MM-DD') as date, pt.type, pt.amount, pt.currency, pt.base_amount,
       pt.status, pt.audit_status, p.name as platform_name, pa.name as account_name, passet.symbol as asset_symbol
@@ -213,12 +224,12 @@ async function enrichAuditLogs(rows: any[], { includeReadableDetails = true } = 
   const detailPlatformIds = uniqueIds(rows.map((row) => row.details?.platformId));
   const investors = await lookupById("SELECT id, name FROM investors WHERE id = ANY($1::uuid[])", detailInvestorIds);
   const platforms = await lookupById("SELECT id, name FROM platforms WHERE id = ANY($1::uuid[])", detailPlatformIds);
-  const latestLockedWeekEnding = await latestLockedNavWeekEnding();
-  const platformLatestIds = await latestActivePlatformTransactionIds(uniqueIds([...platformTransactions.values()].map((row: any) => row.platform_id)));
-  const cashLatestIds = await latestActiveCashMovementIds(uniqueIds([...cashMovements.values()].map((row: any) => row.investor_id)));
-  const cashIdsWithLaterUnits = await cashMovementsWithLaterUnitActivity([...cashMovements.keys()]);
-  const fixedSavingsLatestIds = await latestActiveFixedSavingsLedgerIds([...fixedSavings.values()]);
-  const investorLatestUnitLedgerIds = await latestActiveInvestorUnitLedgerIds(uniqueIds([...bonusPayments.values()].map((row: any) => row.investor_id)));
+  const latestLockedWeekEnding = includeEligibility ? await latestLockedNavWeekEnding() : null;
+  const platformLatestIds = includeEligibility ? await latestActivePlatformTransactionIds(uniqueIds([...platformTransactions.values()].map((row: any) => row.platform_id))) : new Map<string, string>();
+  const cashLatestIds = includeEligibility ? await latestActiveCashMovementIds(uniqueIds([...cashMovements.values()].map((row: any) => row.investor_id))) : new Map<string, string>();
+  const cashIdsWithLaterUnits = includeEligibility ? await cashMovementsWithLaterUnitActivity([...cashMovements.keys()]) : new Set<string>();
+  const fixedSavingsLatestIds = includeEligibility ? await latestActiveFixedSavingsLedgerIds([...fixedSavings.values()]) : new Map<string, string>();
+  const investorLatestUnitLedgerIds = includeEligibility ? await latestActiveInvestorUnitLedgerIds(uniqueIds([...bonusPayments.values()].map((row: any) => row.investor_id))) : new Map<string, string>();
 
   function eligibility(row: any, entity: any): RevertEligibility {
     if (row.action.endsWith(".revert")) return { canRevert: false, revertSupport: REVERT_REASONS.reversalRecord };
@@ -277,12 +288,17 @@ async function enrichAuditLogs(rows: any[], { includeReadableDetails = true } = 
         readable.revertNote = "Fixed-savings bonus revert is not implemented; use an explicit current-period adjustment until this reversal path is added.";
       }
     }
-    const revertEligibility = eligibility(row, entity);
+    const revertEligibility = includeEligibility ? eligibility(row, entity) : null;
     return {
       ...row,
+      canRequestRevert: REVERSIBLE_ACTIONS.has(row.action) && !row.has_revert && !row.action.endsWith(".revert") && Boolean(row.entity_id),
       readableDetails: includeReadableDetails ? readable : undefined,
-      canRevert: revertEligibility.canRevert,
-      revertSupport: revertEligibility.revertSupport,
+      canRevert: revertEligibility?.canRevert,
+      revertSupport: revertEligibility?.revertSupport ?? (
+        REVERSIBLE_ACTIONS.has(row.action)
+          ? "Revert eligibility is checked when you click Revert or open the details."
+          : REVERT_REASONS.unsupported
+      ),
     };
   });
 }
@@ -441,7 +457,7 @@ export async function getAdminAuditLogs({
     return { logs: result.rows, total: result.total };
   }
   const result = await getPagedAuditRows(status, safePage, safePageSize);
-  return { logs: await enrichAuditLogs(result.rows, { includeReadableDetails: false }), total: result.total };
+  return { logs: decorateAuditLogRows(result.rows), total: result.total };
 }
 
 export async function getAdminAuditLogDetails(id: string) {

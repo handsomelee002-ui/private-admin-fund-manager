@@ -41,8 +41,14 @@ function describeLog(log: any) {
 function statusBadge(log: any) {
   if (log.action.endsWith(".revert")) return <Badge variant="outline">Reversal</Badge>;
   if (log.has_revert) return <Badge variant="destructive">Reverted</Badge>;
+  if (log.canRevert === undefined && log.canRequestRevert) return <Badge variant="outline">Review</Badge>;
   if (!log.canRevert) return <Badge variant="outline">Blocked</Badge>;
   return <Badge variant="default">Active</Badge>;
+}
+
+function canUseRevert(log: any) {
+  if (log.canRevert === undefined) return Boolean(log.canRequestRevert);
+  return Boolean(log.canRevert);
 }
 
 function statusHref(status: StatusFilter) {
@@ -155,7 +161,7 @@ export default async function AdminLogsPage({
                     <AuditLogDetailsButton log={log} />
                   </TableCell>
                   <TableCell className="pr-4 text-right">
-                    <RevertAuditLogButton id={log.id} disabled={!log.canRevert} disabledReason={log.revertSupport} compact />
+                    <RevertAuditLogButton id={log.id} disabled={!canUseRevert(log)} disabledReason={log.revertSupport} compact />
                   </TableCell>
                 </TableRow>
               ))}

@@ -1364,12 +1364,116 @@ export async function getFundSummaryMetrics() {
 
 export async function getDashboardSummary() {
   await requireAdmin();
-  const [summary, investors] = await Promise.all([
-    getFundSummaryMetrics(),
-    getInvestorsWithBalances(),
+  await ensureAuditColumns();
+  await ensureInvestorPortalAccessColumns();
+  const [summaryResult, savings, investorsResult, equityLedger] = await Promise.all([
+    sql`
+      WITH latest_nav AS (
+        SELECT id,
+          TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
+          TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
+          gross_assets, liabilities, adjustments, net_asset_value,
+          total_units, nav_per_unit, status, locked_at, notes, created_at
+        FROM nav_weeks
+        WHERE status = 'locked'
+        ORDER BY week_ending DESC
+        LIMIT 1
+      ),
+      fund_units AS (
+        SELECT COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as total_units
+        FROM investor_unit_ledger
+        WHERE audit_status = 'active'
+      ),
+      fees AS (
+        SELECT COALESCE(SUM(fee_amount), 0) as total
+        FROM performance_fees
+        WHERE audit_status <> 'reverted'
+      )
+      SELECT
+        (SELECT row_to_json(latest_nav) FROM latest_nav) as latest_nav,
+        (SELECT total_units FROM fund_units) as total_units,
+        (SELECT total FROM fees) as performance_fees
+    `,
+    sql`
+      SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+      FROM fixed_savings_ledger
+      WHERE audit_status = 'active'
+      ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
+    `,
+    sql`
+      WITH fund_units AS (
+        SELECT COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as total_units
+        FROM investor_unit_ledger
+        WHERE audit_status = 'active'
+      ),
+      investor_units AS (
+        SELECT investor_id,
+          COALESCE(SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END), 0) as units
+        FROM investor_unit_ledger
+        WHERE audit_status = 'active'
+        GROUP BY investor_id
+      )
+      SELECT i.id, i.name, i.portal_access_id, i.portal_access_rotated_at,
+        TO_CHAR(i.created_at, 'YYYY-MM-DD') as joined,
+        COALESCE(iu.units, 0) as units,
+        COALESCE(fu.total_units, 0) as total_units
+      FROM investors i
+      CROSS JOIN fund_units fu
+      LEFT JOIN investor_units iu ON iu.investor_id = i.id
+      ORDER BY i.created_at DESC
+    `,
+    sql`
+      SELECT iul.investor_id, iul.type, iul.units, iul.gross_amount, TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
+        CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
+      FROM investor_unit_ledger iul
+      LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
+      WHERE iul.audit_status = 'active'
+      ORDER BY iul.date ASC, iul.created_at ASC
+    `,
   ]);
+  const summaryRow = summaryResult.rows[0] ?? {};
+  const latestNav = summaryRow.latest_nav ?? null;
+  const fixedSavings = calculateFixedSavingsLiability(savings.rows as FixedSavingsLedgerRow[]);
+  const savingsByInvestor = fixedSavings.byInvestor;
+  const totalUnits = roundUnits(parseFloat(summaryRow.total_units || "0"));
+  const navPerUnit = latestNav ? parseFloat(latestNav.nav_per_unit || "1") : 1;
+  const equityRowsByInvestor = new Map<string, EquityUnitLedgerRow[]>();
+  for (const row of equityLedger.rows as (EquityUnitLedgerRow & { investor_id: string })[]) {
+    const rows = equityRowsByInvestor.get(row.investor_id) ?? [];
+    rows.push(row);
+    equityRowsByInvestor.set(row.investor_id, rows);
+  }
+  const investors = investorsResult.rows.map((row: any) => {
+    const units = roundUnits(parseFloat(row.units || "0"));
+    const equityPosition = calculateEquityCapitalPosition(equityRowsByInvestor.get(row.id) ?? []);
+    const savingsSummary = savingsByInvestor.get(row.id) ?? {
+      principal: 0,
+      accruedInterest: 0,
+      bonusPayable: 0,
+      payableInterest: 0,
+      totalLiability: 0,
+    };
+    return {
+      ...row,
+      units,
+      total_units: totalUnits,
+      nav_per_unit: navPerUnit,
+      netInvestedCapital: equityPosition.investedCapital,
+      marketValue: roundMoney(units * navPerUnit),
+      ownershipPercent: calculateOwnershipPercent({ investorUnits: units, totalUnits }),
+      fixedSavingsPrincipal: savingsSummary.principal,
+      fixedSavingsInterest: savingsSummary.payableInterest,
+      fixedSavingsBalance: savingsSummary.totalLiability,
+    };
+  });
   return {
-    ...summary,
+    latestNav,
+    totalUnits,
+    fixedSavingsLiability: fixedSavings.totalLiability,
+    fixedSavingsPrincipal: fixedSavings.principal,
+    fixedSavingsInterest: fixedSavings.payableInterest,
+    performanceFees: roundMoney(parseFloat(summaryRow.performance_fees || "0")),
+    aum: latestNav ? roundMoney(parseFloat(latestNav.net_asset_value)) : 0,
     investors,
     cash: [],
   };
