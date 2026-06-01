@@ -103,7 +103,7 @@ export default async function AdminLogsPage({
                 <TableHead className="text-xs">Summary</TableHead>
                 <TableHead className="w-[92px] text-xs">Status</TableHead>
                 <TableHead className="w-[52px] text-right text-xs">Info</TableHead>
-                <TableHead className="w-[58px] pr-4 text-right text-xs">Undo</TableHead>
+                <TableHead className="w-[58px] pr-4 text-right text-xs">Revert</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

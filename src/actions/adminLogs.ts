@@ -12,6 +12,105 @@ const REVERSIBLE_ACTIONS = new Set([
   "bonus_payment.add",
 ]);
 
+function collectEntityIds(rows: any[], entityType: string) {
+  return rows
+    .filter((row) => row.entity_type === entityType && row.entity_id)
+    .map((row) => row.entity_id);
+}
+
+function uniqueIds(ids: unknown[]) {
+  return [...new Set(ids.filter((id): id is string => typeof id === "string" && id.length > 0))];
+}
+
+async function lookupById(query: string, ids: string[]) {
+  if (ids.length === 0) return new Map<string, any>();
+  const result = await sql.query(query, [ids]);
+  return new Map(result.rows.map((row: any) => [row.id, row]));
+}
+
+async function enrichAuditLogs(rows: any[]) {
+  const platformTransactions = await lookupById(`
+    SELECT pt.id, TO_CHAR(pt.date, 'YYYY-MM-DD') as date, pt.type, pt.amount, pt.currency, pt.base_amount,
+      pt.status, p.name as platform_name, pa.name as account_name, passet.symbol as asset_symbol
+    FROM platform_transactions pt
+    LEFT JOIN platforms p ON p.id = pt.platform_id
+    LEFT JOIN platform_accounts pa ON pa.id = pt.account_id
+    LEFT JOIN platform_assets passet ON passet.id = pt.asset_id
+    WHERE pt.id = ANY($1::uuid[])
+  `, collectEntityIds(rows, "platform_transactions"));
+  const cashMovements = await lookupById(`
+    SELECT cm.id, TO_CHAR(cm.date, 'YYYY-MM-DD') as date, cm.type, cm.amount, cm.status,
+      i.name as investor_name, TO_CHAR(nw.week_ending, 'YYYY-MM-DD') as nav_week_ending
+    FROM cash_movements cm
+    LEFT JOIN investors i ON i.id = cm.investor_id
+    LEFT JOIN nav_weeks nw ON nw.id = cm.nav_week_id
+    WHERE cm.id = ANY($1::uuid[])
+  `, collectEntityIds(rows, "cash_movements"));
+  const fixedSavings = await lookupById(`
+    SELECT fsl.id, TO_CHAR(fsl.date, 'YYYY-MM-DD') as date, fsl.type, fsl.amount, fsl.annual_rate_percent,
+      i.name as investor_name, fsa.status as account_status
+    FROM fixed_savings_ledger fsl
+    LEFT JOIN investors i ON i.id = fsl.investor_id
+    LEFT JOIN fixed_savings_accounts fsa ON fsa.id = fsl.account_id
+    WHERE fsl.id = ANY($1::uuid[])
+  `, collectEntityIds(rows, "fixed_savings_ledger"));
+  const bonusPayments = await lookupById(`
+    SELECT bp.id, bp.ledger_type, bp.amount, TO_CHAR(bp.date, 'YYYY-MM-DD') as date,
+      i.name as investor_name
+    FROM bonus_payments bp
+    LEFT JOIN investors i ON i.id = bp.investor_id
+    WHERE bp.id = ANY($1::uuid[])
+  `, collectEntityIds(rows, "bonus_payments"));
+  const navWeeks = await lookupById(`
+    SELECT id, TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending, status, nav_per_unit, net_asset_value
+    FROM nav_weeks
+    WHERE id = ANY($1::uuid[])
+  `, collectEntityIds(rows, "nav_weeks"));
+  const platformAccounts = await lookupById(`
+    SELECT pa.id, pa.name, pa.account_type, pa.currency, p.name as platform_name
+    FROM platform_accounts pa
+    LEFT JOIN platforms p ON p.id = pa.platform_id
+    WHERE pa.id = ANY($1::uuid[])
+  `, collectEntityIds(rows, "platform_accounts"));
+  const platformAssets = await lookupById(`
+    SELECT passet.id, passet.symbol, passet.name, passet.asset_type, passet.currency, p.name as platform_name
+    FROM platform_assets passet
+    LEFT JOIN platforms p ON p.id = passet.platform_id
+    WHERE passet.id = ANY($1::uuid[])
+  `, collectEntityIds(rows, "platform_assets"));
+
+  const detailInvestorIds = uniqueIds(rows.map((row) => row.details?.investorId));
+  const detailPlatformIds = uniqueIds(rows.map((row) => row.details?.platformId));
+  const investors = await lookupById("SELECT id, name FROM investors WHERE id = ANY($1::uuid[])", detailInvestorIds);
+  const platforms = await lookupById("SELECT id, name FROM platforms WHERE id = ANY($1::uuid[])", detailPlatformIds);
+
+  return rows.map((row) => {
+    const details = row.details ?? {};
+    const readable: Record<string, unknown> = {};
+    const entityLookup = {
+      platform_transactions: platformTransactions,
+      cash_movements: cashMovements,
+      fixed_savings_ledger: fixedSavings,
+      bonus_payments: bonusPayments,
+      nav_weeks: navWeeks,
+      platform_accounts: platformAccounts,
+      platform_assets: platformAssets,
+    }[row.entity_type as string];
+    const entity = entityLookup?.get(row.entity_id);
+    if (entity) readable.entity = entity;
+    if (details.investorId && investors.has(details.investorId)) readable.investor = investors.get(details.investorId);
+    if (details.platformId && platforms.has(details.platformId)) readable.platform = platforms.get(details.platformId);
+    if (row.action === "bonus_payment.add" && details.ledgerType === "fixed_savings") {
+      readable.revertNote = "Fixed-savings bonus revert is not implemented; use an explicit current-period adjustment until this reversal path is added.";
+    }
+    return {
+      ...row,
+      readableDetails: readable,
+      canRevert: REVERSIBLE_ACTIONS.has(row.action) && !row.has_revert,
+    };
+  });
+}
+
 function oppositeMovement(type: string) {
   if (type === "Deposit") return "Withdrawal";
   if (type === "Withdrawal") return "Deposit";
@@ -89,10 +188,7 @@ export async function getAdminAuditLogs() {
     ORDER BY ae.created_at DESC
     LIMIT 500
   `;
-  return logs.rows.map((row: any) => ({
-    ...row,
-    canRevert: REVERSIBLE_ACTIONS.has(row.action) && !row.has_revert,
-  }));
+  return enrichAuditLogs(logs.rows);
 }
 
 async function revertPlatformTransaction(auditEventId: string, entityId: string) {
