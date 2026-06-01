@@ -6,8 +6,9 @@ import { DeleteButton } from "@/components/DeleteButton";
 import { EditNameDialog } from "@/components/EditNameDialog";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
+import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import Link from "next/link";
+import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 import { ChevronRight, Building2, TrendingUp, Wallet, DollarSign, ArrowRightLeft } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +22,7 @@ export default async function TradingLedgerPage({
 }) {
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, platformSorts, { sort: "created", dir: "desc" });
-  const platforms = await getPlatforms();
+  const platforms = await timeAsync("route.trading.getPlatforms", () => getPlatforms(), { route: "/trading" });
   const sortedPlatforms = sortRows(platforms, sortState, {
     platform: (platform: any) => platform.name,
     created: (platform: any) => platform.createdAt,
@@ -145,9 +146,8 @@ export default async function TradingLedgerPage({
                 return (
                   <TableRow key={platform.id} className="group hover:bg-muted/20 transition-colors border-border/30">
                     <TableCell className="pl-6">
-                      <Link
+                      <NoPrefetchLink
                         href={`/trading/${platform.id}`}
-                        prefetch={false}
                         className="flex items-center gap-2 w-fit"
                       >
                         <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
@@ -160,7 +160,7 @@ export default async function TradingLedgerPage({
                           </span>
                           <span className="text-[10px] text-muted-foreground">Click to view details</span>
                         </div>
-                      </Link>
+                      </NoPrefetchLink>
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">{platform.createdAt}</TableCell>
                     <TableCell className="text-right">

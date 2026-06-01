@@ -1,5 +1,5 @@
 import { Badge } from "@/components/ui/badge";
-import Link from "next/link";
+import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AddCashMovementForm } from "@/components/AddCashMovementForm";
@@ -7,6 +7,7 @@ import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestors } from "@/actions/investors";
 import { getCashMovements } from "@/lib/fundDb";
 import { formatMoney } from "@/lib/formatting";
+import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { ArrowRightLeft } from "lucide-react";
 
@@ -22,8 +23,8 @@ export default async function CapitalLedgerPage({
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, capitalSorts, { sort: "date", dir: "desc" });
   const [records, investors] = await Promise.all([
-    getCashMovements(),
-    getInvestors(),
+    timeAsync("route.capital.getCashMovements", () => getCashMovements(), { route: "/capital" }),
+    timeAsync("route.capital.getInvestors", () => getInvestors(), { route: "/capital" }),
   ]);
   const statusFilter = typeof resolvedSearchParams.status === "string" ? resolvedSearchParams.status : "active";
   const visibleRecords = statusFilter === "all" ? records : records.filter((record: any) => record.audit_status === "active");
@@ -43,8 +44,8 @@ export default async function CapitalLedgerPage({
           <p className="text-muted-foreground mt-1 text-sm">Deposits issue units and withdrawals redeem units at the latest locked weekly NAV.</p>
         </div>
         <div className="flex items-center gap-2">
-          <Link className={statusFilter === "active" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital" prefetch={false}>Active</Link>
-          <Link className={statusFilter === "all" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital?status=all" prefetch={false}>All</Link>
+          <NoPrefetchLink className={statusFilter === "active" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital">Active</NoPrefetchLink>
+          <NoPrefetchLink className={statusFilter === "all" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital?status=all">All</NoPrefetchLink>
           <AddCashMovementForm investors={investors} />
         </div>
       </div>

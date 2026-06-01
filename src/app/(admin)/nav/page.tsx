@@ -8,6 +8,7 @@ import { SortableTableHead } from "@/components/SortableTableHead";
 import { getPlatforms } from "@/actions/trading";
 import { getNavWeeks } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { CalendarClock } from "lucide-react";
 
@@ -22,7 +23,10 @@ export default async function NavPage({
 }) {
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, navSorts, { sort: "week", dir: "desc" });
-  const [navWeeks, platforms] = await Promise.all([getNavWeeks(), getPlatforms()]);
+  const [navWeeks, platforms] = await Promise.all([
+    timeAsync("route.nav.getNavWeeks", () => getNavWeeks(), { route: "/nav" }),
+    timeAsync("route.nav.getPlatforms", () => getPlatforms(), { route: "/nav" }),
+  ]);
   const sortedNavWeeks = sortRows(navWeeks, sortState, {
     week: (week: any) => week.week_ending,
     grossAssets: (week: any) => week.gross_assets,

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
 import {
   createNavWeek,
+  deleteDraftNavWeek,
   lockNavWeek,
   recordCashMovement,
   recordFixedSavings,
@@ -89,6 +90,19 @@ export async function lockNavWeekAction(formData: FormData) {
     return { success: true };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Failed to lock NAV week." };
+  }
+}
+
+export async function deleteDraftNavWeekAction(formData: FormData) {
+  try {
+    await requireAdmin();
+    const id = formData.get("id")?.toString();
+    if (!id) return { error: "NAV week id is required." };
+    await deleteDraftNavWeek(id);
+    revalidateFundViews();
+    return { success: true };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Failed to delete NAV draft." };
   }
 }
 

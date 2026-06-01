@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -9,6 +9,7 @@ import { SortableTableHead } from "@/components/SortableTableHead";
 import { PortalAccessControl } from "@/components/PortalAccessControl";
 import { deleteInvestor, getInvestors, updateInvestorName } from "@/actions/investors";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { ChevronRight, Users } from "lucide-react";
 
@@ -23,7 +24,7 @@ export default async function InvestorsPage({
 }) {
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, investorSorts, { sort: "joined", dir: "desc" });
-  const investors = await getInvestors();
+  const investors = await timeAsync("route.investors.getInvestors", () => getInvestors(), { route: "/investors" });
   const sortedInvestors = sortRows(investors, sortState, {
     investor: (investor: any) => investor.name,
     joined: (investor: any) => investor.joined,
@@ -70,7 +71,7 @@ export default async function InvestorsPage({
               {sortedInvestors.map((investor: any) => (
                 <TableRow key={investor.id} className="group">
                   <TableCell className="pl-6">
-                    <Link href={`/investors/${investor.id}`} prefetch={false} className="flex items-center gap-3 w-fit">
+                    <NoPrefetchLink href={`/investors/${investor.id}`} className="flex items-center gap-3 w-fit">
                       <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center font-bold text-primary text-sm">
                         {investor.name.charAt(0).toUpperCase()}
                       </div>
@@ -78,7 +79,7 @@ export default async function InvestorsPage({
                         {investor.name}
                         <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
                       </span>
-                    </Link>
+                    </NoPrefetchLink>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">{investor.joined}</TableCell>
                   <TableCell className="text-right">{formatUnits(investor.units)}</TableCell>

@@ -1,6 +1,36 @@
 "use client";
 
-import { Bar, BarChart, Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis, ReferenceLine } from "recharts";
+import { useEffect, useRef, useState } from "react";
+import { Bar, BarChart, Area, AreaChart, Tooltip, XAxis, YAxis, ReferenceLine } from "recharts";
+
+function ChartFrame({ children }: { children: (size: { width: number; height: number }) => React.ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+
+    const updateSize = () => {
+      const rect = element.getBoundingClientRect();
+      setSize({
+        width: Math.max(0, Math.floor(rect.width)),
+        height: Math.max(0, Math.floor(rect.height - 16)),
+      });
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={ref} className="h-[250px] min-h-[250px] w-full min-w-0 pt-4">
+      {size.width > 0 && size.height > 0 ? children(size) : null}
+    </div>
+  );
+}
 
 export function PlatformTransactionsChart({ data }: { data: any[] }) {
   // Aggregate data by month for cleaner chart
@@ -26,9 +56,9 @@ export function PlatformTransactionsChart({ data }: { data: any[] }) {
   }
 
   return (
-    <div className="h-[250px] w-full pt-4">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={chartData}>
+    <ChartFrame>
+      {({ width, height }) => (
+        <BarChart data={chartData} width={width} height={height}>
           <XAxis dataKey="month" axisLine={false} tickLine={false} tickMargin={10} fontSize={12} />
           <YAxis axisLine={false} tickLine={false} tickMargin={10} fontSize={12} width={80} tickFormatter={(v) => `RM ${v}`} />
           <Tooltip 
@@ -42,8 +72,8 @@ export function PlatformTransactionsChart({ data }: { data: any[] }) {
           <Bar dataKey="deposit" fill="#10b981" radius={[4, 4, 0, 0]} maxBarSize={40} stackId="a" />
           <Bar dataKey="withdrawal" fill="#f59e0b" radius={[4, 4, 0, 0]} maxBarSize={40} stackId="b" />
         </BarChart>
-      </ResponsiveContainer>
-    </div>
+      )}
+    </ChartFrame>
   );
 }
 
@@ -58,9 +88,9 @@ export function PlatformNavSnapshotChart({ data }: { data: any[] }) {
   }
 
   return (
-    <div className="h-[250px] w-full pt-4">
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={chartData}>
+    <ChartFrame>
+      {({ width, height }) => (
+        <AreaChart data={chartData} width={width} height={height}>
           <defs>
             <linearGradient id="colorProfit" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
@@ -76,7 +106,7 @@ export function PlatformNavSnapshotChart({ data }: { data: any[] }) {
           <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
           <Area type="monotone" dataKey="profit" stroke="#3b82f6" fillOpacity={1} fill="url(#colorProfit)" strokeWidth={2} />
         </AreaChart>
-      </ResponsiveContainer>
-    </div>
+      )}
+    </ChartFrame>
   );
 }

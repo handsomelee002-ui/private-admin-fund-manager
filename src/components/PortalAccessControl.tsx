@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { rotateInvestorPortalAccess } from "@/actions/investors";
 import { Button } from "@/components/ui/button";
+import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 
 export function PortalAccessControl({
   investorId,
@@ -43,7 +43,7 @@ export function PortalAccessControl({
       {portalAccessId && (
         <>
           <Button type="button" variant="outline" size="xs" onClick={copyLink}>Copy</Button>
-          <Button nativeButton={false} render={<Link href={`/portal/${portalAccessId}`} target="_blank" prefetch={false} />} variant="outline" size="xs">
+          <Button nativeButton={false} render={<NoPrefetchLink href={`/portal/${portalAccessId}`} target="_blank" />} variant="outline" size="xs">
             Open
           </Button>
         </>

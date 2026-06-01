@@ -1,9 +1,9 @@
-import Link from "next/link";
 import type React from "react";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import { TableHead } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import type { SortDirection } from "@/lib/tableSorting";
+import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 
 type Props = {
   children: React.ReactNode;
@@ -43,9 +43,8 @@ export function SortableTableHead({
 
   return (
     <TableHead className={className}>
-      <Link
+      <NoPrefetchLink
         href={`?${params.toString()}`}
-        prefetch={false}
         className={cn(
           "inline-flex items-center gap-1 rounded-sm hover:text-foreground",
           className?.includes("text-right") && "justify-end w-full",
@@ -53,7 +52,7 @@ export function SortableTableHead({
       >
         {children}
         <Icon className="h-3 w-3" aria-hidden="true" />
-      </Link>
+      </NoPrefetchLink>
     </TableHead>
   );
 }

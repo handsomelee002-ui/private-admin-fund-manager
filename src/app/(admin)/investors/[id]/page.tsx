@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -52,11 +52,11 @@ export default async function InvestorDetailPage({
       <div className="flex items-start justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <Link href="/investors" prefetch={false}>
+            <NoPrefetchLink href="/investors">
               <Button variant="outline" size="sm">
                 <ArrowLeft className="h-4 w-4" />
               </Button>
-            </Link>
+            </NoPrefetchLink>
             <h1 className="text-3xl font-bold tracking-tight">{statement.investor.name}</h1>
           </div>
           <p className="text-muted-foreground mt-1 text-sm ml-14">Investor activity, units, cash movements, bonuses, and fixed savings.</p>
@@ -113,8 +113,8 @@ export default async function InvestorDetailPage({
           <div className="flex items-center justify-between gap-3">
             <CardTitle className="text-base">Activity Ledger</CardTitle>
             <div className="flex items-center gap-2 text-sm">
-              <Link className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}`} prefetch={false}>Active</Link>
-              <Link className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}?status=all`} prefetch={false}>All</Link>
+              <NoPrefetchLink className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}`}>Active</NoPrefetchLink>
+              <NoPrefetchLink className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}?status=all`}>All</NoPrefetchLink>
             </div>
           </div>
         </CardHeader>

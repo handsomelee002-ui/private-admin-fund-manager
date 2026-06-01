@@ -5,7 +5,7 @@ import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { revertAuditLog } from "@/actions/adminLogs";
 
-export function RevertAuditLogButton({ id, disabled }: { id: string; disabled?: boolean }) {
+export function RevertAuditLogButton({ id, disabled, compact = false }: { id: string; disabled?: boolean; compact?: boolean }) {
   const [loading, setLoading] = useState(false);
 
   async function handleRevert() {
@@ -20,13 +20,15 @@ export function RevertAuditLogButton({ id, disabled }: { id: string; disabled?: 
     <Button
       type="button"
       variant="outline"
-      size="sm"
-      className="h-8 gap-2"
+      size={compact ? "icon-sm" : "sm"}
+      className={compact ? "" : "h-8 gap-2"}
       onClick={handleRevert}
       disabled={disabled || loading}
+      title="Revert transaction"
+      aria-label="Revert transaction"
     >
       <RotateCcw className="h-3.5 w-3.5" />
-      {loading ? "Reverting" : "Revert"}
+      {compact ? null : loading ? "Reverting" : "Revert"}
     </Button>
   );
 }

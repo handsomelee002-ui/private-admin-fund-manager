@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getDashboardSummary } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Activity, Banknote, Percent, Users, Wallet } from "lucide-react";
 
@@ -18,7 +19,7 @@ export default async function Dashboard({
 }) {
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, dashboardInvestorSorts, { sort: "marketValue", dir: "desc" });
-  const summary = await getDashboardSummary();
+  const summary = await timeAsync("route.dashboard.getDashboardSummary", () => getDashboardSummary(), { route: "/" });
   const sortedInvestors = sortRows(summary.investors, sortState, {
     investor: (investor: any) => investor.name,
     units: (investor: any) => investor.units,

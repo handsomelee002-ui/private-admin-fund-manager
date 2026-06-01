@@ -6,15 +6,14 @@ import { ensureAuditColumns, writeAuditEvent } from "@/lib/fundDb";
 import { requireAdmin } from "@/lib/auth";
 import {
   BASE_CURRENCY,
-  calculateXirr,
-  INVESTMENT_TRANSACTION_TYPES,
   isInvestmentTransactionType,
   percentage,
-  signedCashFlow,
 } from "@/lib/investmentAccounting";
+import { calculatePlatformPerformance } from "@/lib/platformPerformance";
 
 const ACCOUNT_TYPES = ["BANK", "WALLET", "BROKER_CASH", "BROKER_PORTFOLIO", "OTHER"] as const;
 const STATUSES = ["PENDING", "SETTLED", "CANCELLED"] as const;
+let tradingSchemaPromise: Promise<void> | null = null;
 
 function parseNumber(value: FormDataEntryValue | null, label: string, fallback = 0) {
   if (value === null || value === "") return fallback;
@@ -43,7 +42,7 @@ function revalidateTrading(platformId?: string) {
   if (platformId) revalidatePath(`/trading/${platformId}`);
 }
 
-export async function ensureTradingSchema() {
+async function ensureTradingSchemaUncached() {
   await requireAdmin();
   await ensureAuditColumns();
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS base_currency TEXT NOT NULL DEFAULT 'MYR'`;
@@ -96,17 +95,38 @@ export async function ensureTradingSchema() {
   await sql`UPDATE platform_transactions SET base_amount = amount WHERE base_amount = 0 AND amount <> 0`;
 }
 
+export async function ensureTradingSchema() {
+  if (tradingSchemaPromise) return tradingSchemaPromise;
+  tradingSchemaPromise = ensureTradingSchemaUncached().catch((error) => {
+    tradingSchemaPromise = null;
+    throw error;
+  });
+  return tradingSchemaPromise;
+}
+
 export async function getPlatforms() {
   await requireAdmin();
   await ensureTradingSchema();
 
   const data = await sql`
+    WITH latest_platform_snapshot AS (
+      SELECT platform_id, unrealized_profit
+      FROM (
+        SELECT nwps.platform_id, nwps.unrealized_profit,
+               ROW_NUMBER() OVER(PARTITION BY nwps.platform_id ORDER BY nw.week_ending DESC) as rn
+        FROM nav_week_platform_snapshots nwps
+        JOIN nav_weeks nw ON nw.id = nwps.nav_week_id
+        WHERE nw.status = 'locked'
+      ) sub
+      WHERE rn = 1
+    )
     SELECT
       p.id,
       p.name,
       p.base_currency,
       p.default_currency,
       TO_CHAR(p.created_at, 'YYYY-MM-DD') as created_at,
+      COALESCE(lps.unrealized_profit, 0) as unrealized_profit,
       COALESCE(SUM(
         CASE
           WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
@@ -131,29 +151,15 @@ export async function getPlatforms() {
       ), 0) as rm_cash_flow
     FROM platforms p
     LEFT JOIN platform_transactions pt ON p.id = pt.platform_id
-    GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.created_at
+    LEFT JOIN latest_platform_snapshot lps ON lps.platform_id = p.id
+    GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.created_at, lps.unrealized_profit
     ORDER BY p.created_at DESC, p.name ASC
   `;
-
-  const perfData = await sql`
-    SELECT platform_id, unrealized_profit
-    FROM (
-      SELECT nwps.platform_id, nwps.unrealized_profit,
-             ROW_NUMBER() OVER(PARTITION BY nwps.platform_id ORDER BY nw.week_ending DESC) as rn
-      FROM nav_week_platform_snapshots nwps
-      JOIN nav_weeks nw ON nw.id = nwps.nav_week_id
-      WHERE nw.status = 'locked'
-    ) sub
-    WHERE rn = 1
-  `;
-
-  const latestPerfMap = new Map<string, number>();
-  perfData.rows.forEach((row) => latestPerfMap.set(row.platform_id, parseFloat(row.unrealized_profit || "0")));
 
   return data.rows.map((row: any) => {
     const netInvested = parseFloat(row.net_invested || "0");
     const realizedProfit = parseFloat(row.realized_profit || "0");
-    const unrealizedProfit = latestPerfMap.get(row.id) || 0;
+    const unrealizedProfit = parseFloat(row.unrealized_profit || "0");
     const totalValue = netInvested + unrealizedProfit;
     const simpleRoi = percentage(totalValue - Math.max(netInvested, 0), Math.max(netInvested, 0));
     return {
@@ -469,38 +475,5 @@ export async function getPlatformPerformance(platformId: string) {
     getPlatformTransactions(platformId),
     getPlatformNavSnapshots(platformId),
   ]);
-
-  const activeSettled = transactions.filter((transaction: any) => transaction.audit_status === "active" && transaction.status === "SETTLED");
-  const totalDeposits = activeSettled.reduce((sum: number, transaction: any) => {
-    return ["BROKER_DEPOSIT", "Deposit"].includes(transaction.type) ? sum + parseFloat(transaction.base_amount || transaction.amount || "0") : sum;
-  }, 0);
-  const totalWithdrawals = activeSettled.reduce((sum: number, transaction: any) => {
-    return ["BROKER_WITHDRAWAL", "Withdraw"].includes(transaction.type) ? sum + parseFloat(transaction.base_amount || transaction.amount || "0") : sum;
-  }, 0);
-  const realizedProfit = activeSettled.reduce((sum: number, transaction: any) => sum + parseFloat(transaction.realized_profit || "0"), 0);
-  const latestUnrealized = snapshots.length > 0 ? parseFloat(snapshots[0].unrealized_profit || "0") : 0;
-  const netInvested = totalDeposits - totalWithdrawals;
-  const currentValue = netInvested + latestUnrealized;
-  const simpleRoi = percentage(currentValue + totalWithdrawals - totalDeposits, totalDeposits);
-  const cashFlows = activeSettled
-    .filter((transaction: any) => ["BROKER_DEPOSIT", "BROKER_WITHDRAWAL", "Deposit", "Withdraw"].includes(transaction.type))
-    .map((transaction: any) => ({
-      date: transaction.date,
-      amount: signedCashFlow(transaction.type, parseFloat(transaction.base_amount || transaction.amount || "0")),
-    }));
-  if (currentValue !== 0) {
-    cashFlows.push({ date: new Date().toISOString().slice(0, 10), amount: currentValue });
-  }
-
-  return {
-    totalDeposits,
-    totalWithdrawals,
-    netInvested,
-    currentValue,
-    realizedProfit,
-    latestUnrealized,
-    simpleRoi,
-    xirr: calculateXirr(cashFlows),
-    transactionTypes: INVESTMENT_TRANSACTION_TYPES,
-  };
+  return calculatePlatformPerformance(transactions, snapshots);
 }

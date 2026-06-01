@@ -3,7 +3,6 @@ import {
   getPlatform,
   getPlatformTransactions,
   getPlatformNavSnapshots,
-  getPlatformPerformance,
 } from "@/actions/trading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
@@ -13,8 +12,9 @@ import { PlatformTransactionsChart, PlatformNavSnapshotChart } from "@/component
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { Badge } from "@/components/ui/badge";
 import { formatMoney } from "@/lib/formatting";
+import { calculatePlatformPerformance } from "@/lib/platformPerformance";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import Link from "next/link";
+import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 import { ArrowLeft, Wallet, TrendingUp, DollarSign, ArrowDownRight, ArrowUpRight, BarChart3 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -38,11 +38,11 @@ export default async function PlatformDetailsPage({
   const platform = await getPlatform(platformId);
   if (!platform) return notFound();
 
-  const [transactions, snapshots, performance] = await Promise.all([
+  const [transactions, snapshots] = await Promise.all([
     getPlatformTransactions(platformId),
     getPlatformNavSnapshots(platformId),
-    getPlatformPerformance(platformId),
   ]);
+  const performance = calculatePlatformPerformance(transactions, snapshots);
   const visibleTransactions = statusFilter === "all" ? transactions : transactions.filter((transaction: any) => transaction.audit_status === "active");
   const sortedTransactions = sortRows(visibleTransactions, transactionSortState, {
     date: (transaction: any) => transaction.date,
@@ -71,13 +71,12 @@ export default async function PlatformDetailsPage({
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-4">
-          <Link
+          <NoPrefetchLink
             href="/trading"
-            prefetch={false}
             className="h-9 w-9 rounded-full border border-border/50 bg-card/50 flex items-center justify-center text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all"
           >
             <ArrowLeft className="h-4 w-4" />
-          </Link>
+          </NoPrefetchLink>
           <div>
             <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
               {platform.name}
@@ -195,8 +194,8 @@ export default async function PlatformDetailsPage({
                 <div className="flex items-center justify-between gap-3">
                   <CardTitle className="text-base">Transaction History</CardTitle>
                   <div className="flex items-center gap-2 text-sm">
-                    <Link className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}`} prefetch={false}>Active</Link>
-                    <Link className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}?status=all`} prefetch={false}>All</Link>
+                    <NoPrefetchLink className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}`}>Active</NoPrefetchLink>
+                    <NoPrefetchLink className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}?status=all`}>All</NoPrefetchLink>
                   </div>
                 </div>
               </CardHeader>

@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 import { AdminLoginForm } from "@/components/AdminLoginForm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -12,7 +12,7 @@ export default function AdminLoginPage() {
         <CardContent className="space-y-5">
           <AdminLoginForm />
           <p className="text-center text-sm text-muted-foreground">
-            Investor statement access? <Link className="text-primary hover:underline" href="/login" prefetch={false}>Open portal</Link>
+            Investor statement access? <NoPrefetchLink className="text-primary hover:underline" href="/login">Open portal</NoPrefetchLink>
           </p>
         </CardContent>
       </Card>

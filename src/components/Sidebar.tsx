@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
@@ -15,6 +14,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 
 const navigation = [
   { name: "Dashboard",      href: "/",        icon: LayoutDashboard, exact: true },
@@ -47,10 +47,9 @@ export function Sidebar() {
               ? pathname === item.href
               : pathname === item.href || pathname.startsWith(item.href + "/");
             return (
-              <Link
+              <NoPrefetchLink
                 key={item.name}
                 href={item.href}
-                prefetch={false}
                 className={cn(
                   isActive
                     ? "bg-primary/10 text-primary font-semibold"
@@ -66,7 +65,7 @@ export function Sidebar() {
                   aria-hidden="true"
                 />
                 {item.name}
-              </Link>
+              </NoPrefetchLink>
             );
           })}
         </nav>

@@ -14,6 +14,7 @@ import { AddBonusForm } from "@/components/AddBonusForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
+import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Percent, DollarSign, TrendingDown, TrendingUp, Gift, Wallet } from "lucide-react";
 
@@ -28,53 +29,56 @@ export default async function BrokeragePage({
 }) {
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, bonusSorts, { sort: "date", dir: "desc" });
-  // ── Config ───────────────────────────────────────────────────────────────────
-  const brokerageFeeRate = await getBrokerageFeeRate();
 
-  // ── Realized Profit: NET across all platform Withdraw transactions ───────────
-  // Performance fee model — losses reduce the fee base; no fee on net losses
-  const realizedRes = await sql`
-    SELECT COALESCE(SUM(realized_profit), 0) as net_realized
-    FROM platform_transactions
-    WHERE type = 'Withdraw' AND realized_profit IS NOT NULL
-  `;
-  const netRealized = parseFloat(realizedRes.rows[0]?.net_realized || 0);
-  const platformBrokerageEarned = netRealized > 0 ? netRealized * (brokerageFeeRate / 100) : 0;
-
-  // ── Brokerage earned from settled profit claims (pre-calculated at lock) ─────
-  let claimsBrokerageEarned = 0;
-  let withdrawalBrokerageEarned = 0;
-  try {
-    const claimsFeesRes = await sql`
+  const [
+    brokerageFeeRate,
+    realizedRes,
+    claimsFeesRes,
+    withdrawalFeesRes,
+    fsRows,
+    bonusPayments,
+    investors,
+  ] = await Promise.all([
+    timeAsync("route.brokerage.getBrokerageFeeRate", () => getBrokerageFeeRate(), { route: "/brokerage" }),
+    timeAsync("route.brokerage.realizedProfitQuery", () => sql`
+      SELECT COALESCE(SUM(realized_profit), 0) as net_realized
+      FROM platform_transactions
+      WHERE type = 'Withdraw' AND realized_profit IS NOT NULL
+    `, { route: "/brokerage" }),
+    timeAsync("route.brokerage.claimsFeesQuery", () => sql`
       SELECT COALESCE(SUM(brokerage_fee), 0) as total
       FROM investor_profit_claims
       WHERE status = 'settled'
-    `;
-    claimsBrokerageEarned = parseFloat(claimsFeesRes.rows[0]?.total || "0");
-  } catch { /* table may not exist yet */ }
-  try {
-    const withdrawalFeesRes = await sql`
+    `, { route: "/brokerage" }).catch(() => null),
+    timeAsync("route.brokerage.withdrawalFeesQuery", () => sql`
       SELECT COALESCE(SUM(fee_amount), 0) as total
       FROM performance_fees
       WHERE audit_status <> 'reverted'
-    `;
-    withdrawalBrokerageEarned = parseFloat(withdrawalFeesRes.rows[0]?.total || "0");
-  } catch { /* table may not exist yet */ }
+    `, { route: "/brokerage" }).catch(() => null),
+    timeAsync("route.brokerage.fixedSavingsRowsQuery", () => sql`
+      SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+      FROM fixed_savings_ledger
+      ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
+    `, { route: "/brokerage" }),
+    timeAsync("route.brokerage.getAllBonusPayments", () => getAllBonusPayments(), { route: "/brokerage" }),
+    timeAsync("route.brokerage.getInvestors", () => getInvestors(), { route: "/brokerage" }),
+  ]);
+
+  // ── Realized Profit: NET across all platform Withdraw transactions ───────────
+  // Performance fee model — losses reduce the fee base; no fee on net losses
+  const netRealized = parseFloat(realizedRes.rows[0]?.net_realized || 0);
+  const platformBrokerageEarned = netRealized > 0 ? netRealized * (brokerageFeeRate / 100) : 0;
+  const claimsBrokerageEarned = parseFloat(claimsFeesRes?.rows[0]?.total || "0");
+  const withdrawalBrokerageEarned = parseFloat(withdrawalFeesRes?.rows[0]?.total || "0");
 
   const brokerageFeeEarned = platformBrokerageEarned + claimsBrokerageEarned + withdrawalBrokerageEarned;
   const totalRealized = netRealized; // for display
 
   // ── Total Interest Owed to All Investors ─────────────────────────────────────
-  const fsRows = await sql`
-    SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
-    FROM fixed_savings_ledger
-    ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
-  `;
   const fixedSavingsLiability = calculateFixedSavingsLiability(fsRows.rows as any[]);
   const totalInterestOwed = fixedSavingsLiability.payableInterest;
 
   // ── Total Bonuses Paid ───────────────────────────────────────────────────────
-  const bonusPayments = await getAllBonusPayments();
   const sortedBonusPayments = sortRows(bonusPayments, sortState, {
     investor: (bonus: any) => bonus.investor_name,
     ledger: (bonus: any) => bonus.ledger_type,
@@ -88,9 +92,6 @@ export default async function BrokeragePage({
 
   // ── Net Commission ───────────────────────────────────────────────────────────
   const netCommission = brokerageFeeEarned - totalInterestOwed - totalBonusPaid;
-
-  // ── Investors list for AddBonusForm ─────────────────────────────────────────
-  const investors = await getInvestors();
 
   const fmt = formatMoney;
 

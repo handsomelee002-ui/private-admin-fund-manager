@@ -6,9 +6,11 @@ import { issueUnitsForDeposit, redeemUnitsForWithdrawal } from "@/lib/accounting
 import { writeAuditEvent } from "@/lib/fundDb";
 import { requireAdmin } from "@/lib/auth";
 
+let settingsTablesPromise: Promise<void> | null = null;
+
 // ── Schema ───────────────────────────────────────────────────────────────────
 
-export async function ensureSettingsTables() {
+async function ensureSettingsTablesUncached() {
   await requireAdmin();
   await sql`
     CREATE TABLE IF NOT EXISTS fund_config (
@@ -41,6 +43,15 @@ export async function ensureSettingsTables() {
   `;
   await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+}
+
+export async function ensureSettingsTables() {
+  if (settingsTablesPromise) return settingsTablesPromise;
+  settingsTablesPromise = ensureSettingsTablesUncached().catch((error) => {
+    settingsTablesPromise = null;
+    throw error;
+  });
+  return settingsTablesPromise;
 }
 
 // ── Fund Config ───────────────────────────────────────────────────────────────

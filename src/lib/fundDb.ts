@@ -117,7 +117,20 @@ function ledgerRate(row: FixedSavingsLedgerRow, fallback = 0) {
   return parseFloat(String(rawRate || "0"));
 }
 
-export async function ensureAuditColumns() {
+let auditColumnsPromise: Promise<void> | null = null;
+let investorPortalAccessColumnsPromise: Promise<void> | null = null;
+
+function runOnce(current: Promise<void> | null, setCurrent: (promise: Promise<void> | null) => void, work: () => Promise<void>) {
+  if (current) return current;
+  const promise = work().catch((error) => {
+    setCurrent(null);
+    throw error;
+  });
+  setCurrent(promise);
+  return promise;
+}
+
+async function ensureAuditColumnsUncached() {
   await sql`
     CREATE TABLE IF NOT EXISTS audit_events (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -142,6 +155,12 @@ export async function ensureAuditColumns() {
   await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+}
+
+export async function ensureAuditColumns() {
+  return runOnce(auditColumnsPromise, (promise) => {
+    auditColumnsPromise = promise;
+  }, ensureAuditColumnsUncached);
 }
 
 function calculateEquityCapitalPosition(rows: EquityUnitLedgerRow[]) {
@@ -277,7 +296,7 @@ export async function initializeFreshFundDatabase() {
   });
 }
 
-async function ensureInvestorPortalAccessColumns() {
+async function ensureInvestorPortalAccessColumnsUncached() {
   await sql`ALTER TABLE investors ADD COLUMN IF NOT EXISTS portal_access_id TEXT`;
   await sql`ALTER TABLE investors ADD COLUMN IF NOT EXISTS portal_access_rotated_at TIMESTAMPTZ`;
   await sql`
@@ -298,6 +317,12 @@ async function ensureInvestorPortalAccessColumns() {
   `;
   await sql`CREATE INDEX IF NOT EXISTS portal_access_events_client_created_idx ON portal_access_events (client_key, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS portal_access_events_portal_created_idx ON portal_access_events (portal_access_hash, created_at DESC)`;
+}
+
+async function ensureInvestorPortalAccessColumns() {
+  return runOnce(investorPortalAccessColumnsPromise, (promise) => {
+    investorPortalAccessColumnsPromise = promise;
+  }, ensureInvestorPortalAccessColumnsUncached);
 }
 
 function hashPortalAccessId(portalAccessId: string) {
@@ -351,7 +376,7 @@ export async function ensureFreshFundSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `;
-  await ensureInvestorPortalAccessColumns();
+  await ensureInvestorPortalAccessColumnsUncached();
   await sql`
     CREATE TABLE IF NOT EXISTS nav_weeks (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -769,8 +794,46 @@ export async function createNavWeek(input: NavWeekInput) {
 }
 
 export async function lockNavWeek(id: string) {
-  await sql`UPDATE nav_weeks SET status = 'locked', locked_at = NOW() WHERE id = ${id}`;
+  const navWeek = await sql`
+    SELECT id, TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending, status
+    FROM nav_weeks
+    WHERE id = ${id}
+  `;
+  const draft = navWeek.rows[0];
+  if (!draft) throw new Error("NAV week not found.");
+  if (draft.status !== "draft") throw new Error("Only draft NAV weeks can be locked.");
+
+  const latestLocked = await sql`
+    SELECT TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending
+    FROM nav_weeks
+    WHERE status = 'locked'
+    ORDER BY week_ending DESC
+    LIMIT 1
+  `;
+  const latestWeekEnding = latestLocked.rows[0]?.week_ending;
+  if (latestWeekEnding && draft.week_ending <= latestWeekEnding) {
+    throw new Error(`NAV week must be later than the latest locked NAV week (${latestWeekEnding}).`);
+  }
+
+  const locked = await sql`UPDATE nav_weeks SET status = 'locked', locked_at = NOW() WHERE id = ${id} AND status = 'draft' RETURNING id`;
+  if (locked.rows.length === 0) throw new Error("Only draft NAV weeks can be locked.");
   await writeAuditEvent("nav_week.lock", "nav_weeks", id);
+  return { success: true };
+}
+
+export async function deleteDraftNavWeek(id: string) {
+  const navWeek = await sql`
+    SELECT id, status
+    FROM nav_weeks
+    WHERE id = ${id}
+  `;
+  const draft = navWeek.rows[0];
+  if (!draft) throw new Error("NAV week not found.");
+  if (draft.status !== "draft") throw new Error("Locked NAV weeks are immutable and cannot be deleted.");
+
+  const deleted = await sql`DELETE FROM nav_weeks WHERE id = ${id} AND status = 'draft' RETURNING id`;
+  if (deleted.rows.length === 0) throw new Error("Only draft NAV weeks can be deleted.");
+  await writeAuditEvent("nav_week.delete_draft", "nav_weeks", id);
   return { success: true };
 }
 
@@ -1318,6 +1381,8 @@ export async function cleanAllData() {
 }
 
 export async function dropAllFundTables() {
+  auditColumnsPromise = null;
+  investorPortalAccessColumnsPromise = null;
   const tables = await existingResettableTables();
   if (tables.length > 0) {
     await sql.query(`DROP TABLE ${tables.join(", ")} CASCADE`);

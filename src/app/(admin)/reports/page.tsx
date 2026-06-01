@@ -4,6 +4,7 @@ import { SortableTableHead } from "@/components/SortableTableHead";
 import { getPlatforms } from "@/actions/trading";
 import { getFundSummaryMetrics, getNavWeeks } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { BarChart3, DollarSign, TrendingUp, Users, Wallet } from "lucide-react";
 
@@ -20,7 +21,11 @@ export default async function ReportsPage({
   const resolvedSearchParams = await searchParams;
   const platformSortState = getSortState(resolvedSearchParams, reportPlatformSorts, { sort: "platform", dir: "asc" }, "platform");
   const navSortState = getSortState(resolvedSearchParams, reportNavSorts, { sort: "week", dir: "desc" }, "nav");
-  const [summary, navWeeks, platforms] = await Promise.all([getFundSummaryMetrics(), getNavWeeks(), getPlatforms()]);
+  const [summary, navWeeks, platforms] = await Promise.all([
+    timeAsync("route.reports.getFundSummaryMetrics", () => getFundSummaryMetrics(), { route: "/reports" }),
+    timeAsync("route.reports.getNavWeeks", () => getNavWeeks(), { route: "/reports" }),
+    timeAsync("route.reports.getPlatforms", () => getPlatforms(), { route: "/reports" }),
+  ]);
   const sortedPlatforms = sortRows(platforms, platformSortState, {
     platform: (platform: any) => platform.name,
     netInvested: (platform: any) => platform.netInvested,
