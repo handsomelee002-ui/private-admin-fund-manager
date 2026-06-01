@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { NotesTableCell } from "@/components/NotesTableCell";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestorStatementByPortalAccessId } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
@@ -94,17 +95,17 @@ export default async function InvestorPortalPage({
         <Card className="bg-card/50 border-border/50">
           <CardHeader><CardTitle className="text-base">Activity Ledger</CardTitle></CardHeader>
           <CardContent className="p-0">
-            <Table>
+            <Table className="table-fixed">
               <TableHeader>
                 <TableRow>
-                  <SortableTableHead className="pl-6" sortKey="date" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Date</SortableTableHead>
-                  <SortableTableHead sortKey="ledger" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Ledger</SortableTableHead>
-                  <SortableTableHead sortKey="type" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Type</SortableTableHead>
-                  <SortableTableHead className="text-right" sortKey="units" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Units</SortableTableHead>
-                  <SortableTableHead className="text-right" sortKey="nav" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>NAV / Unit</SortableTableHead>
-                  <SortableTableHead className="text-right" sortKey="rate" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Annual Rate</SortableTableHead>
-                  <SortableTableHead className="text-right" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
-                  <TableHead className="pr-6">Notes</TableHead>
+                  <SortableTableHead className="w-[116px] pl-6" sortKey="date" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Date</SortableTableHead>
+                  <SortableTableHead className="w-[132px]" sortKey="ledger" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Ledger</SortableTableHead>
+                  <SortableTableHead className="w-[116px]" sortKey="type" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Type</SortableTableHead>
+                  <SortableTableHead className="w-[96px] text-right" sortKey="units" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Units</SortableTableHead>
+                  <SortableTableHead className="w-[112px] text-right" sortKey="nav" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>NAV / Unit</SortableTableHead>
+                  <SortableTableHead className="w-[116px] text-right" sortKey="rate" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Annual Rate</SortableTableHead>
+                  <SortableTableHead className="w-[120px] text-right" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
+                  <TableHead className="w-[180px] pr-6">Notes</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -119,7 +120,7 @@ export default async function InvestorPortalPage({
                     <TableCell className="text-right">{row.navPerUnit ? Number(row.navPerUnit).toFixed(6) : "-"}</TableCell>
                     <TableCell className="text-right">{row.annualRatePercent !== null && row.annualRatePercent !== undefined ? `${Number(row.annualRatePercent).toFixed(4)}%` : "-"}</TableCell>
                     <TableCell className={`text-right font-semibold ${row.amount >= 0 ? "" : "text-red-400"}`}>{formatMoney(row.amount)}</TableCell>
-                    <TableCell className="pr-6 text-muted-foreground">{row.notes || "-"}</TableCell>
+                    <NotesTableCell value={row.notes} />
                   </TableRow>
                 ))}
                 {sortedActivityLedger.length === 0 && (

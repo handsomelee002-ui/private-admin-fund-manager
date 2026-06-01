@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AddPlatformTransactionForm } from "@/components/AddPlatformTransactionForm";
 import { PlatformTransactionsChart, PlatformNavSnapshotChart } from "@/components/PlatformCharts";
+import { NotesTableCell } from "@/components/NotesTableCell";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { Badge } from "@/components/ui/badge";
 import { formatMoney } from "@/lib/formatting";
@@ -200,14 +201,14 @@ export default async function PlatformDetailsPage({
                 </div>
               </CardHeader>
               <CardContent className="p-0">
-                <Table>
+                <Table className="table-fixed text-xs">
                   <TableHeader>
                     <TableRow className="border-b border-border/50 hover:bg-transparent">
-                      <SortableTableHead className="pl-6" sortKey="date" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Date</SortableTableHead>
-                      <SortableTableHead sortKey="type" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Type</SortableTableHead>
-                      <SortableTableHead sortKey="notes" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Notes</SortableTableHead>
-                      <SortableTableHead className="text-right" sortKey="amount" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">RM Amount</SortableTableHead>
-                      <SortableTableHead className="text-right" sortKey="realized" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Realized</SortableTableHead>
+                      <SortableTableHead className="w-[98px] pl-6" sortKey="date" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Date</SortableTableHead>
+                      <SortableTableHead className="w-[116px]" sortKey="type" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Type</SortableTableHead>
+                      <SortableTableHead className="w-[150px]" sortKey="notes" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Notes</SortableTableHead>
+                      <SortableTableHead className="w-[116px] text-right" sortKey="amount" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">RM Amount</SortableTableHead>
+                      <SortableTableHead className="w-[100px] text-right" sortKey="realized" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Realized</SortableTableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -236,7 +237,7 @@ export default async function PlatformDetailsPage({
                             </Badge>
                           )}
                         </TableCell>
-                        <TableCell className="text-muted-foreground text-xs">{t.notes || "—"}</TableCell>
+                        <NotesTableCell value={t.notes} className="" />
                         <TableCell className="text-right font-medium tabular-nums text-sm">
                           {fmt(parseFloat(t.base_amount || t.amount || "0"))}
                           {t.currency && t.currency !== "MYR" && (

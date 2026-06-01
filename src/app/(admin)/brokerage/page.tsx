@@ -12,6 +12,7 @@ import { getInvestors } from "@/actions/investors";
 import { BrokerageFeeConfig } from "@/components/BrokerageFeeConfig";
 import { AddBonusForm } from "@/components/AddBonusForm";
 import { DeleteButton } from "@/components/DeleteButton";
+import { NotesTableCell } from "@/components/NotesTableCell";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
 import { timeAsync } from "@/lib/serverTiming";
@@ -235,15 +236,15 @@ export default async function BrokeragePage({
           <AddBonusForm investors={investors.map((i: any) => ({ id: i.id, name: i.name }))} />
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
+          <Table className="table-fixed">
             <TableHeader>
               <TableRow className="border-b border-border/50 hover:bg-transparent">
-                <SortableTableHead className="pl-6" sortKey="investor" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Investor</SortableTableHead>
-                <SortableTableHead sortKey="ledger" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Ledger</SortableTableHead>
-                <SortableTableHead sortKey="date" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Date</SortableTableHead>
-                <SortableTableHead className="text-right" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
-                <TableHead>Notes</TableHead>
-                <TableHead className="text-right pr-6">Actions</TableHead>
+                <SortableTableHead className="w-[180px] pl-6" sortKey="investor" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Investor</SortableTableHead>
+                <SortableTableHead className="w-[116px]" sortKey="ledger" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Ledger</SortableTableHead>
+                <SortableTableHead className="w-[116px]" sortKey="date" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Date</SortableTableHead>
+                <SortableTableHead className="w-[128px] text-right" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
+                <TableHead className="w-[180px]">Notes</TableHead>
+                <TableHead className="w-[88px] pr-6 text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -277,9 +278,7 @@ export default async function BrokeragePage({
                   <TableCell className={`text-right font-bold tabular-nums text-sm ${parseFloat(b.amount) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                     {parseFloat(b.amount) >= 0 ? "+" : ""}{fmt(parseFloat(b.amount))}
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground max-w-[150px] truncate">
-                    {b.notes || "—"}
-                  </TableCell>
+                  <NotesTableCell value={b.notes} className="" />
                   <TableCell className="text-right pr-6">
                     <DeleteButton id={b.id} deleteAction={deleteBonusPayment} />
                   </TableCell>

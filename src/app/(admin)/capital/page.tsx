@@ -3,6 +3,7 @@ import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AddCashMovementForm } from "@/components/AddCashMovementForm";
+import { NotesTableCell } from "@/components/NotesTableCell";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestors } from "@/actions/investors";
 import { getCashMovements } from "@/lib/fundDb";
@@ -58,15 +59,15 @@ export default async function CapitalLedgerPage({
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
+          <Table className="table-fixed">
             <TableHeader>
               <TableRow>
-                <SortableTableHead className="pl-6" sortKey="date" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Date</SortableTableHead>
-                <SortableTableHead sortKey="investor" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Investor</SortableTableHead>
-                <SortableTableHead sortKey="type" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Type</SortableTableHead>
-                <SortableTableHead className="text-right" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
-                <SortableTableHead className="text-right" sortKey="nav" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>NAV / Unit</SortableTableHead>
-                <TableHead className="pr-6">Notes</TableHead>
+                <SortableTableHead className="w-[15%] pl-6" sortKey="date" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Date</SortableTableHead>
+                <SortableTableHead className="w-[18%]" sortKey="investor" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Investor</SortableTableHead>
+                <SortableTableHead className="w-[12%]" sortKey="type" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Type</SortableTableHead>
+                <SortableTableHead className="w-[18%] text-right" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
+                <SortableTableHead className="w-[15%] text-right" sortKey="nav" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>NAV / Unit</SortableTableHead>
+                <TableHead className="w-[22%] pr-6">Notes</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -80,7 +81,7 @@ export default async function CapitalLedgerPage({
                   </TableCell>
                   <TableCell className="text-right font-semibold">{formatMoney(record.amount)}</TableCell>
                   <TableCell className="text-right">{record.nav_per_unit ? Number(record.nav_per_unit).toFixed(6) : "-"}</TableCell>
-                  <TableCell className="pr-6 text-muted-foreground">{record.notes}</TableCell>
+                  <NotesTableCell value={record.notes} previewLength={14} />
                 </TableRow>
               ))}
               {sortedRecords.length === 0 && (

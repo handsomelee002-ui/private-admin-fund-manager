@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { SettleClaimDialog } from "@/components/SettleClaimDialog";
 import { DeleteButton } from "@/components/DeleteButton";
+import { NotesTableCell } from "@/components/NotesTableCell";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
 import { getSortState, sortRows } from "@/lib/tableSorting";
@@ -143,20 +144,20 @@ export default async function ClaimsPage({
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <Table>
+          <Table className="table-fixed text-xs">
             <TableHeader>
               <TableRow className="border-b border-border/50 hover:bg-transparent">
-                <SortableTableHead className="pl-6" sortKey="investor" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Investor</SortableTableHead>
-                <SortableTableHead sortKey="claimDate" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Claim Date</SortableTableHead>
-                <SortableTableHead className="text-right" sortKey="gross" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Gross (IOU)</SortableTableHead>
-                <SortableTableHead className="text-right" sortKey="fee" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Perf. Fee</SortableTableHead>
-                <SortableTableHead className="text-right" sortKey="net" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Net Payable</SortableTableHead>
-                <SortableTableHead className="text-right" sortKey="settled" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Settled</SortableTableHead>
-                <SortableTableHead className="text-right" sortKey="outstanding" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Outstanding</SortableTableHead>
-                <SortableTableHead sortKey="status" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Status</SortableTableHead>
-                <SortableTableHead sortKey="settledDate" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Settled On</SortableTableHead>
-                <TableHead>Notes</TableHead>
-                <TableHead className="text-right pr-6">Actions</TableHead>
+                <SortableTableHead className="w-[150px] pl-6" sortKey="investor" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Investor</SortableTableHead>
+                <SortableTableHead className="w-[98px]" sortKey="claimDate" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Claim Date</SortableTableHead>
+                <SortableTableHead className="w-[108px] text-right" sortKey="gross" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Gross</SortableTableHead>
+                <SortableTableHead className="w-[92px] text-right" sortKey="fee" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Perf. Fee</SortableTableHead>
+                <SortableTableHead className="w-[108px] text-right" sortKey="net" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Net</SortableTableHead>
+                <SortableTableHead className="w-[98px] text-right" sortKey="settled" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Settled</SortableTableHead>
+                <SortableTableHead className="w-[108px] text-right" sortKey="outstanding" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Due</SortableTableHead>
+                <SortableTableHead className="w-[82px]" sortKey="status" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Status</SortableTableHead>
+                <SortableTableHead className="w-[96px]" sortKey="settledDate" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Settled On</SortableTableHead>
+                <TableHead className="w-[150px]">Notes</TableHead>
+                <TableHead className="w-[88px] pr-6 text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -202,9 +203,7 @@ export default async function ClaimsPage({
                     <TableCell className="text-sm text-muted-foreground">
                       {c.settled_date ?? "—"}
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground max-w-[120px] truncate">
-                      {c.notes || "—"}
-                    </TableCell>
+                    <NotesTableCell value={c.notes} className="" />
                     <TableCell className="text-right pr-6">
                       <div className="flex justify-end items-center gap-2">
                         {c.status !== "settled" && (
