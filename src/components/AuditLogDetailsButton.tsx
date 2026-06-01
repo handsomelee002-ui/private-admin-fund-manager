@@ -1,6 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import { FileSearch } from "lucide-react";
+import { getAdminAuditLogDetails } from "@/actions/adminLogs";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -46,7 +48,29 @@ function flattenReadableDetails(value: unknown, prefix = ""): { label: string; v
 }
 
 export function AuditLogDetailsButton({ log }: { log: AuditLogDetails }) {
-  const readableRows = flattenReadableDetails(log.readableDetails);
+  const [detailsLog, setDetailsLog] = useState<AuditLogDetails | null>(log.readableDetails ? log : null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const activeLog = detailsLog ?? log;
+  const readableRows = flattenReadableDetails(activeLog.readableDetails);
+
+  async function loadDetails() {
+    if (detailsLog || loading) return;
+    setError(null);
+    setLoading(true);
+    try {
+      const result = await getAdminAuditLogDetails(log.id);
+      if ("error" in result) {
+        setError(result.error ?? "Failed to load audit details.");
+        return;
+      }
+      setDetailsLog(result.log);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Failed to load audit details.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <Dialog>
@@ -58,6 +82,7 @@ export function AuditLogDetailsButton({ log }: { log: AuditLogDetails }) {
             size="icon-sm"
             title="View audit details"
             aria-label="View audit details"
+            onClick={loadDetails}
           />
         }
       >
@@ -79,25 +104,35 @@ export function AuditLogDetailsButton({ log }: { log: AuditLogDetails }) {
           <div className="grid gap-2 rounded-md border border-border/50 bg-muted/20 p-3 sm:grid-cols-2">
             <div>
               <div className="text-muted-foreground">Time</div>
-              <div className="font-medium">{log.created_at}</div>
+              <div className="font-medium">{activeLog.created_at}</div>
             </div>
             <div>
               <div className="text-muted-foreground">Action</div>
-              <div className="font-medium">{log.action}</div>
+              <div className="font-medium">{activeLog.action}</div>
             </div>
             <div>
               <div className="text-muted-foreground">Entity</div>
-              <div className="font-medium">{log.entity_type}</div>
+              <div className="font-medium">{activeLog.entity_type}</div>
             </div>
             <div>
               <div className="text-muted-foreground">Actor</div>
-              <div className="font-medium">{log.actor_id}</div>
+              <div className="font-medium">{activeLog.actor_id}</div>
             </div>
           </div>
+          {loading && (
+            <div className="rounded-md border border-border/50 bg-muted/20 p-2 text-muted-foreground">
+              Loading audit details...
+            </div>
+          )}
+          {error && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2 text-destructive">
+              {error}
+            </div>
+          )}
           <div>
             <div className="mb-1 text-muted-foreground">Revert Support</div>
             <div className="rounded-md border border-border/50 bg-muted/20 p-2">
-              {log.revertSupport || "This audit event cannot be reverted."}
+              {activeLog.revertSupport || "This audit event cannot be reverted."}
             </div>
           </div>
           <div>
@@ -120,13 +155,13 @@ export function AuditLogDetailsButton({ log }: { log: AuditLogDetails }) {
           <div>
             <div className="mb-1 text-muted-foreground">Entity ID</div>
             <div className="break-all rounded-md border border-border/50 bg-muted/20 p-2 font-mono">
-              {log.entity_id || "-"}
+              {activeLog.entity_id || "-"}
             </div>
           </div>
           <div>
             <div className="mb-1 text-muted-foreground">Raw Details</div>
             <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/50 bg-muted/20 p-3 text-xs">
-              {JSON.stringify(log.details ?? {}, null, 2)}
+              {JSON.stringify(activeLog.details ?? {}, null, 2)}
             </pre>
           </div>
           </div>

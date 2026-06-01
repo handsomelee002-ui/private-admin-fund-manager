@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, Download, Upload } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, ShieldAlert, Upload } from "lucide-react";
 import { exportFundBackup, previewFundBackupImport, restoreFundBackup } from "@/actions/backups";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,6 +31,9 @@ export function BackupManager({ adminPassword, onProtectedActionSuccess }: Backu
   async function downloadBackup() {
     setError(null);
     setSuccess(null);
+    setPreview(null);
+    setBackupJson("");
+    setConfirmation("");
     setLoading("export");
 
     try {
@@ -47,7 +50,7 @@ export function BackupManager({ adminPassword, onProtectedActionSuccess }: Backu
       link.remove();
       URL.revokeObjectURL(url);
       onProtectedActionSuccess();
-      setSuccess("Backup exported.");
+      setSuccess(`Backup exported as ${result.fileName}. Store this JSON in an encrypted or restricted location.`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to export backup.");
     } finally {
@@ -72,7 +75,7 @@ export function BackupManager({ adminPassword, onProtectedActionSuccess }: Backu
       setPreview(result.preview);
       setBackupJson(result.raw);
       onProtectedActionSuccess();
-      setSuccess("Backup validated.");
+      setSuccess("Backup validated. Review the row counts below before restoring.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Failed to validate backup.");
     } finally {
@@ -96,7 +99,7 @@ export function BackupManager({ adminPassword, onProtectedActionSuccess }: Backu
         setError(result.error ?? "Failed to restore backup.");
         return;
       }
-      setSuccess(result.warning ?? "Backup restored.");
+      setSuccess(result.warning ?? "Backup restored. Reloading the database views.");
       setPreview(null);
       setBackupJson("");
       setConfirmation("");
@@ -116,17 +119,24 @@ export function BackupManager({ adminPassword, onProtectedActionSuccess }: Backu
           <AlertTriangle className="h-4 w-4 text-amber-500" />
           <CardTitle className="text-base">Manual Database Backup</CardTitle>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Backup files contain full financial records, investor names, locked NAV snapshots, and audit logs.
-        </p>
+        <div className="space-y-1 text-xs text-muted-foreground">
+          <p>Backup files contain full financial records, investor names, locked NAV snapshots, and audit logs.</p>
+          <p>Export before releases or major data changes; restore only when replacing the current database is intentional.</p>
+        </div>
       </CardHeader>
       <CardContent className="space-y-5">
+        {!adminPassword && (
+          <div className="flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-200">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>Enter the protected action password above before exporting, validating, or restoring backups.</span>
+          </div>
+        )}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-medium">Export backup</p>
-            <p className="text-xs text-muted-foreground">Download a plain JSON restore file for the current database.</p>
+            <p className="text-xs text-muted-foreground">Download a plain JSON restore file for the current database; the app does not encrypt this file.</p>
           </div>
-          <Button type="button" onClick={downloadBackup} disabled={loading !== null}>
+          <Button type="button" onClick={downloadBackup} disabled={loading !== null || !adminPassword}>
             <Download className="h-4 w-4" />
             {loading === "export" ? "Exporting" : "Export JSON"}
           </Button>
@@ -136,17 +146,26 @@ export function BackupManager({ adminPassword, onProtectedActionSuccess }: Backu
           <div className="space-y-1.5">
             <Label htmlFor="backup_file">Import backup</Label>
             <Input id="backup_file" name="backup_file" type="file" accept="application/json,.json" required />
-            <p className="text-xs text-muted-foreground">Validation runs before any database change.</p>
+            <p className="text-xs text-muted-foreground">Validation checks the file structure and references before any database change.</p>
           </div>
           <input type="hidden" name="admin_password" value={adminPassword} />
-          <Button type="submit" variant="outline" disabled={loading !== null}>
+          <Button type="submit" variant="outline" disabled={loading !== null || !adminPassword}>
             <Upload className="h-4 w-4" />
             {loading === "preview" ? "Validating" : "Validate Backup"}
           </Button>
         </form>
 
-        {error && <p className="text-sm text-destructive">{error}</p>}
-        {success && <p className="text-sm text-emerald-500">{success}</p>}
+        {error && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+        {success && (
+          <div className="flex gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-300">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{success}</span>
+          </div>
+        )}
 
         {preview && (
           <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
@@ -154,6 +173,9 @@ export function BackupManager({ adminPassword, onProtectedActionSuccess }: Backu
               <p className="text-sm font-medium">Validated backup</p>
               <p className="text-xs text-muted-foreground">
                 Exported {new Date(preview.exportedAt).toLocaleString()} with {preview.totalRows} rows.
+              </p>
+              <p className="mt-1 text-xs text-amber-200">
+                Restore will replace the current database tables with this file's contents.
               </p>
             </div>
             <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">

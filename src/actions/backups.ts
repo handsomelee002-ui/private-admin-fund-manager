@@ -98,7 +98,11 @@ export async function exportFundBackup(formData: FormData) {
 
 export async function previewFundBackupImport(formData: FormData) {
   await requireAdmin();
-  assertAdminPassword(formData.get("admin_password")?.toString());
+  try {
+    assertAdminPassword(formData.get("admin_password")?.toString());
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Admin password is invalid." };
+  }
 
   const file = formData.get("backup_file");
   if (!(file instanceof File)) return { error: "Backup file is required." };
@@ -117,7 +121,11 @@ export async function previewFundBackupImport(formData: FormData) {
 
 export async function restoreFundBackup(formData: FormData) {
   await requireAdmin();
-  assertAdminPassword(formData.get("admin_password")?.toString());
+  try {
+    assertAdminPassword(formData.get("admin_password")?.toString());
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Admin password is invalid." };
+  }
   await ensureAuditColumns();
 
   const confirmation = formData.get("confirmation")?.toString();

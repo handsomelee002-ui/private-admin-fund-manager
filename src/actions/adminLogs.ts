@@ -155,7 +155,7 @@ async function latestActiveInvestorUnitLedgerIds(investorIds: string[]) {
   return new Map(result.rows.map((row: any) => [row.investor_id, row.id]));
 }
 
-async function enrichAuditLogs(rows: any[]) {
+async function enrichAuditLogs(rows: any[], { includeReadableDetails = true } = {}) {
   const platformTransactions = await lookupById(`
     SELECT pt.id, pt.platform_id, TO_CHAR(pt.date, 'YYYY-MM-DD') as date, pt.type, pt.amount, pt.currency, pt.base_amount,
       pt.status, pt.audit_status, p.name as platform_name, pa.name as account_name, passet.symbol as asset_symbol
@@ -269,16 +269,18 @@ async function enrichAuditLogs(rows: any[]) {
       platform_assets: platformAssets,
     }[row.entity_type as string];
     const entity = entityLookup?.get(row.entity_id);
-    if (entity) readable.entity = entity;
-    if (details.investorId && investors.has(details.investorId)) readable.investor = investors.get(details.investorId);
-    if (details.platformId && platforms.has(details.platformId)) readable.platform = platforms.get(details.platformId);
-    if (row.action === "bonus_payment.add" && details.ledgerType === "fixed_savings") {
-      readable.revertNote = "Fixed-savings bonus revert is not implemented; use an explicit current-period adjustment until this reversal path is added.";
+    if (includeReadableDetails) {
+      if (entity) readable.entity = entity;
+      if (details.investorId && investors.has(details.investorId)) readable.investor = investors.get(details.investorId);
+      if (details.platformId && platforms.has(details.platformId)) readable.platform = platforms.get(details.platformId);
+      if (row.action === "bonus_payment.add" && details.ledgerType === "fixed_savings") {
+        readable.revertNote = "Fixed-savings bonus revert is not implemented; use an explicit current-period adjustment until this reversal path is added.";
+      }
     }
     const revertEligibility = eligibility(row, entity);
     return {
       ...row,
-      readableDetails: readable,
+      readableDetails: includeReadableDetails ? readable : undefined,
       canRevert: revertEligibility.canRevert,
       revertSupport: revertEligibility.revertSupport,
     };
@@ -413,7 +415,7 @@ async function getEligibleAuditRows(status: Extract<AdminLogStatusFilter, "activ
     ORDER BY ae.created_at DESC
     LIMIT $2
   `, [REVERSIBLE_ACTION_LIST, candidateLimit]);
-  const enriched = await enrichAuditLogs(candidates.rows);
+  const enriched = await enrichAuditLogs(candidates.rows, { includeReadableDetails: false });
   const filtered = enriched.filter((row) => auditStatus(row) === status);
   return {
     rows: filtered.slice((page - 1) * pageSize, page * pageSize),
@@ -439,7 +441,34 @@ export async function getAdminAuditLogs({
     return { logs: result.rows, total: result.total };
   }
   const result = await getPagedAuditRows(status, safePage, safePageSize);
-  return { logs: await enrichAuditLogs(result.rows), total: result.total };
+  return { logs: await enrichAuditLogs(result.rows, { includeReadableDetails: false }), total: result.total };
+}
+
+export async function getAdminAuditLogDetails(id: string) {
+  await requireAdmin();
+  await ensureAuditColumns();
+  const result = await sql`
+    SELECT
+      ae.id,
+      ae.actor_id,
+      ae.action,
+      ae.entity_type,
+      ae.entity_id,
+      ae.details,
+      TO_CHAR(ae.created_at, 'YYYY-MM-DD HH24:MI:SS') as created_at,
+      EXISTS (
+        SELECT 1
+        FROM audit_events reversal
+        WHERE reversal.action LIKE '%.revert'
+          AND reversal.details->>'originalAuditEventId' = ae.id::text
+      ) as has_revert
+    FROM audit_events ae
+    WHERE ae.id = ${id}
+    LIMIT 1
+  `;
+  if (!result.rows[0]) return { error: "Audit log not found." };
+  const [log] = await enrichAuditLogs(result.rows, { includeReadableDetails: true });
+  return { log };
 }
 
 async function revertPlatformTransaction(auditEventId: string, entityId: string) {
