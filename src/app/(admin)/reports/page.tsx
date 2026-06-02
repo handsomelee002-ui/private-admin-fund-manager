@@ -6,7 +6,7 @@ import { getFundSummaryMetrics, getNavWeeks } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { BarChart3, DollarSign, Landmark, TrendingUp, Users, Wallet } from "lucide-react";
+import { BarChart3, DollarSign, Layers3, TrendingUp } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -39,63 +39,55 @@ export default async function ReportsPage({
     navPerUnit: (week: any) => week.nav_per_unit,
   });
   const totalRealized = platforms.reduce((sum: number, platform: any) => sum + platform.realizedProfit, 0);
+  const latestLockedWeek = [...navWeeks].sort((a: any, b: any) => String(b.week_ending).localeCompare(String(a.week_ending)))[0]?.week_ending ?? "No locked NAV";
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Reports</h1>
-        <p className="text-muted-foreground mt-1 text-sm">Equity NAV trend, investor capital, fees, and fixed savings liability.</p>
+        <p className="text-muted-foreground mt-1 text-sm">Platform realized performance and locked NAV history.</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-7">
-        <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Equity NAV</CardTitle>
-            <Wallet className="h-4 w-4 text-primary" />
-          </CardHeader>
-          <CardContent><div className="text-xl font-bold">{formatMoney(summary.aum)}</div></CardContent>
-        </Card>
-        <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Investor Capital</CardTitle>
-            <Landmark className="h-4 w-4 text-blue-400" />
-          </CardHeader>
-          <CardContent><div className="text-xl font-bold">{formatMoney(summary.totalInvestorCapital)}</div></CardContent>
-        </Card>
-        <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Units</CardTitle>
-            <Users className="h-4 w-4 text-violet-400" />
-          </CardHeader>
-          <CardContent><div className="text-xl font-bold">{formatUnits(summary.totalUnits)}</div></CardContent>
-        </Card>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card className="bg-card/50 border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm text-muted-foreground">Realized Profit</CardTitle>
             <TrendingUp className="h-4 w-4 text-violet-400" />
           </CardHeader>
-          <CardContent><div className={`text-xl font-bold ${totalRealized >= 0 ? "text-violet-400" : "text-red-400"}`}>{formatMoney(totalRealized)}</div></CardContent>
+          <CardContent>
+            <div className={`text-2xl font-bold ${totalRealized >= 0 ? "text-violet-400" : "text-red-400"}`}>{formatMoney(totalRealized)}</div>
+            <p className="text-xs text-muted-foreground mt-1">Closed platform transactions</p>
+          </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm text-muted-foreground">Performance Fees</CardTitle>
             <DollarSign className="h-4 w-4 text-emerald-400" />
           </CardHeader>
-          <CardContent><div className="text-xl font-bold text-emerald-400">{formatMoney(summary.performanceFees)}</div></CardContent>
+          <CardContent>
+            <div className="text-2xl font-bold text-emerald-400">{formatMoney(summary.performanceFees)}</div>
+            <p className="text-xs text-muted-foreground mt-1">Audited fee income</p>
+          </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Fixed Liability</CardTitle>
-            <BarChart3 className="h-4 w-4 text-amber-400" />
+            <CardTitle className="text-sm text-muted-foreground">Platforms</CardTitle>
+            <Layers3 className="h-4 w-4 text-blue-400" />
           </CardHeader>
-          <CardContent><div className="text-xl font-bold text-amber-400">{formatMoney(summary.fixedSavingsLiability)}</div></CardContent>
+          <CardContent>
+            <div className="text-2xl font-bold">{platforms.length}</div>
+            <p className="text-xs text-muted-foreground mt-1">Included in realized report</p>
+          </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Brokerage P&L</CardTitle>
-            <Wallet className="h-4 w-4 text-emerald-400" />
+            <CardTitle className="text-sm text-muted-foreground">Locked NAV Weeks</CardTitle>
+            <BarChart3 className="h-4 w-4 text-primary" />
           </CardHeader>
-          <CardContent><div className={`text-xl font-bold ${summary.brokerageProfitLoss >= 0 ? "text-emerald-400" : "text-red-400"}`}>{formatMoney(summary.brokerageProfitLoss)}</div></CardContent>
+          <CardContent>
+            <div className="text-2xl font-bold">{navWeeks.length}</div>
+            <p className="text-xs text-muted-foreground mt-1">Latest: {latestLockedWeek}</p>
+          </CardContent>
         </Card>
       </div>
 

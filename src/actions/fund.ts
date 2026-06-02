@@ -71,7 +71,7 @@ export async function createNavWeekAction(formData: FormData) {
       weekEnding,
       platformSnapshots,
       adjustments: parseMoney(formData.get("adjustments"), "Adjustments"),
-      notes: formData.get("notes")?.toString() || "",
+      notes: "",
     });
     revalidateFundViews();
     return { success: true };

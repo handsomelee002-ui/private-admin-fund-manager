@@ -76,14 +76,35 @@ export async function addFixedSavingsRecord(formData: FormData) {
   }
 
   const amount = parseFloat(amountStr);
-  if (isNaN(amount)) return { error: "Amount must be a number" };
+  if (!Number.isFinite(amount) || amount <= 0) return { error: "Amount must be greater than zero" };
+  if (!["Deposit", "Withdrawal"].includes(type)) return { error: "Invalid fixed savings type" };
 
   const interestRate =
     interestRateStr && interestRateStr !== ""
       ? parseFloat(interestRateStr)
       : null;
+  if (type === "Deposit" && (!Number.isFinite(interestRate) || Number(interestRate) <= 0)) {
+    return { error: "Interest rate must be greater than zero for deposits" };
+  }
 
   try {
+    if (type === "Withdrawal") {
+      const balance = await sql`
+        SELECT COALESCE(SUM(CASE
+          WHEN type IN ('Deposit', 'Bonus') THEN amount
+          WHEN type IN ('Withdrawal', 'InterestWithdrawal') THEN -amount
+          ELSE 0
+        END), 0) as total
+        FROM fixed_savings_ledger
+        WHERE investor_id = ${investorId}
+          AND audit_status = 'active'
+      `;
+      const available = parseFloat(balance.rows[0]?.total || "0");
+      if (amount > available + 0.005) {
+        return { error: `Withdrawal exceeds available fixed savings balance of RM ${available.toFixed(2)}.` };
+      }
+    }
+
     await sql`
       INSERT INTO fixed_savings_ledger (investor_id, date, type, amount, interest_rate, notes)
       VALUES (${investorId}, ${date}, ${type}, ${amount}, ${interestRate}, ${notes})

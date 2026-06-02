@@ -661,6 +661,18 @@ export async function ensureFreshFundSchema() {
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS settlement_date DATE`;
   await sql`UPDATE platform_transactions SET base_amount = amount WHERE base_amount = 0 AND amount <> 0`;
   await sql`
+    CREATE TABLE IF NOT EXISTS platform_transaction_allocations (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      transaction_id UUID NOT NULL REFERENCES platform_transactions(id) ON DELETE CASCADE,
+      funding_source TEXT NOT NULL,
+      ratio_percent NUMERIC(10, 4) NOT NULL,
+      base_amount NUMERIC(20, 4) NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(transaction_id, funding_source)
+    )
+  `;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS allocation_method TEXT NOT NULL DEFAULT 'legacy'`;
+  await sql`
     CREATE TABLE IF NOT EXISTS trading_ledger (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
       date DATE NOT NULL,
@@ -781,45 +793,49 @@ export async function createNavWeek(input: NavWeekInput) {
   }
   const totalUnits = await getTotalUnits();
   const platforms = await sql`
+    WITH transaction_flows AS (
+      SELECT
+        pt.id,
+        pt.platform_id,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as cash_flow,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COUNT(pta.id) > 0 THEN COALESCE(SUM(CASE WHEN pta.funding_source = 'equity' THEN pta.base_amount ELSE 0 END), 0)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'equity' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'equity' AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as equity_cash_flow,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COUNT(pta.id) > 0 THEN COALESCE(SUM(CASE WHEN pta.funding_source = 'fixed_savings' THEN pta.base_amount ELSE 0 END), 0)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'fixed_savings' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'fixed_savings' AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as fixed_savings_cash_flow,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COUNT(pta.id) > 0 THEN COALESCE(SUM(CASE WHEN pta.funding_source = 'brokerage' THEN pta.base_amount ELSE 0 END), 0)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'brokerage' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'brokerage' AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as brokerage_cash_flow
+      FROM platform_transactions pt
+      LEFT JOIN platform_transaction_allocations pta ON pta.transaction_id = pt.id
+      GROUP BY pt.id
+    )
     SELECT
       p.id,
-      COALESCE(SUM(
-        CASE
-          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
-          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          ELSE 0
-        END
-      ), 0) as net_invested,
-      COALESCE(SUM(
-        CASE
-          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
-          WHEN COALESCE(pt.funding_source, 'equity') <> 'equity' THEN 0
-          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          ELSE 0
-        END
-      ), 0) as equity_net_invested,
-      COALESCE(SUM(
-        CASE
-          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
-          WHEN COALESCE(pt.funding_source, 'equity') <> 'fixed_savings' THEN 0
-          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          ELSE 0
-        END
-      ), 0) as fixed_savings_net_invested,
-      COALESCE(SUM(
-        CASE
-          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
-          WHEN COALESCE(pt.funding_source, 'equity') <> 'brokerage' THEN 0
-          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          ELSE 0
-        END
-      ), 0) as brokerage_net_invested
+      COALESCE(SUM(tf.cash_flow), 0) as net_invested,
+      COALESCE(SUM(tf.equity_cash_flow), 0) as equity_net_invested,
+      COALESCE(SUM(tf.fixed_savings_cash_flow), 0) as fixed_savings_net_invested,
+      COALESCE(SUM(tf.brokerage_cash_flow), 0) as brokerage_net_invested
     FROM platforms p
-    LEFT JOIN platform_transactions pt ON pt.platform_id = p.id
+    LEFT JOIN transaction_flows tf ON tf.platform_id = p.id
     GROUP BY p.id
     ORDER BY p.id
   `;

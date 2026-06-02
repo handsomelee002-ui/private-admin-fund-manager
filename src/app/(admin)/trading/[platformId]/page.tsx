@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import {
   getPlatform,
+  getPlatformCapitalAllocation,
   getPlatformTransactions,
   getPlatformNavSnapshots,
 } from "@/actions/trading";
@@ -16,11 +17,11 @@ import { formatMoney } from "@/lib/formatting";
 import { calculatePlatformPerformance } from "@/lib/platformPerformance";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { NoPrefetchLink } from "@/components/NoPrefetchLink";
-import { ArrowLeft, Wallet, TrendingUp, DollarSign, ArrowDownRight, ArrowUpRight, BarChart3 } from "lucide-react";
+import { ArrowLeft, Wallet, TrendingUp, DollarSign, BarChart3, PieChart } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-const transactionSorts = ["date", "type", "source", "notes", "amount", "realized"] as const;
+const transactionSorts = ["date", "source", "notes", "amount", "realized", "unrealized"] as const;
 const snapshotSorts = ["week", "netInvested", "unrealized", "nav"] as const;
 
 export default async function PlatformDetailsPage({
@@ -39,19 +40,32 @@ export default async function PlatformDetailsPage({
   const platform = await getPlatform(platformId);
   if (!platform) return notFound();
 
-  const [transactions, snapshots] = await Promise.all([
+  const [transactions, snapshots, capitalAllocation] = await Promise.all([
     getPlatformTransactions(platformId),
     getPlatformNavSnapshots(platformId),
+    getPlatformCapitalAllocation(platformId),
   ]);
   const performance = calculatePlatformPerformance(transactions, snapshots);
+  const netInvested = performance.netInvested;
+  const realizedProfit = performance.realizedProfit;
+  const latestUnrealized = performance.latestUnrealized;
+  const totalValue = performance.currentValue;
+  const pnlPct = performance.simpleRoi ?? 0;
   const visibleTransactions = statusFilter === "all" ? transactions : transactions.filter((transaction: any) => transaction.audit_status === "active");
   const sortedTransactions = sortRows(visibleTransactions, transactionSortState, {
     date: (transaction: any) => transaction.date,
-    type: (transaction: any) => transaction.type,
     source: (transaction: any) => transaction.funding_source,
     notes: (transaction: any) => transaction.notes,
     amount: (transaction: any) => transaction.amount,
     realized: (transaction: any) => transaction.realized_profit,
+    unrealized: (transaction: any) => {
+      const transactionAmount = ["BROKER_WITHDRAWAL", "Withdraw"].includes(transaction.type)
+        ? -parseFloat(transaction.base_amount || transaction.amount || "0")
+        : ["BROKER_DEPOSIT", "Deposit"].includes(transaction.type)
+          ? parseFloat(transaction.base_amount || transaction.amount || "0")
+          : 0;
+      return netInvested > 0 ? latestUnrealized * (transactionAmount / netInvested) : 0;
+    },
   });
   const sortedSnapshots = sortRows(snapshots, snapshotSortState, {
     week: (snapshot: any) => snapshot.week_ending,
@@ -59,12 +73,6 @@ export default async function PlatformDetailsPage({
     unrealized: (snapshot: any) => snapshot.unrealized_profit,
     nav: (snapshot: any) => snapshot.nav_per_unit,
   });
-
-  const netInvested = performance.netInvested;
-  const realizedProfit = performance.realizedProfit;
-  const latestUnrealized = performance.latestUnrealized;
-  const totalValue = performance.currentValue;
-  const pnlPct = performance.simpleRoi ?? 0;
 
   const fmt = formatMoney;
 
@@ -156,6 +164,29 @@ export default async function PlatformDetailsPage({
         </Card>
       </div>
 
+      <Card className="bg-card/50 border-border/50">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <PieChart className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Capital Allocation</CardTitle>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">Current platform source ownership used for P&L attribution.</p>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 md:grid-cols-3">
+            {capitalAllocation.platformAllocations.map((allocation: any) => (
+              <div key={allocation.source} className="rounded-md border border-border/50 bg-background/40 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-sm text-muted-foreground">{allocation.label}</span>
+                  <Badge variant="outline">{Number(allocation.ratioPercent).toFixed(2)}%</Badge>
+                </div>
+                <p className="mt-2 text-xl font-bold tabular-nums">{fmt(Number(allocation.baseAmount))}</p>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
       {/* ── Tabs ────────────────────────────────────────────────────────────── */}
       <Tabs defaultValue="transactions" className="w-full flex-col">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
@@ -168,7 +199,8 @@ export default async function PlatformDetailsPage({
             <TabsContent value="transactions" className="mt-0">
               <AddPlatformTransactionForm
                 platformId={platformId}
-                defaultCurrency="MYR"
+                automaticAllocationBasis={capitalAllocation.automaticBasis}
+                platformAllocationBalances={capitalAllocation.platformBalances}
               />
             </TabsContent>
           </div>
@@ -201,16 +233,16 @@ export default async function PlatformDetailsPage({
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="p-0">
-                <Table className="table-fixed text-xs">
+              <CardContent className="overflow-x-auto p-0">
+                <Table className="min-w-[760px] table-fixed text-xs">
                   <TableHeader>
                     <TableRow className="border-b border-border/50 hover:bg-transparent">
                       <SortableTableHead className="w-[98px] pl-6" sortKey="date" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Date</SortableTableHead>
-                      <SortableTableHead className="w-[116px]" sortKey="type" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Type</SortableTableHead>
-                      <SortableTableHead className="w-[116px]" sortKey="source" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Source</SortableTableHead>
+                      <SortableTableHead className="w-[150px]" sortKey="source" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Allocation</SortableTableHead>
                       <SortableTableHead className="w-[150px]" sortKey="notes" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Notes</SortableTableHead>
                       <SortableTableHead className="w-[116px] text-right" sortKey="amount" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">RM Amount</SortableTableHead>
                       <SortableTableHead className="w-[100px] text-right" sortKey="realized" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Realized</SortableTableHead>
+                      <SortableTableHead className="w-[110px] text-right" sortKey="unrealized" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Unrealized</SortableTableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -218,31 +250,13 @@ export default async function PlatformDetailsPage({
                       <TableRow key={t.id} className="hover:bg-muted/20 transition-colors border-border/30">
                         <TableCell className="pl-6 text-sm">{t.date}</TableCell>
                         <TableCell>
-                          <Badge
-                            variant="outline"
-                            className={`text-[10px] h-5 px-1.5 ${
-                              ["Deposit", "BROKER_DEPOSIT"].includes(t.type)
-                                ? "text-emerald-500 border-emerald-500/30 bg-emerald-500/5"
-                                : "text-orange-400 border-orange-400/30 bg-orange-400/5"
-                            }`}
-                          >
-                            {["Deposit", "BROKER_DEPOSIT"].includes(t.type) ? (
-                              <ArrowDownRight className="h-2.5 w-2.5 mr-0.5" />
-                            ) : (
-                              <ArrowUpRight className="h-2.5 w-2.5 mr-0.5" />
-                            )}
-                            {String(t.type).replaceAll("_", " ")}
-                          </Badge>
-                          {t.audit_status !== "active" && (
-                            <Badge variant="outline" className="ml-2 text-[10px] h-5 px-1.5">
-                              {t.audit_status === "reversal" ? "Reversal" : "Reverted"}
-                            </Badge>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className="text-[10px] h-5 px-1.5">
-                            {t.funding_source === "fixed_savings" ? "Fixed Savings" : t.funding_source === "brokerage" ? "Brokerage" : "Equity"}
-                          </Badge>
+                          <div className="flex flex-wrap gap-1">
+                            {(Array.isArray(t.allocations) && t.allocations.length > 0 ? t.allocations : [{ funding_source: t.funding_source, ratio_percent: 100, base_amount: t.base_amount }]).map((allocation: any) => (
+                              <Badge key={allocation.funding_source} variant="outline" className="text-[10px] h-5 px-1.5">
+                                {allocation.funding_source === "fixed_savings" ? "FS" : allocation.funding_source === "brokerage" ? "B" : "E"} {Number(allocation.ratio_percent || 0).toFixed(0)}%
+                              </Badge>
+                            ))}
+                          </div>
                         </TableCell>
                         <NotesTableCell value={t.notes} className="" />
                         <TableCell className="text-right font-medium tabular-nums text-sm">
@@ -255,6 +269,25 @@ export default async function PlatformDetailsPage({
                         </TableCell>
                         <TableCell className={`text-right font-medium tabular-nums text-sm ${parseFloat(t.realized_profit || "0") >= 0 ? "text-violet-400" : "text-red-400"}`}>
                           {t.realized_profit ? fmt(parseFloat(t.realized_profit)) : "-"}
+                        </TableCell>
+                        <TableCell className={`text-right font-medium tabular-nums text-sm ${(() => {
+                          const transactionAmount = ["BROKER_WITHDRAWAL", "Withdraw"].includes(t.type)
+                            ? -parseFloat(t.base_amount || t.amount || "0")
+                            : ["BROKER_DEPOSIT", "Deposit"].includes(t.type)
+                              ? parseFloat(t.base_amount || t.amount || "0")
+                              : 0;
+                          const value = netInvested > 0 ? latestUnrealized * (transactionAmount / netInvested) : 0;
+                          return value >= 0 ? "text-blue-400" : "text-red-400";
+                        })()}`}>
+                          {(() => {
+                            const transactionAmount = ["BROKER_WITHDRAWAL", "Withdraw"].includes(t.type)
+                              ? -parseFloat(t.base_amount || t.amount || "0")
+                              : ["BROKER_DEPOSIT", "Deposit"].includes(t.type)
+                                ? parseFloat(t.base_amount || t.amount || "0")
+                                : 0;
+                            const value = netInvested > 0 ? latestUnrealized * (transactionAmount / netInvested) : 0;
+                            return transactionAmount === 0 ? "-" : fmt(value);
+                          })()}
                         </TableCell>
                       </TableRow>
                     ))}

@@ -33,20 +33,13 @@ export default async function BrokeragePage({
 
   const [
     brokerageFeeRate,
-    realizedRes,
     brokeragePnlRes,
-    claimsFeesRes,
     withdrawalFeesRes,
     fsRows,
     bonusPayments,
     investors,
   ] = await Promise.all([
     timeAsync("route.brokerage.getBrokerageFeeRate", () => getBrokerageFeeRate(), { route: "/brokerage" }),
-    timeAsync("route.brokerage.realizedProfitQuery", () => sql`
-      SELECT COALESCE(SUM(realized_profit), 0) as net_realized
-      FROM platform_transactions
-      WHERE type = 'Withdraw' AND realized_profit IS NOT NULL
-    `, { route: "/brokerage" }),
     timeAsync("route.brokerage.latestBrokeragePnlQuery", () => sql`
       WITH latest_nav AS (
         SELECT id
@@ -59,11 +52,6 @@ export default async function BrokeragePage({
       FROM nav_week_platform_snapshots nwps
       WHERE nwps.nav_week_id = (SELECT id FROM latest_nav)
     `, { route: "/brokerage" }),
-    timeAsync("route.brokerage.claimsFeesQuery", () => sql`
-      SELECT COALESCE(SUM(brokerage_fee), 0) as total
-      FROM investor_profit_claims
-      WHERE status = 'settled'
-    `, { route: "/brokerage" }).catch(() => null),
     timeAsync("route.brokerage.withdrawalFeesQuery", () => sql`
       SELECT COALESCE(SUM(fee_amount), 0) as total
       FROM performance_fees
@@ -78,22 +66,14 @@ export default async function BrokeragePage({
     timeAsync("route.brokerage.getInvestors", () => getInvestors(), { route: "/brokerage" }),
   ]);
 
-  // ── Realized Profit: NET across all platform Withdraw transactions ───────────
-  // Performance fee model — losses reduce the fee base; no fee on net losses
-  const netRealized = parseFloat(realizedRes.rows[0]?.net_realized || 0);
-  const platformBrokerageEarned = 0;
   const brokerageProfitLoss = parseFloat(brokeragePnlRes.rows[0]?.brokerage_profit_loss || "0");
-  const claimsBrokerageEarned = 0;
   const withdrawalBrokerageEarned = parseFloat(withdrawalFeesRes?.rows[0]?.total || "0");
 
-  const brokerageFeeEarned = platformBrokerageEarned + claimsBrokerageEarned + withdrawalBrokerageEarned;
-  const totalRealized = netRealized; // for display
+  const brokerageFeeEarned = withdrawalBrokerageEarned;
 
-  // ── Total Interest Owed to All Investors ─────────────────────────────────────
   const fixedSavingsLiability = calculateFixedSavingsLiability(fsRows.rows as any[]);
   const totalInterestOwed = fixedSavingsLiability.accruedInterest;
 
-  // ── Total Bonuses Paid ───────────────────────────────────────────────────────
   const sortedBonusPayments = sortRows(bonusPayments, sortState, {
     investor: (bonus: any) => bonus.investor_name,
     ledger: (bonus: any) => bonus.ledger_type,
@@ -102,27 +82,21 @@ export default async function BrokeragePage({
   });
   const totalBonusPaid = bonusPayments.reduce((sum: number, b: any) => sum + parseFloat(b.amount), 0);
 
-  // ── Net Commission ───────────────────────────────────────────────────────────
   const netCommission = brokerageProfitLoss + brokerageFeeEarned - totalInterestOwed - totalBonusPaid;
 
   const fmt = formatMoney;
 
   return (
     <div className="space-y-6">
-      {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div>
-        <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-          Brokerage
-        </h1>
+        <h1 className="text-3xl font-bold tracking-tight">Brokerage</h1>
         <p className="text-muted-foreground mt-1 text-sm">
-          Configure brokerage fees, track commission, and manage investor payable liabilities.
+          Configure withdrawal fees and reconcile brokerage account liabilities.
         </p>
       </div>
 
-      {/* ── Brokerage Fee Config ─────────────────────────────────────────────── */}
       <div className="grid gap-4 grid-cols-1 lg:grid-cols-3">
-        <Card className="relative overflow-hidden bg-gradient-to-br from-primary/20 to-primary/5 border-primary/30 shadow-lg lg:col-span-1">
-          <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent pointer-events-none" />
+        <Card className="bg-card/50 border-border/50 lg:col-span-1">
           <CardHeader>
             <div className="flex items-center gap-2">
               <Percent className="h-4 w-4 text-primary" />
@@ -140,113 +114,73 @@ export default async function BrokeragePage({
           </CardContent>
         </Card>
 
-        {/* Commission Summary Cards */}
-        <div className="grid gap-4 grid-cols-1 sm:grid-cols-3 lg:col-span-2">
-          <Card className="relative overflow-hidden bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border-emerald-500/25 shadow-lg">
-            <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent pointer-events-none" />
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-xs font-medium text-muted-foreground">Brokerage Earned</CardTitle>
-              <div className="h-7 w-7 rounded-full bg-emerald-500/15 flex items-center justify-center">
-                <DollarSign className="h-3.5 w-3.5 text-emerald-400" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-xl font-bold text-emerald-400">{fmt(brokerageFeeEarned)}</div>
-              <p className="text-[10px] text-muted-foreground mt-1">
-                Equity performance fees: {fmt(withdrawalBrokerageEarned)}
-              </p>
-              <p className="text-[10px] text-muted-foreground">Disabled: Platform {fmt(platformBrokerageEarned)} + Claims {fmt(claimsBrokerageEarned)}</p>
-            </CardContent>
-          </Card>
-
-          <Card className="relative overflow-hidden bg-gradient-to-br from-blue-500/15 to-blue-500/5 border-blue-500/25 shadow-lg">
-            <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-transparent pointer-events-none" />
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-xs font-medium text-muted-foreground">Brokerage P&L</CardTitle>
-              <div className="h-7 w-7 rounded-full bg-blue-500/15 flex items-center justify-center">
-                <TrendingUp className="h-3.5 w-3.5 text-blue-400" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className={`text-xl font-bold ${brokerageProfitLoss >= 0 ? "text-blue-400" : "text-red-400"}`}>{fmt(brokerageProfitLoss)}</div>
-              <p className="text-[10px] text-muted-foreground mt-1">Fixed-savings/business share from latest locked NAV</p>
-            </CardContent>
-          </Card>
-
-          <Card className="relative overflow-hidden bg-gradient-to-br from-orange-500/15 to-orange-500/5 border-orange-500/25 shadow-lg">
-            <div className="absolute inset-0 bg-gradient-to-br from-orange-500/10 to-transparent pointer-events-none" />
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-xs font-medium text-muted-foreground">Accrued Interest</CardTitle>
-              <div className="h-7 w-7 rounded-full bg-orange-500/15 flex items-center justify-center">
-                <TrendingDown className="h-3.5 w-3.5 text-orange-400" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-xl font-bold text-orange-400">{fmt(totalInterestOwed)}</div>
-              <p className="text-[10px] text-muted-foreground mt-1">Contractual fixed-savings interest only</p>
-            </CardContent>
-          </Card>
-
-          <Card className="relative overflow-hidden bg-gradient-to-br from-violet-500/15 to-violet-500/5 border-violet-500/25 shadow-lg">
-            <div className="absolute inset-0 bg-gradient-to-br from-violet-500/10 to-transparent pointer-events-none" />
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-xs font-medium text-muted-foreground">Investor Bonuses</CardTitle>
-              <div className="h-7 w-7 rounded-full bg-violet-500/15 flex items-center justify-center">
-                <Gift className="h-3.5 w-3.5 text-violet-400" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-xl font-bold text-violet-400">{fmt(totalBonusPaid)}</div>
-              <p className="text-[10px] text-muted-foreground mt-1">Equity and fixed-savings bonuses</p>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-
-      {/* ── Net Commission Card ──────────────────────────────────────────────── */}
-      <Card className={`relative overflow-hidden shadow-lg ${netCommission >= 0 ? "bg-gradient-to-br from-emerald-500/10 to-emerald-500/5 border-emerald-500/25" : "bg-gradient-to-br from-red-500/10 to-red-500/5 border-red-500/25"}`}>
-        <div className="absolute inset-0 bg-gradient-to-br from-transparent to-transparent pointer-events-none" />
-        <CardContent className="py-5 px-6">
-          <div className="flex items-center justify-between">
+        <Card className="bg-card/50 border-border/50 lg:col-span-2">
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
             <div>
-              <p className="text-sm font-medium text-muted-foreground">Brokerage Account Balance</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Brokerage P&L + Fees - Accrued Interest - Investor Bonuses</p>
+              <div className="flex items-center gap-2">
+                <Wallet className="h-4 w-4 text-primary" />
+                <CardTitle className="text-base">Brokerage Account Balance</CardTitle>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">Brokerage P&L + fees - accrued interest - investor bonuses.</p>
             </div>
             <div className="text-right">
               <div className={`text-3xl font-bold ${netCommission >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                 {netCommission >= 0 ? "+" : ""}{fmt(netCommission)}
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1">
-                {fmt(brokerageProfitLoss)} + {fmt(brokerageFeeEarned)} - {fmt(totalInterestOwed)} - {fmt(totalBonusPaid)}
-              </p>
+              <p className="text-xs text-muted-foreground mt-1">Net available</p>
             </div>
-          </div>
-          {/* Progress bar */}
-          <div className="mt-4 space-y-1.5">
-            <div className="flex justify-between text-[10px] text-muted-foreground">
-              <span>Interest ({fmt(totalInterestOwed)})</span>
-              <span>Bonuses ({fmt(totalBonusPaid)})</span>
-              <span>Net ({fmt(netCommission)})</span>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-md border border-border/50 bg-background/40 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <TrendingUp className="h-4 w-4 text-blue-400" />
+                    Brokerage P&L
+                  </div>
+                  <span className={`font-semibold ${brokerageProfitLoss >= 0 ? "text-blue-400" : "text-red-400"}`}>{fmt(brokerageProfitLoss)}</span>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-2">Fixed-savings/business share from latest locked NAV.</p>
+              </div>
+              <div className="rounded-md border border-border/50 bg-background/40 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <DollarSign className="h-4 w-4 text-emerald-400" />
+                    Withdrawal Fees
+                  </div>
+                  <span className="font-semibold text-emerald-400">{fmt(brokerageFeeEarned)}</span>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-2">Equity withdrawal performance fees only.</p>
+              </div>
+              <div className="rounded-md border border-border/50 bg-background/40 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <TrendingDown className="h-4 w-4 text-orange-400" />
+                    Accrued Interest
+                  </div>
+                  <span className="font-semibold text-orange-400">-{fmt(totalInterestOwed)}</span>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-2">Contractual fixed-savings interest payable.</p>
+              </div>
+              <div className="rounded-md border border-border/50 bg-background/40 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Gift className="h-4 w-4 text-violet-400" />
+                    Investor Bonuses
+                  </div>
+                  <span className="font-semibold text-violet-400">-{fmt(totalBonusPaid)}</span>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-2">Equity and fixed-savings bonus adjustments.</p>
+              </div>
             </div>
-            <div className="h-2 w-full rounded-full bg-muted/50 overflow-hidden flex">
-              {brokerageFeeEarned > 0 && (
-                <>
-                  <div
-                    className="h-full bg-orange-400/70 transition-all duration-500"
-                    style={{ width: `${Math.max(0, Math.min(100, (totalInterestOwed / brokerageFeeEarned) * 100)).toFixed(1)}%` }}
-                  />
-                  <div
-                    className="h-full bg-violet-400/70 transition-all duration-500"
-                    style={{ width: `${Math.max(0, Math.min(100, (totalBonusPaid / brokerageFeeEarned) * 100)).toFixed(1)}%` }}
-                  />
-                </>
-              )}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
 
-      {/* ── Bonus Payments ───────────────────────────────────────────────────── */}
+            <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              Formula: {fmt(brokerageProfitLoss)} + {fmt(brokerageFeeEarned)} - {fmt(totalInterestOwed)} - {fmt(totalBonusPaid)}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
       <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between">
           <div>

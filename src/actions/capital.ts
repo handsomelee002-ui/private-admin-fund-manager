@@ -61,7 +61,8 @@ export async function addCapitalRecord(formData: FormData) {
   }
 
   const amount = parseFloat(amountStr);
-  if (isNaN(amount)) return { error: "Amount must be a number" };
+  if (!Number.isFinite(amount) || amount <= 0) return { error: "Amount must be greater than zero" };
+  if (!["Deposit", "Withdrawal", "Bonus"].includes(type)) return { error: "Invalid capital movement type" };
 
   try {
     // ── Auto profit claim on Withdrawal ────────────────────────────────────────────────

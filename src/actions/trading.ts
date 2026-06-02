@@ -2,18 +2,21 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { ensureAuditColumns, writeAuditEvent } from "@/lib/fundDb";
+import { calculateFixedSavingsLiability, ensureAuditColumns, writeAuditEvent } from "@/lib/fundDb";
 import { requireAdmin } from "@/lib/auth";
 import {
   BASE_CURRENCY,
   isInvestmentTransactionType,
   percentage,
 } from "@/lib/investmentAccounting";
+import { roundMoney } from "@/lib/accounting";
 import { calculatePlatformPerformance } from "@/lib/platformPerformance";
 
 const ACCOUNT_TYPES = ["BANK", "WALLET", "BROKER_CASH", "BROKER_PORTFOLIO", "OTHER"] as const;
 const STATUSES = ["PENDING", "SETTLED", "CANCELLED"] as const;
 const FUNDING_SOURCES = ["equity", "fixed_savings", "brokerage"] as const;
+type FundingSource = (typeof FUNDING_SOURCES)[number];
+type AllocationInput = { fundingSource: FundingSource; ratioPercent: number; baseAmount: number };
 let tradingSchemaPromise: Promise<void> | null = null;
 
 function parseNumber(value: FormDataEntryValue | null, label: string, fallback = 0) {
@@ -33,6 +36,54 @@ function normalizeCurrency(value: FormDataEntryValue | null, fallback = BASE_CUR
   const currency = value?.toString().trim().toUpperCase() || fallback;
   if (!/^[A-Z0-9]{3,10}$/.test(currency)) throw new Error("Currency code must be 3 to 10 alphanumeric characters.");
   return currency;
+}
+
+function cashFlowAmount(type: string, baseAmount: number) {
+  if (["BROKER_DEPOSIT", "Deposit"].includes(type)) return roundMoney(baseAmount);
+  if (["BROKER_WITHDRAWAL", "Withdraw"].includes(type)) return roundMoney(-baseAmount);
+  return 0;
+}
+
+function sourceLabel(source: FundingSource) {
+  if (source === "fixed_savings") return "Fixed Savings";
+  if (source === "brokerage") return "Brokerage";
+  return "Equity";
+}
+
+function buildAllocationsFromRatios(cashFlow: number, ratios: Record<FundingSource, number>) {
+  const totalRatio = roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + ratios[source], 0));
+  if (Math.abs(totalRatio - 100) > 0.01) throw new Error("Allocation percentages must total 100%.");
+
+  let allocated = 0;
+  return FUNDING_SOURCES.map((fundingSource, index) => {
+    const baseAmount = index === FUNDING_SOURCES.length - 1
+      ? roundMoney(cashFlow - allocated)
+      : roundMoney(cashFlow * (ratios[fundingSource] / 100));
+    allocated = roundMoney(allocated + baseAmount);
+    return { fundingSource, ratioPercent: roundMoney(ratios[fundingSource]), baseAmount };
+  }).filter((allocation) => Math.abs(allocation.baseAmount) > 0.001);
+}
+
+function buildRatiosFromBalances(balances: Record<FundingSource, number>) {
+  const total = roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, balances[source] || 0), 0));
+  if (total <= 0) throw new Error("No available capital found for automatic allocation.");
+
+  let allocated = 0;
+  return FUNDING_SOURCES.reduce((ratios, source, index) => {
+    const ratio = index === FUNDING_SOURCES.length - 1
+      ? roundMoney(100 - allocated)
+      : roundMoney((Math.max(0, balances[source] || 0) / total) * 100);
+    allocated = roundMoney(allocated + ratio);
+    ratios[source] = ratio;
+    return ratios;
+  }, {} as Record<FundingSource, number>);
+}
+
+function primaryFundingSource(allocations: AllocationInput[]) {
+  return allocations.reduce(
+    (largest, allocation) => (Math.abs(allocation.baseAmount) > Math.abs(largest.baseAmount) ? allocation : largest),
+    allocations[0],
+  )?.fundingSource || "equity";
 }
 
 function revalidateTrading(platformId?: string) {
@@ -95,6 +146,18 @@ async function ensureTradingSchemaUncached() {
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'SETTLED'`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS settlement_date DATE`;
   await sql`UPDATE platform_transactions SET base_amount = amount WHERE base_amount = 0 AND amount <> 0`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS platform_transaction_allocations (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      transaction_id UUID NOT NULL REFERENCES platform_transactions(id) ON DELETE CASCADE,
+      funding_source TEXT NOT NULL,
+      ratio_percent NUMERIC(10, 4) NOT NULL,
+      base_amount NUMERIC(20, 4) NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(transaction_id, funding_source)
+    )
+  `;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS allocation_method TEXT NOT NULL DEFAULT 'legacy'`;
 }
 
 export async function ensureTradingSchema() {
@@ -121,6 +184,45 @@ export async function getPlatforms() {
         WHERE nw.status = 'locked'
       ) sub
       WHERE rn = 1
+    ),
+    transaction_flows AS (
+      SELECT
+        pt.id,
+        pt.platform_id,
+        pt.type,
+        pt.status,
+        pt.audit_status,
+        pt.realized_profit,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as cash_flow,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COUNT(pta.id) > 0 THEN COALESCE(SUM(CASE WHEN pta.funding_source = 'equity' THEN pta.base_amount ELSE 0 END), 0)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'equity' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'equity' AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as equity_cash_flow,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COUNT(pta.id) > 0 THEN COALESCE(SUM(CASE WHEN pta.funding_source = 'fixed_savings' THEN pta.base_amount ELSE 0 END), 0)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'fixed_savings' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'fixed_savings' AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as fixed_savings_cash_flow,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COUNT(pta.id) > 0 THEN COALESCE(SUM(CASE WHEN pta.funding_source = 'brokerage' THEN pta.base_amount ELSE 0 END), 0)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'brokerage' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'brokerage' AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as brokerage_cash_flow
+      FROM platform_transactions pt
+      LEFT JOIN platform_transaction_allocations pta ON pta.transaction_id = pt.id
+      GROUP BY pt.id
     )
     SELECT
       p.id,
@@ -131,57 +233,19 @@ export async function getPlatforms() {
       COALESCE(lps.unrealized_profit, 0) as unrealized_profit,
       COALESCE(lps.total_value, 0) as latest_total_value,
       COALESCE(lps.brokerage_profit_loss, 0) as brokerage_profit_loss,
+      COALESCE(SUM(tf.cash_flow), 0) as net_invested,
+      COALESCE(SUM(tf.equity_cash_flow), 0) as equity_net_invested,
+      COALESCE(SUM(tf.fixed_savings_cash_flow), 0) as fixed_savings_net_invested,
+      COALESCE(SUM(tf.brokerage_cash_flow), 0) as brokerage_net_invested,
       COALESCE(SUM(
         CASE
-          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
-          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          ELSE 0
-        END
-      ), 0) as net_invested,
-      COALESCE(SUM(
-        CASE
-          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
-          WHEN COALESCE(pt.funding_source, 'equity') <> 'equity' THEN 0
-          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          ELSE 0
-        END
-      ), 0) as equity_net_invested,
-      COALESCE(SUM(
-        CASE
-          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
-          WHEN COALESCE(pt.funding_source, 'equity') <> 'fixed_savings' THEN 0
-          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          ELSE 0
-        END
-      ), 0) as fixed_savings_net_invested,
-      COALESCE(SUM(
-        CASE
-          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
-          WHEN COALESCE(pt.funding_source, 'equity') <> 'brokerage' THEN 0
-          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          ELSE 0
-        END
-      ), 0) as brokerage_net_invested,
-      COALESCE(SUM(
-        CASE
-          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
-          ELSE COALESCE(pt.realized_profit, 0)
+          WHEN COALESCE(tf.audit_status, 'active') <> 'active' OR COALESCE(tf.status, 'SETTLED') <> 'SETTLED' THEN 0
+          ELSE COALESCE(tf.realized_profit, 0)
         END
       ), 0) as realized_profit,
-      COALESCE(SUM(
-        CASE
-          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
-          WHEN pt.type = 'BROKER_DEPOSIT' THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          WHEN pt.type = 'BROKER_WITHDRAWAL' THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-          ELSE 0
-        END
-      ), 0) as rm_cash_flow
+      COALESCE(SUM(tf.cash_flow), 0) as rm_cash_flow
     FROM platforms p
-    LEFT JOIN platform_transactions pt ON p.id = pt.platform_id
+    LEFT JOIN transaction_flows tf ON p.id = tf.platform_id
     LEFT JOIN latest_platform_snapshot lps ON lps.platform_id = p.id
     GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.created_at, lps.unrealized_profit, lps.total_value, lps.brokerage_profit_loss
     ORDER BY p.created_at DESC, p.name ASC
@@ -214,6 +278,127 @@ export async function getPlatforms() {
       simpleRoi,
     };
   });
+}
+
+async function getCapitalAllocationBasis() {
+  const [summary, savings, bonusPayments, deployed] = await Promise.all([
+    sql`
+      WITH latest_nav AS (
+        SELECT id, net_asset_value
+        FROM nav_weeks
+        WHERE status = 'locked'
+        ORDER BY week_ending DESC
+        LIMIT 1
+      ),
+      fees AS (
+        SELECT COALESCE(SUM(fee_amount), 0) as total
+        FROM performance_fees
+        WHERE audit_status <> 'reverted'
+      )
+      SELECT
+        COALESCE(
+          (SELECT net_asset_value FROM latest_nav),
+          (
+            SELECT COALESCE(SUM(CASE
+              WHEN type IN ('Deposit', 'Bonus') THEN amount
+              WHEN type = 'Withdrawal' THEN -amount
+              ELSE 0
+            END), 0)
+            FROM capital_ledger
+          ),
+          0
+        ) as equity_capital,
+        COALESCE((SELECT total FROM fees), 0) as performance_fees,
+        COALESCE((
+          SELECT SUM(nwps.brokerage_profit_loss)
+          FROM nav_week_platform_snapshots nwps
+          WHERE nwps.nav_week_id = (SELECT id FROM latest_nav)
+        ), 0) as brokerage_profit_loss
+    `,
+    sql`
+      SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+      FROM fixed_savings_ledger
+      WHERE audit_status = 'active'
+      ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
+    `,
+    sql`
+      SELECT COALESCE(SUM(amount), 0) as total
+      FROM bonus_payments
+      WHERE audit_status = 'active'
+    `.catch(() => ({ rows: [{ total: 0 }] })),
+    getPlatformSourceBalances(),
+  ]);
+
+  const fixedSavings = calculateFixedSavingsLiability(savings.rows as any[]);
+  const row = summary.rows[0] ?? {};
+  const brokerageBalance = roundMoney(
+    parseFloat(row.brokerage_profit_loss || "0")
+      + parseFloat(row.performance_fees || "0")
+      - fixedSavings.payableInterest
+      - parseFloat(bonusPayments.rows[0]?.total || "0"),
+  );
+
+  return {
+    equity: Math.max(0, roundMoney(parseFloat(row.equity_capital || "0") - deployed.equity)),
+    fixed_savings: Math.max(0, roundMoney(fixedSavings.totalLiability - deployed.fixed_savings)),
+    brokerage: Math.max(0, roundMoney(brokerageBalance - deployed.brokerage)),
+  } satisfies Record<FundingSource, number>;
+}
+
+async function getPlatformSourceBalances(platformId?: string) {
+  const data = await sql`
+    SELECT
+      COALESCE(SUM(CASE
+        WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+        WHEN pta.id IS NOT NULL AND pta.funding_source = 'equity' THEN pta.base_amount
+        WHEN pta.id IS NULL AND COALESCE(pt.funding_source, 'equity') = 'equity' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+        WHEN pta.id IS NULL AND COALESCE(pt.funding_source, 'equity') = 'equity' AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+        ELSE 0
+      END), 0) as equity,
+      COALESCE(SUM(CASE
+        WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+        WHEN pta.id IS NOT NULL AND pta.funding_source = 'fixed_savings' THEN pta.base_amount
+        WHEN pta.id IS NULL AND COALESCE(pt.funding_source, 'equity') = 'fixed_savings' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+        WHEN pta.id IS NULL AND COALESCE(pt.funding_source, 'equity') = 'fixed_savings' AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+        ELSE 0
+      END), 0) as fixed_savings,
+      COALESCE(SUM(CASE
+        WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+        WHEN pta.id IS NOT NULL AND pta.funding_source = 'brokerage' THEN pta.base_amount
+        WHEN pta.id IS NULL AND COALESCE(pt.funding_source, 'equity') = 'brokerage' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+        WHEN pta.id IS NULL AND COALESCE(pt.funding_source, 'equity') = 'brokerage' AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+        ELSE 0
+      END), 0) as brokerage
+    FROM platform_transactions pt
+    LEFT JOIN platform_transaction_allocations pta ON pta.transaction_id = pt.id
+    WHERE (${platformId ?? null}::uuid IS NULL OR pt.platform_id = ${platformId ?? null})
+  `;
+  const row = data.rows[0] ?? {};
+  return {
+    equity: roundMoney(parseFloat(row.equity || "0")),
+    fixed_savings: roundMoney(parseFloat(row.fixed_savings || "0")),
+    brokerage: roundMoney(parseFloat(row.brokerage || "0")),
+  } satisfies Record<FundingSource, number>;
+}
+
+export async function getPlatformCapitalAllocation(platformId: string) {
+  await requireAdmin();
+  await ensureTradingSchema();
+  const [platformBalances, automaticBasis] = await Promise.all([
+    getPlatformSourceBalances(platformId),
+    getCapitalAllocationBasis(),
+  ]);
+  const total = roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + platformBalances[source], 0));
+  return {
+    automaticBasis,
+    platformBalances,
+    platformAllocations: FUNDING_SOURCES.map((source) => ({
+      source,
+      label: sourceLabel(source),
+      baseAmount: platformBalances[source],
+      ratioPercent: total > 0 ? roundMoney((platformBalances[source] / total) * 100) : 0,
+    })),
+  };
 }
 
 export async function getPlatform(id: string) {
@@ -361,6 +546,18 @@ export async function getPlatformTransactions(platformId: string) {
       pa.name as account_name,
       pt.asset_id,
       pt.funding_source,
+      pt.allocation_method,
+      COALESCE(
+        json_agg(
+          json_build_object(
+            'funding_source', pta.funding_source,
+            'ratio_percent', pta.ratio_percent,
+            'base_amount', pta.base_amount
+          )
+          ORDER BY pta.funding_source
+        ) FILTER (WHERE pta.id IS NOT NULL),
+        '[]'::json
+      ) as allocations,
       passt.symbol as asset_symbol,
       passt.name as asset_name,
       TO_CHAR(pt.date, 'YYYY-MM-DD') as date,
@@ -389,7 +586,9 @@ export async function getPlatformTransactions(platformId: string) {
     FROM platform_transactions pt
     LEFT JOIN platform_accounts pa ON pa.id = pt.account_id
     LEFT JOIN platform_assets passt ON passt.id = pt.asset_id
+    LEFT JOIN platform_transaction_allocations pta ON pta.transaction_id = pt.id
     WHERE pt.platform_id = ${platformId}
+    GROUP BY pt.id, pa.name, passt.symbol, passt.name
     ORDER BY pt.date DESC, pt.created_at DESC
   `;
   return data.rows;
@@ -401,7 +600,7 @@ export async function addPlatformTransaction(formData: FormData) {
   const platformId = formData.get("platform_id")?.toString();
   const accountId = formData.get("account_id")?.toString() || null;
   const assetId = formData.get("asset_id")?.toString() || null;
-  const fundingSource = formData.get("funding_source")?.toString() || "equity";
+  const allocationMode = formData.get("allocation_mode")?.toString() === "manual" ? "manual" : "automatic";
   const date = formData.get("date")?.toString();
   const type = formData.get("type")?.toString() || "";
   const currency = normalizeCurrency(formData.get("currency"));
@@ -428,7 +627,6 @@ export async function addPlatformTransaction(formData: FormData) {
   const status = formData.get("status")?.toString() || "SETTLED";
 
   if (!platformId || !date || !isInvestmentTransactionType(type)) return { error: "Platform, date, and valid transaction type are required." };
-  if (!FUNDING_SOURCES.includes(fundingSource as (typeof FUNDING_SOURCES)[number])) return { error: "Invalid funding source." };
   if (!hasBaseAmount && !hasAmount) return { error: "RM amount or native amount is required." };
   if (currency !== BASE_CURRENCY && !hasBaseAmount && fxRateToBase <= 0) return { error: "FX rate is required when only a foreign amount is entered." };
   if (!STATUSES.includes(status as (typeof STATUSES)[number])) return { error: "Invalid transaction status." };
@@ -452,6 +650,36 @@ export async function addPlatformTransaction(formData: FormData) {
   const reference = formData.get("reference")?.toString().trim() || null;
   const settlementDate = formData.get("settlement_date")?.toString() || null;
   const notes = formData.get("notes")?.toString() || "";
+  const cashFlow = cashFlowAmount(type, baseAmount);
+  let allocations: AllocationInput[] = [];
+
+  try {
+    if (cashFlow !== 0) {
+      const basis = cashFlow > 0 ? await getCapitalAllocationBasis() : await getPlatformSourceBalances(platformId);
+      const totalBasis = roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, basis[source] || 0), 0));
+      if (Math.abs(cashFlow) > totalBasis + 0.001) {
+        return { error: `Transaction amount exceeds available ${cashFlow > 0 ? "capital" : "platform allocation"} balance.` };
+      }
+      if (allocationMode === "manual") {
+        const ratios = {
+          equity: parseNumber(formData.get("allocation_equity_pct"), "Equity allocation"),
+          fixed_savings: parseNumber(formData.get("allocation_fixed_savings_pct"), "Fixed savings allocation"),
+          brokerage: parseNumber(formData.get("allocation_brokerage_pct"), "Brokerage allocation"),
+        } satisfies Record<FundingSource, number>;
+        if (FUNDING_SOURCES.some((source) => ratios[source] < 0)) return { error: "Allocation percentages cannot be negative." };
+        allocations = buildAllocationsFromRatios(cashFlow, ratios);
+        const exceededSource = allocations.find((allocation) => Math.abs(allocation.baseAmount) > Math.max(0, basis[allocation.fundingSource]) + 0.001);
+        if (exceededSource) {
+          return { error: `${sourceLabel(exceededSource.fundingSource)} allocation exceeds available balance.` };
+        }
+      } else {
+        allocations = buildAllocationsFromRatios(cashFlow, buildRatiosFromBalances(basis));
+      }
+    }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Failed to allocate transaction." };
+  }
+  const fundingSource = allocations.length > 0 ? primaryFundingSource(allocations) : "equity";
 
   try {
     const inserted = await sql`
@@ -467,11 +695,24 @@ export async function addPlatformTransaction(formData: FormData) {
       )
       RETURNING id
     `;
+    for (const allocation of allocations) {
+      await sql`
+        INSERT INTO platform_transaction_allocations (transaction_id, funding_source, ratio_percent, base_amount)
+        VALUES (${inserted.rows[0].id}, ${allocation.fundingSource}, ${allocation.ratioPercent}, ${allocation.baseAmount})
+      `;
+    }
+    await sql`
+      UPDATE platform_transactions
+      SET allocation_method = ${allocations.length > 0 ? allocationMode : "none"}
+      WHERE id = ${inserted.rows[0].id}
+    `;
     await writeAuditEvent("platform_transaction.add", "platform_transactions", inserted.rows[0].id, {
       platformId,
       accountId,
       assetId,
       fundingSource,
+      allocationMode: allocations.length > 0 ? allocationMode : "none",
+      allocations,
       type,
       amount,
       currency,
