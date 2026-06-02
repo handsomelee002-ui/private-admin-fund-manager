@@ -6,7 +6,7 @@ import { getDashboardSummary } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { Activity, Banknote, Percent, Users, Wallet } from "lucide-react";
+import { Activity, Banknote, Landmark, Percent, Users, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -33,18 +33,28 @@ export default async function Dashboard({
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground mt-1 text-sm">Weekly unit NAV, investor units, and liability overview.</p>
+        <p className="text-muted-foreground mt-1 text-sm">Equity NAV, investor units, fixed savings liability, and brokerage-side P&L.</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
         <Card className="bg-card/50 border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">AUM</CardTitle>
+            <CardTitle className="text-sm text-muted-foreground">Equity NAV</CardTitle>
             <Wallet className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatMoney(summary.aum)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Latest locked weekly NAV</p>
+            <p className="text-xs text-muted-foreground mt-1">Excludes fixed savings funding</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-card/50 border-border/50">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Investor Capital</CardTitle>
+            <Landmark className="h-4 w-4 text-blue-400" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{formatMoney(summary.totalInvestorCapital)}</div>
+            <p className="text-xs text-muted-foreground mt-1">Equity NAV + fixed savings</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
@@ -75,6 +85,16 @@ export default async function Dashboard({
           <CardContent>
             <div className="text-2xl font-bold text-amber-400">{formatMoney(summary.fixedSavingsLiability)}</div>
             <p className="text-xs text-muted-foreground mt-1">Excluded from equity NAV</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-card/50 border-border/50">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Brokerage P&L</CardTitle>
+            <Wallet className="h-4 w-4 text-emerald-400" />
+          </CardHeader>
+          <CardContent>
+            <div className={`text-2xl font-bold ${summary.brokerageProfitLoss >= 0 ? "text-emerald-400" : "text-red-400"}`}>{formatMoney(summary.brokerageProfitLoss)}</div>
+            <p className="text-xs text-muted-foreground mt-1">Fixed-savings/business share</p>
           </CardContent>
         </Card>
       </div>

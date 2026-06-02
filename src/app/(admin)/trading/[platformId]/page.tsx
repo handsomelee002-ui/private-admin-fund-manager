@@ -20,7 +20,7 @@ import { ArrowLeft, Wallet, TrendingUp, DollarSign, ArrowDownRight, ArrowUpRight
 
 export const dynamic = "force-dynamic";
 
-const transactionSorts = ["date", "type", "notes", "amount", "realized"] as const;
+const transactionSorts = ["date", "type", "source", "notes", "amount", "realized"] as const;
 const snapshotSorts = ["week", "netInvested", "unrealized", "nav"] as const;
 
 export default async function PlatformDetailsPage({
@@ -48,6 +48,7 @@ export default async function PlatformDetailsPage({
   const sortedTransactions = sortRows(visibleTransactions, transactionSortState, {
     date: (transaction: any) => transaction.date,
     type: (transaction: any) => transaction.type,
+    source: (transaction: any) => transaction.funding_source,
     notes: (transaction: any) => transaction.notes,
     amount: (transaction: any) => transaction.amount,
     realized: (transaction: any) => transaction.realized_profit,
@@ -206,6 +207,7 @@ export default async function PlatformDetailsPage({
                     <TableRow className="border-b border-border/50 hover:bg-transparent">
                       <SortableTableHead className="w-[98px] pl-6" sortKey="date" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Date</SortableTableHead>
                       <SortableTableHead className="w-[116px]" sortKey="type" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Type</SortableTableHead>
+                      <SortableTableHead className="w-[116px]" sortKey="source" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Source</SortableTableHead>
                       <SortableTableHead className="w-[150px]" sortKey="notes" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Notes</SortableTableHead>
                       <SortableTableHead className="w-[116px] text-right" sortKey="amount" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">RM Amount</SortableTableHead>
                       <SortableTableHead className="w-[100px] text-right" sortKey="realized" activeSort={transactionSortState.sort} activeDir={transactionSortState.dir} searchParams={resolvedSearchParams} prefix="tx">Realized</SortableTableHead>
@@ -237,6 +239,11 @@ export default async function PlatformDetailsPage({
                             </Badge>
                           )}
                         </TableCell>
+                        <TableCell>
+                          <Badge variant="outline" className="text-[10px] h-5 px-1.5">
+                            {t.funding_source === "fixed_savings" ? "Fixed Savings" : t.funding_source === "brokerage" ? "Brokerage" : "Equity"}
+                          </Badge>
+                        </TableCell>
                         <NotesTableCell value={t.notes} className="" />
                         <TableCell className="text-right font-medium tabular-nums text-sm">
                           {fmt(parseFloat(t.base_amount || t.amount || "0"))}
@@ -253,7 +260,7 @@ export default async function PlatformDetailsPage({
                     ))}
                     {sortedTransactions.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={5} className="text-center text-muted-foreground py-12 text-sm">
+                        <TableCell colSpan={6} className="text-center text-muted-foreground py-12 text-sm">
                           No transactions recorded.
                         </TableCell>
                       </TableRow>
@@ -291,8 +298,8 @@ export default async function PlatformDetailsPage({
                   <TableHeader>
                     <TableRow className="border-b border-border/50 hover:bg-transparent">
                       <SortableTableHead className="pl-6" sortKey="week" activeSort={snapshotSortState.sort} activeDir={snapshotSortState.dir} searchParams={resolvedSearchParams} prefix="snap">Week Ending</SortableTableHead>
-                      <SortableTableHead className="text-right" sortKey="netInvested" activeSort={snapshotSortState.sort} activeDir={snapshotSortState.dir} searchParams={resolvedSearchParams} prefix="snap">Net Invested</SortableTableHead>
-                      <SortableTableHead className="text-right" sortKey="unrealized" activeSort={snapshotSortState.sort} activeDir={snapshotSortState.dir} searchParams={resolvedSearchParams} prefix="snap">Unrealized Profit</SortableTableHead>
+                      <SortableTableHead className="text-right" sortKey="netInvested" activeSort={snapshotSortState.sort} activeDir={snapshotSortState.dir} searchParams={resolvedSearchParams} prefix="snap">Equity Invested</SortableTableHead>
+                      <SortableTableHead className="text-right" sortKey="unrealized" activeSort={snapshotSortState.sort} activeDir={snapshotSortState.dir} searchParams={resolvedSearchParams} prefix="snap">Equity P&L</SortableTableHead>
                       <SortableTableHead className="text-right pr-6" sortKey="nav" activeSort={snapshotSortState.sort} activeDir={snapshotSortState.dir} searchParams={resolvedSearchParams} prefix="snap">NAV / Unit</SortableTableHead>
                     </TableRow>
                   </TableHeader>
@@ -315,7 +322,7 @@ export default async function PlatformDetailsPage({
                     {sortedSnapshots.length === 0 && (
                       <TableRow>
                         <TableCell colSpan={4} className="text-center text-muted-foreground py-12 text-sm">
-                          No weekly NAV snapshots recorded. Update platform unrealized profit when creating Weekly NAV.
+                          No weekly NAV snapshots recorded. Enter platform final values when creating Weekly NAV.
                         </TableCell>
                       </TableRow>
                     )}

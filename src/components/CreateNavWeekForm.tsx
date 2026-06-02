@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus } from "lucide-react";
 
-export function CreateNavWeekForm({ platforms }: { platforms: { id: string; name: string; unrealizedProfit: number; netInvested: number; totalValue?: number }[] }) {
+export function CreateNavWeekForm({ platforms }: { platforms: { id: string; name: string; unrealizedProfit: number; netInvested: number; equityNetInvested?: number; fixedSavingsNetInvested?: number; brokerageNetInvested?: number; totalValue?: number }[] }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -48,7 +48,9 @@ export function CreateNavWeekForm({ platforms }: { platforms: { id: string; name
               <div key={platform.id} className="grid grid-cols-[1fr_160px] items-center gap-3">
                 <div>
                   <div className="text-sm font-medium">{platform.name}</div>
-                  <div className="text-xs text-muted-foreground">Net invested RM {platform.netInvested.toLocaleString()}</div>
+                  <div className="text-xs text-muted-foreground">
+                    Equity RM {(platform.equityNetInvested ?? platform.netInvested).toLocaleString()} · Fixed savings RM {(platform.fixedSavingsNetInvested ?? 0).toLocaleString()} · Brokerage RM {(platform.brokerageNetInvested ?? 0).toLocaleString()}
+                  </div>
                 </div>
                 <Input
                   name={`platform_value_${platform.id}`}

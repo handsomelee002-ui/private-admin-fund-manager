@@ -62,6 +62,73 @@ function calculateOwnershipPercent({ investorUnits, totalUnits }) {
   return roundUnits((investor / total) * 100);
 }
 
+function calculateBrokerageFundingAllocation({
+  equityNetInvested,
+  fixedSavingsNetInvested,
+  brokerageNetInvested = 0,
+  totalValue,
+}) {
+  const equity = roundMoney(Number(equityNetInvested) || 0);
+  const fixedSavings = roundMoney(Number(fixedSavingsNetInvested) || 0);
+  const brokerage = roundMoney(Number(brokerageNetInvested) || 0);
+  const value = roundMoney(Number(totalValue) || 0);
+  const totalNetInvested = roundMoney(equity + fixedSavings + brokerage);
+  const profitLoss = roundMoney(value - totalNetInvested);
+  const equityRatio = totalNetInvested > 0 ? roundMoney((equity / totalNetInvested) * 100) : 0;
+  const fixedSavingsRatio = totalNetInvested > 0 ? roundMoney((fixedSavings / totalNetInvested) * 100) : 0;
+  const brokerageRatio = totalNetInvested > 0 ? roundMoney((brokerage / totalNetInvested) * 100) : 0;
+  const equityProfitLoss = roundMoney(profitLoss * (equityRatio / 100));
+  const fixedSavingsProfitLoss = roundMoney(profitLoss * (fixedSavingsRatio / 100));
+  const businessProfitLoss = roundMoney(profitLoss - equityProfitLoss);
+
+  return {
+    totalNetInvested,
+    profitLoss,
+    equityRatio,
+    fixedSavingsRatio,
+    brokerageRatio,
+    equityNetInvested: equity,
+    fixedSavingsNetInvested: fixedSavings,
+    brokerageNetInvested: brokerage,
+    equityProfitLoss,
+    fixedSavingsProfitLoss,
+    brokerageProfitLoss: businessProfitLoss,
+    equityNavValue: roundMoney(equity + equityProfitLoss),
+  };
+}
+
+function allocateFixedSavingsWithdrawal({ accounts, amount, interestBalance }) {
+  const requested = roundMoney(Number(amount) || 0);
+  if (!Number.isFinite(requested) || requested <= 0) {
+    throw new Error("Withdrawal amount must be positive.");
+  }
+  const allocations = [];
+  let remaining = requested;
+  const availableInterest = roundMoney(Number(interestBalance) || 0);
+  const interest = interestBalance === undefined ? 0 : roundMoney(Math.min(Math.max(availableInterest, 0), remaining));
+  remaining = roundMoney(remaining - interest);
+
+  for (const account of accounts) {
+    if (remaining <= 0) break;
+    const balance = roundMoney(Number(account.balance) || 0);
+    if (balance <= 0) continue;
+    const withdrawal = roundMoney(Math.min(balance, remaining));
+    allocations.push({ id: account.id, amount: withdrawal });
+    remaining = roundMoney(remaining - withdrawal);
+  }
+
+  if (remaining > 0.001) {
+    throw new Error("Withdrawal exceeds available fixed savings balance.");
+  }
+
+  if (interestBalance === undefined) return allocations;
+
+  return {
+    principal: allocations,
+    interest,
+  };
+}
+
 function wholeDaysBetween(startDate, endDate) {
   const start = new Date(`${startDate}T00:00:00.000Z`);
   const end = new Date(`${endDate}T00:00:00.000Z`);
@@ -83,6 +150,8 @@ function accrueDailyCompoundInterest({ principal, annualRatePercent, startDate, 
 
 module.exports = {
   accrueDailyCompoundInterest,
+  allocateFixedSavingsWithdrawal,
+  calculateBrokerageFundingAllocation,
   calculateNavPerUnit,
   calculateOwnershipPercent,
   issueUnitsForDeposit,

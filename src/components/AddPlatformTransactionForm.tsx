@@ -67,6 +67,15 @@ export function AddPlatformTransactionForm({
             <Input id="base_amount" name="base_amount" type="number" step="0.01" min="0.01" required placeholder="Final RM cost or RM received" />
           </div>
 
+          <div className="space-y-2">
+            <Label htmlFor="funding_source">Funding Source</Label>
+            <select id="funding_source" name="funding_source" required defaultValue="equity" className="h-9 w-full rounded-md border border-input bg-card/50 px-3 text-sm">
+              <option value="equity">Equity Capital</option>
+              <option value="fixed_savings">Fixed Savings Capital</option>
+              <option value="brokerage">Brokerage Account</option>
+            </select>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div className="space-y-2">
               <Label htmlFor="currency">Foreign Currency</Label>

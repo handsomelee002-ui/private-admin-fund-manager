@@ -14,9 +14,15 @@ export function calculatePlatformPerformance(transactions: any[], snapshots: any
     return ["BROKER_WITHDRAWAL", "Withdraw"].includes(transaction.type) ? sum + parseFloat(transaction.base_amount || transaction.amount || "0") : sum;
   }, 0);
   const realizedProfit = activeSettled.reduce((sum: number, transaction: any) => sum + parseFloat(transaction.realized_profit || "0"), 0);
-  const latestUnrealized = snapshots.length > 0 ? parseFloat(snapshots[0].unrealized_profit || "0") : 0;
   const netInvested = totalDeposits - totalWithdrawals;
-  const currentValue = netInvested + latestUnrealized;
+  const latestSnapshot = snapshots[0];
+  const snapshotTotalValue = latestSnapshot ? parseFloat(latestSnapshot.total_value || "0") : 0;
+  const latestUnrealized = latestSnapshot
+    ? snapshotTotalValue > 0
+      ? snapshotTotalValue - netInvested
+      : parseFloat(latestSnapshot.unrealized_profit || "0")
+    : 0;
+  const currentValue = snapshotTotalValue > 0 ? snapshotTotalValue : netInvested + latestUnrealized;
   const simpleRoi = percentage(currentValue + totalWithdrawals - totalDeposits, totalDeposits);
   const cashFlows = activeSettled
     .filter((transaction: any) => ["BROKER_DEPOSIT", "BROKER_WITHDRAWAL", "Deposit", "Withdraw"].includes(transaction.type))

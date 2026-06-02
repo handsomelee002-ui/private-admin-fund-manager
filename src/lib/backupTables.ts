@@ -1,4 +1,4 @@
-export const BACKUP_SCHEMA_VERSION = 1;
+export const BACKUP_SCHEMA_VERSION = 2;
 export const BACKUP_APP_NAME = "private-admin-fund-manager";
 export const BACKUP_BASE_CURRENCY = "MYR";
 

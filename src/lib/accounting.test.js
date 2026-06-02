@@ -3,6 +3,8 @@ const test = require("node:test");
 
 const {
   accrueDailyCompoundInterest,
+  calculateBrokerageFundingAllocation,
+  allocateFixedSavingsWithdrawal,
   calculateNavPerUnit,
   calculateOwnershipPercent,
   issueUnitsForDeposit,
@@ -76,4 +78,64 @@ test("fixed savings interest accrues outside equity NAV", () => {
   });
 
   assert.equal(interest, 30.04);
+});
+
+test("brokerage value allocation excludes fixed savings funded profit from equity NAV", () => {
+  const allocation = calculateBrokerageFundingAllocation({
+    equityNetInvested: 60000,
+    fixedSavingsNetInvested: 40000,
+    brokerageNetInvested: 0,
+    totalValue: 110000,
+  });
+
+  assert.equal(allocation.totalNetInvested, 100000);
+  assert.equal(allocation.profitLoss, 10000);
+  assert.equal(allocation.equityRatio, 60);
+  assert.equal(allocation.fixedSavingsRatio, 40);
+  assert.equal(allocation.equityNavValue, 66000);
+  assert.equal(allocation.brokerageProfitLoss, 4000);
+});
+
+test("fixed savings withdrawal is allocated across active accounts", () => {
+  assert.deepEqual(
+    allocateFixedSavingsWithdrawal({
+      accounts: [
+        { id: "first", balance: 5000 },
+        { id: "second", balance: 4049.73 },
+      ],
+      amount: 8000,
+    }),
+    [
+      { id: "first", amount: 5000 },
+      { id: "second", amount: 3000 },
+    ],
+  );
+});
+
+test("fixed savings withdrawal consumes accrued interest before principal", () => {
+  assert.deepEqual(
+    allocateFixedSavingsWithdrawal({
+      accounts: [{ id: "principal", balance: 9000 }],
+      interestBalance: 49.73,
+      amount: 8000,
+    }),
+    {
+      principal: [{ id: "principal", amount: 7950.27 }],
+      interest: 49.73,
+    },
+  );
+});
+
+test("fixed savings withdrawal can be interest only without a separate target", () => {
+  assert.deepEqual(
+    allocateFixedSavingsWithdrawal({
+      accounts: [{ id: "principal", balance: 9000 }],
+      interestBalance: 49.73,
+      amount: 49.73,
+    }),
+    {
+      principal: [],
+      interest: 49.73,
+    },
+  );
 });

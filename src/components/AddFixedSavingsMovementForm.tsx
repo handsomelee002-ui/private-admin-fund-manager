@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { recordFixedSavingsAction } from "@/actions/fund";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -21,16 +21,20 @@ export function AddFixedSavingsMovementForm({
   const [loading, setLoading] = useState(false);
   const [investorId, setInvestorId] = useState(defaultInvestorId || "");
   const [type, setType] = useState("Deposit");
+  const submittingRef = useRef(false);
   const selectedInvestor = investors.find((investor) => investor.id === investorId);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     const formData = new FormData(event.currentTarget);
     formData.set("investor_id", investorId);
     formData.set("type", type);
     setLoading(true);
     const result = await recordFixedSavingsAction(formData);
     setLoading(false);
+    submittingRef.current = false;
     if ("success" in result && result.success) setOpen(false);
     else alert(result?.error || "Failed to record fixed savings.");
   }
@@ -77,7 +81,7 @@ export function AddFixedSavingsMovementForm({
             </div>
             <div className="space-y-2">
               <Label htmlFor="annual_rate_percent">Annual Rate %</Label>
-              <Input id="annual_rate_percent" name="annual_rate_percent" type="number" step="0.0001" min="0" disabled={type !== "Deposit"} />
+              <Input id="annual_rate_percent" name="annual_rate_percent" type="number" step="0.0001" min="0.0001" required={type === "Deposit"} disabled={type !== "Deposit"} />
             </div>
           </div>
           <div className="space-y-2">
@@ -85,7 +89,7 @@ export function AddFixedSavingsMovementForm({
             <Input id="notes" name="notes" />
           </div>
           <div className="flex justify-end">
-            <Button type="submit" disabled={loading || !investorId}>{loading ? "Saving..." : "Save"}</Button>
+            <Button type="submit" disabled={loading || !investorId} aria-busy={loading}>{loading ? "Saving..." : "Save"}</Button>
           </div>
         </form>
       </DialogContent>

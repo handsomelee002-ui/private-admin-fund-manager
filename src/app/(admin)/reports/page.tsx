@@ -6,7 +6,7 @@ import { getFundSummaryMetrics, getNavWeeks } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { BarChart3, DollarSign, TrendingUp, Users, Wallet } from "lucide-react";
+import { BarChart3, DollarSign, Landmark, TrendingUp, Users, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -44,16 +44,23 @@ export default async function ReportsPage({
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Reports</h1>
-        <p className="text-muted-foreground mt-1 text-sm">NAV trend, unit ownership, fees, and fixed savings liability.</p>
+        <p className="text-muted-foreground mt-1 text-sm">Equity NAV trend, investor capital, fees, and fixed savings liability.</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-5">
+      <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-7">
         <Card className="bg-card/50 border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">AUM</CardTitle>
+            <CardTitle className="text-sm text-muted-foreground">Equity NAV</CardTitle>
             <Wallet className="h-4 w-4 text-primary" />
           </CardHeader>
           <CardContent><div className="text-xl font-bold">{formatMoney(summary.aum)}</div></CardContent>
+        </Card>
+        <Card className="bg-card/50 border-border/50">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Investor Capital</CardTitle>
+            <Landmark className="h-4 w-4 text-blue-400" />
+          </CardHeader>
+          <CardContent><div className="text-xl font-bold">{formatMoney(summary.totalInvestorCapital)}</div></CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -82,6 +89,13 @@ export default async function ReportsPage({
             <BarChart3 className="h-4 w-4 text-amber-400" />
           </CardHeader>
           <CardContent><div className="text-xl font-bold text-amber-400">{formatMoney(summary.fixedSavingsLiability)}</div></CardContent>
+        </Card>
+        <Card className="bg-card/50 border-border/50">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Brokerage P&L</CardTitle>
+            <Wallet className="h-4 w-4 text-emerald-400" />
+          </CardHeader>
+          <CardContent><div className={`text-xl font-bold ${summary.brokerageProfitLoss >= 0 ? "text-emerald-400" : "text-red-400"}`}>{formatMoney(summary.brokerageProfitLoss)}</div></CardContent>
         </Card>
       </div>
 

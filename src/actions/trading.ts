@@ -13,6 +13,7 @@ import { calculatePlatformPerformance } from "@/lib/platformPerformance";
 
 const ACCOUNT_TYPES = ["BANK", "WALLET", "BROKER_CASH", "BROKER_PORTFOLIO", "OTHER"] as const;
 const STATUSES = ["PENDING", "SETTLED", "CANCELLED"] as const;
+const FUNDING_SOURCES = ["equity", "fixed_savings", "brokerage"] as const;
 let tradingSchemaPromise: Promise<void> | null = null;
 
 function parseNumber(value: FormDataEntryValue | null, label: string, fallback = 0) {
@@ -74,6 +75,7 @@ async function ensureTradingSchemaUncached() {
     )
   `;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS account_id UUID REFERENCES platform_accounts(id) ON DELETE SET NULL`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS funding_source TEXT NOT NULL DEFAULT 'equity'`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS asset_id UUID REFERENCES platform_assets(id) ON DELETE SET NULL`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'MYR'`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS base_currency TEXT NOT NULL DEFAULT 'MYR'`;
@@ -110,9 +112,9 @@ export async function getPlatforms() {
 
   const data = await sql`
     WITH latest_platform_snapshot AS (
-      SELECT platform_id, unrealized_profit
+      SELECT platform_id, unrealized_profit, total_value, equity_net_invested, fixed_savings_net_invested, brokerage_net_invested, brokerage_profit_loss
       FROM (
-        SELECT nwps.platform_id, nwps.unrealized_profit,
+        SELECT nwps.platform_id, nwps.unrealized_profit, nwps.total_value, nwps.equity_net_invested, nwps.fixed_savings_net_invested, nwps.brokerage_net_invested, nwps.brokerage_profit_loss,
                ROW_NUMBER() OVER(PARTITION BY nwps.platform_id ORDER BY nw.week_ending DESC) as rn
         FROM nav_week_platform_snapshots nwps
         JOIN nav_weeks nw ON nw.id = nwps.nav_week_id
@@ -127,6 +129,8 @@ export async function getPlatforms() {
       p.default_currency,
       TO_CHAR(p.created_at, 'YYYY-MM-DD') as created_at,
       COALESCE(lps.unrealized_profit, 0) as unrealized_profit,
+      COALESCE(lps.total_value, 0) as latest_total_value,
+      COALESCE(lps.brokerage_profit_loss, 0) as brokerage_profit_loss,
       COALESCE(SUM(
         CASE
           WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
@@ -135,6 +139,33 @@ export async function getPlatforms() {
           ELSE 0
         END
       ), 0) as net_invested,
+      COALESCE(SUM(
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COALESCE(pt.funding_source, 'equity') <> 'equity' THEN 0
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END
+      ), 0) as equity_net_invested,
+      COALESCE(SUM(
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COALESCE(pt.funding_source, 'equity') <> 'fixed_savings' THEN 0
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END
+      ), 0) as fixed_savings_net_invested,
+      COALESCE(SUM(
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COALESCE(pt.funding_source, 'equity') <> 'brokerage' THEN 0
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END
+      ), 0) as brokerage_net_invested,
       COALESCE(SUM(
         CASE
           WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
@@ -152,15 +183,19 @@ export async function getPlatforms() {
     FROM platforms p
     LEFT JOIN platform_transactions pt ON p.id = pt.platform_id
     LEFT JOIN latest_platform_snapshot lps ON lps.platform_id = p.id
-    GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.created_at, lps.unrealized_profit
+    GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.created_at, lps.unrealized_profit, lps.total_value, lps.brokerage_profit_loss
     ORDER BY p.created_at DESC, p.name ASC
   `;
 
   return data.rows.map((row: any) => {
     const netInvested = parseFloat(row.net_invested || "0");
+    const equityNetInvested = parseFloat(row.equity_net_invested || "0");
+    const fixedSavingsNetInvested = parseFloat(row.fixed_savings_net_invested || "0");
+    const brokerageNetInvested = parseFloat(row.brokerage_net_invested || "0");
     const realizedProfit = parseFloat(row.realized_profit || "0");
     const unrealizedProfit = parseFloat(row.unrealized_profit || "0");
-    const totalValue = netInvested + unrealizedProfit;
+    const latestTotalValue = parseFloat(row.latest_total_value || "0");
+    const totalValue = latestTotalValue > 0 ? latestTotalValue : netInvested + unrealizedProfit;
     const simpleRoi = percentage(totalValue - Math.max(netInvested, 0), Math.max(netInvested, 0));
     return {
       id: row.id,
@@ -169,8 +204,12 @@ export async function getPlatforms() {
       defaultCurrency: row.default_currency,
       createdAt: row.created_at,
       netInvested,
+      equityNetInvested,
+      fixedSavingsNetInvested,
+      brokerageNetInvested,
       realizedProfit,
       unrealizedProfit,
+      brokerageProfitLoss: parseFloat(row.brokerage_profit_loss || "0"),
       totalValue,
       simpleRoi,
     };
@@ -321,6 +360,7 @@ export async function getPlatformTransactions(platformId: string) {
       pt.account_id,
       pa.name as account_name,
       pt.asset_id,
+      pt.funding_source,
       passt.symbol as asset_symbol,
       passt.name as asset_name,
       TO_CHAR(pt.date, 'YYYY-MM-DD') as date,
@@ -361,6 +401,7 @@ export async function addPlatformTransaction(formData: FormData) {
   const platformId = formData.get("platform_id")?.toString();
   const accountId = formData.get("account_id")?.toString() || null;
   const assetId = formData.get("asset_id")?.toString() || null;
+  const fundingSource = formData.get("funding_source")?.toString() || "equity";
   const date = formData.get("date")?.toString();
   const type = formData.get("type")?.toString() || "";
   const currency = normalizeCurrency(formData.get("currency"));
@@ -387,6 +428,7 @@ export async function addPlatformTransaction(formData: FormData) {
   const status = formData.get("status")?.toString() || "SETTLED";
 
   if (!platformId || !date || !isInvestmentTransactionType(type)) return { error: "Platform, date, and valid transaction type are required." };
+  if (!FUNDING_SOURCES.includes(fundingSource as (typeof FUNDING_SOURCES)[number])) return { error: "Invalid funding source." };
   if (!hasBaseAmount && !hasAmount) return { error: "RM amount or native amount is required." };
   if (currency !== BASE_CURRENCY && !hasBaseAmount && fxRateToBase <= 0) return { error: "FX rate is required when only a foreign amount is entered." };
   if (!STATUSES.includes(status as (typeof STATUSES)[number])) return { error: "Invalid transaction status." };
@@ -414,12 +456,12 @@ export async function addPlatformTransaction(formData: FormData) {
   try {
     const inserted = await sql`
       INSERT INTO platform_transactions (
-        platform_id, account_id, asset_id, date, type, amount, currency, base_currency, base_amount,
+        platform_id, account_id, asset_id, funding_source, date, type, amount, currency, base_currency, base_amount,
         fx_rate_to_base, from_currency, to_currency, from_amount, to_amount, quantity, price_per_unit,
         gross_amount, fee_amount, tax_amount, net_amount, realized_profit, reference, status, settlement_date, notes
       )
       VALUES (
-        ${platformId}, ${accountId}, ${assetId}, ${date}, ${type}, ${amount}, ${currency}, ${BASE_CURRENCY}, ${baseAmount},
+        ${platformId}, ${accountId}, ${assetId}, ${fundingSource}, ${date}, ${type}, ${amount}, ${currency}, ${BASE_CURRENCY}, ${baseAmount},
         ${fxRateToBase}, ${fromCurrency}, ${toCurrency}, ${fromAmount}, ${toAmount}, ${quantity}, ${pricePerUnit},
         ${grossAmount}, ${feeAmount}, ${taxAmount}, ${netAmount}, ${realizedProfit}, ${reference}, ${status}, ${settlementDate}, ${notes}
       )
@@ -429,6 +471,7 @@ export async function addPlatformTransaction(formData: FormData) {
       platformId,
       accountId,
       assetId,
+      fundingSource,
       type,
       amount,
       currency,
@@ -458,6 +501,12 @@ export async function getPlatformNavSnapshots(platformId: string) {
       TO_CHAR(nw.week_ending, 'YYYY-MM-DD') as week_ending,
       nwps.net_invested,
       nwps.unrealized_profit,
+      nwps.total_value,
+      nwps.equity_net_invested,
+      nwps.fixed_savings_net_invested,
+      nwps.brokerage_net_invested,
+      nwps.equity_unrealized_profit,
+      nwps.brokerage_profit_loss,
       nw.nav_per_unit,
       nw.status
     FROM nav_week_platform_snapshots nwps

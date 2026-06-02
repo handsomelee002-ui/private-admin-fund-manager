@@ -141,14 +141,13 @@ export async function recordFixedSavingsAction(formData: FormData) {
     if (!investorId || !date || !["Deposit", "Withdrawal"].includes(type)) {
       return { error: "Investor, date, and fixed savings type are required." };
     }
+    const annualRatePercent = type === "Deposit" ? parsePositiveMoney(formData.get("annual_rate_percent"), "Annual rate") : null;
     await recordFixedSavings({
       investorId,
       date,
       type,
       amount: parsePositiveMoney(formData.get("amount"), "Amount"),
-      annualRatePercent: formData.get("annual_rate_percent")
-        ? parseMoney(formData.get("annual_rate_percent"), "Annual rate")
-        : null,
+      annualRatePercent,
       notes: formData.get("notes")?.toString() || "",
     });
     revalidateFundViews(investorId);

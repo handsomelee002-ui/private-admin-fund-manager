@@ -2,6 +2,8 @@ import { sql } from "@vercel/postgres";
 import { createHash } from "node:crypto";
 import {
   accrueDailyCompoundInterest,
+  allocateFixedSavingsWithdrawal,
+  calculateBrokerageFundingAllocation,
   calculateNavPerUnit,
   calculateOwnershipPercent,
   issueUnitsForDeposit,
@@ -149,12 +151,21 @@ async function ensureAuditColumnsUncached() {
   await sql`ALTER TABLE cash_movements ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
   await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+  await sql`ALTER TABLE fixed_savings_ledger DROP CONSTRAINT IF EXISTS fixed_savings_ledger_type_check`;
+  await sql`ALTER TABLE fixed_savings_ledger ADD CONSTRAINT fixed_savings_ledger_type_check CHECK (type IN ('Deposit', 'Withdrawal', 'Bonus', 'InterestWithdrawal'))`;
   await sql`ALTER TABLE performance_fees ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE performance_fees ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
   await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS funding_source TEXT NOT NULL DEFAULT 'equity'`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS total_value NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS equity_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS fixed_savings_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS brokerage_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS equity_unrealized_profit NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS brokerage_profit_loss NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events (created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS audit_events_action_created_at_idx ON audit_events (action, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS audit_events_reversal_original_idx ON audit_events ((details->>'originalAuditEventId')) WHERE action LIKE '%.revert'`;
@@ -222,6 +233,19 @@ export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], en
     return existing;
   }
 
+  function applyInterestWithdrawal(amount: number, summary: { accruedInterest: number; bonusPayable: number } | null) {
+    const accruedReduction = Math.min(amount, accruedInterest);
+    accruedInterest = roundMoney(accruedInterest - accruedReduction);
+    if (summary) summary.accruedInterest = roundMoney(summary.accruedInterest - Math.min(amount, summary.accruedInterest));
+
+    const remaining = roundMoney(amount - accruedReduction);
+    if (remaining <= 0) return;
+
+    const bonusReduction = Math.min(remaining, bonusPayable);
+    bonusPayable = roundMoney(bonusPayable - bonusReduction);
+    if (summary) summary.bonusPayable = roundMoney(summary.bonusPayable - Math.min(remaining, summary.bonusPayable));
+  }
+
   for (const movement of orderedRows) {
     const amount = ledgerAmount(movement);
     const accountKey = movement.account_id || `legacy:${movement.investor_id || "fund"}`;
@@ -254,9 +278,15 @@ export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], en
       state.balance = Math.max(0, state.balance - amount);
       principal -= withdrawal;
       if (summary) summary.principal -= withdrawal;
+      const interestWithdrawal = roundMoney(amount - withdrawal);
+      if (interestWithdrawal > 0) {
+        applyInterestWithdrawal(interestWithdrawal, summary);
+      }
     } else if (movement.type === "Bonus") {
       bonusPayable += amount;
       if (summary) summary.bonusPayable += amount;
+    } else if (movement.type === "InterestWithdrawal") {
+      applyInterestWithdrawal(amount, summary);
     }
     accountInterestState.set(accountKey, state);
   }
@@ -465,7 +495,7 @@ export async function ensureFreshFundSchema() {
       account_id UUID REFERENCES fixed_savings_accounts(id) ON DELETE CASCADE,
       investor_id UUID NOT NULL REFERENCES investors(id) ON DELETE CASCADE,
       date DATE NOT NULL,
-      type TEXT NOT NULL CHECK (type IN ('Deposit', 'Withdrawal', 'Bonus')),
+      type TEXT NOT NULL CHECK (type IN ('Deposit', 'Withdrawal', 'Bonus', 'InterestWithdrawal')),
       amount NUMERIC(15, 4) NOT NULL,
       annual_rate_percent NUMERIC(8, 4),
       notes TEXT,
@@ -475,6 +505,8 @@ export async function ensureFreshFundSchema() {
   await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS account_id UUID REFERENCES fixed_savings_accounts(id) ON DELETE CASCADE`;
   await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS annual_rate_percent NUMERIC(8, 4)`;
   await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS interest_rate NUMERIC(8, 4) DEFAULT NULL`;
+  await sql`ALTER TABLE fixed_savings_ledger DROP CONSTRAINT IF EXISTS fixed_savings_ledger_type_check`;
+  await sql`ALTER TABLE fixed_savings_ledger ADD CONSTRAINT fixed_savings_ledger_type_check CHECK (type IN ('Deposit', 'Withdrawal', 'Bonus', 'InterestWithdrawal'))`;
   await sql`
     CREATE TABLE IF NOT EXISTS performance_fees (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -559,10 +591,22 @@ export async function ensureFreshFundSchema() {
       platform_id UUID NOT NULL REFERENCES platforms(id) ON DELETE CASCADE,
       net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0,
       unrealized_profit NUMERIC(15, 4) NOT NULL DEFAULT 0,
+      total_value NUMERIC(15, 4) NOT NULL DEFAULT 0,
+      equity_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0,
+      fixed_savings_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0,
+      brokerage_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0,
+      equity_unrealized_profit NUMERIC(15, 4) NOT NULL DEFAULT 0,
+      brokerage_profit_loss NUMERIC(15, 4) NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(nav_week_id, platform_id)
     );
   `;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS total_value NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS equity_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS fixed_savings_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS brokerage_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS equity_unrealized_profit NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS brokerage_profit_loss NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`
     CREATE TABLE IF NOT EXISTS platform_transactions (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -594,6 +638,7 @@ export async function ensureFreshFundSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `;
+  await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS funding_source TEXT NOT NULL DEFAULT 'equity'`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS realized_profit NUMERIC(15, 4) DEFAULT NULL`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS account_id UUID REFERENCES platform_accounts(id) ON DELETE SET NULL`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS asset_id UUID REFERENCES platform_assets(id) ON DELETE SET NULL`;
@@ -745,20 +790,59 @@ export async function createNavWeek(input: NavWeekInput) {
           WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
           ELSE 0
         END
-      ), 0) as net_invested
+      ), 0) as net_invested,
+      COALESCE(SUM(
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COALESCE(pt.funding_source, 'equity') <> 'equity' THEN 0
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END
+      ), 0) as equity_net_invested,
+      COALESCE(SUM(
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COALESCE(pt.funding_source, 'equity') <> 'fixed_savings' THEN 0
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END
+      ), 0) as fixed_savings_net_invested,
+      COALESCE(SUM(
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COALESCE(pt.funding_source, 'equity') <> 'brokerage' THEN 0
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END
+      ), 0) as brokerage_net_invested
     FROM platforms p
     LEFT JOIN platform_transactions pt ON pt.platform_id = p.id
     GROUP BY p.id
     ORDER BY p.id
   `;
   const snapshotByPlatform = new Map(input.platformSnapshots.map((snapshot) => [snapshot.platformId, snapshot.unrealizedProfit]));
-  const platformSnapshots = platforms.rows.map((platform: any) => ({
-    platformId: platform.id as string,
-    netInvested: roundMoney(parseFloat(platform.net_invested || "0")),
-    unrealizedProfit: roundMoney(snapshotByPlatform.get(platform.id) ?? 0),
-  }));
+  const platformSnapshots = platforms.rows.map((platform: any) => {
+    const totalNetInvested = roundMoney(parseFloat(platform.net_invested || "0"));
+    const totalValue = roundMoney(totalNetInvested + (snapshotByPlatform.get(platform.id) ?? 0));
+    const allocation = calculateBrokerageFundingAllocation({
+      equityNetInvested: parseFloat(platform.equity_net_invested || "0"),
+      fixedSavingsNetInvested: parseFloat(platform.fixed_savings_net_invested || "0"),
+      brokerageNetInvested: parseFloat(platform.brokerage_net_invested || "0"),
+      totalValue,
+    });
+    return {
+      platformId: platform.id as string,
+      netInvested: allocation.equityNetInvested,
+      unrealizedProfit: allocation.equityProfitLoss,
+      totalValue,
+      allocation,
+    };
+  });
   const grossAssets = roundMoney(
-    platformSnapshots.reduce((sum, snapshot) => sum + snapshot.netInvested + snapshot.unrealizedProfit, 0),
+    platformSnapshots.reduce((sum, snapshot) => sum + snapshot.allocation.equityNavValue, 0),
   );
   const liabilities = 0;
   const netAssetValue = roundMoney(grossAssets - liabilities + input.adjustments);
@@ -789,8 +873,16 @@ export async function createNavWeek(input: NavWeekInput) {
   await sql`DELETE FROM nav_week_platform_snapshots WHERE nav_week_id = ${navWeekId}`;
   for (const snapshot of platformSnapshots) {
     await sql`
-      INSERT INTO nav_week_platform_snapshots (nav_week_id, platform_id, net_invested, unrealized_profit)
-      VALUES (${navWeekId}, ${snapshot.platformId}, ${snapshot.netInvested}, ${snapshot.unrealizedProfit})
+      INSERT INTO nav_week_platform_snapshots (
+        nav_week_id, platform_id, net_invested, unrealized_profit, total_value,
+        equity_net_invested, fixed_savings_net_invested, brokerage_net_invested,
+        equity_unrealized_profit, brokerage_profit_loss
+      )
+      VALUES (
+        ${navWeekId}, ${snapshot.platformId}, ${snapshot.netInvested}, ${snapshot.unrealizedProfit}, ${snapshot.totalValue},
+        ${snapshot.allocation.equityNetInvested}, ${snapshot.allocation.fixedSavingsNetInvested}, ${snapshot.allocation.brokerageNetInvested},
+        ${snapshot.allocation.equityProfitLoss}, ${snapshot.allocation.brokerageProfitLoss}
+      )
     `;
   }
   await writeAuditEvent("nav_week.upsert", "nav_weeks", navWeekId, {
@@ -958,6 +1050,7 @@ export async function recordCashMovement(input: CashMovementInput) {
 export async function recordFixedSavings(input: FixedSavingsInput) {
   await ensureAuditColumns();
   let accountId: string | null = null;
+  let withdrawals: { principal: { id: string; amount: number }[]; interest: number } = { principal: [], interest: 0 };
   if (input.type === "Deposit") {
     const account = await sql`
       INSERT INTO fixed_savings_accounts (investor_id, opened_at, annual_rate_percent)
@@ -966,46 +1059,81 @@ export async function recordFixedSavings(input: FixedSavingsInput) {
     `;
     accountId = account.rows[0].id;
   } else {
-    const account = await sql`
+    const accounts = await sql`
       SELECT fsa.id,
         COALESCE(SUM(CASE WHEN fsl.type = 'Deposit' THEN fsl.amount WHEN fsl.type = 'Withdrawal' THEN -fsl.amount ELSE 0 END), 0) as balance
       FROM fixed_savings_accounts fsa
       LEFT JOIN fixed_savings_ledger fsl ON fsl.account_id = fsa.id AND fsl.audit_status = 'active'
       WHERE fsa.investor_id = ${input.investorId} AND fsa.status = 'active'
       GROUP BY fsa.id, fsa.opened_at
-      HAVING COALESCE(SUM(CASE WHEN fsl.type = 'Deposit' THEN fsl.amount WHEN fsl.type = 'Withdrawal' THEN -fsl.amount ELSE 0 END), 0) >= ${input.amount}
+      HAVING COALESCE(SUM(CASE WHEN fsl.type = 'Deposit' THEN fsl.amount WHEN fsl.type = 'Withdrawal' THEN -fsl.amount ELSE 0 END), 0) > 0
       ORDER BY fsa.opened_at ASC
-      LIMIT 1
     `;
-    accountId = account.rows[0]?.id ?? null;
-    if (!accountId) {
-      throw new Error("Withdrawal exceeds available fixed savings balance.");
-    }
+    const savingsRows = await sql`
+      SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+      FROM fixed_savings_ledger
+      WHERE investor_id = ${input.investorId}
+        AND audit_status = 'active'
+      ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
+    `;
+    const savingsSummary = calculateFixedSavingsLiability(savingsRows.rows as FixedSavingsLedgerRow[], input.date);
+    withdrawals = allocateFixedSavingsWithdrawal({
+      accounts: accounts.rows.map((account: any) => ({
+        id: account.id,
+        balance: parseFloat(account.balance || "0"),
+      })),
+      amount: input.amount,
+      interestBalance: savingsSummary.payableInterest,
+    });
+    accountId = withdrawals.principal[0]?.id ?? null;
   }
 
-  const ledger = await sql`
-    INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, annual_rate_percent, notes)
-    VALUES (${accountId}, ${input.investorId}, ${input.date}, ${input.type}, ${input.amount}, ${input.annualRatePercent ?? null}, ${input.notes || ""})
-    RETURNING id
-  `;
-  if (input.type === "Withdrawal" && accountId) {
+  const ledgerIds: string[] = [];
+  if (input.type === "Withdrawal") {
+    for (const withdrawal of withdrawals.principal) {
+      const ledger = await sql`
+        INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, annual_rate_percent, notes)
+        VALUES (${withdrawal.id}, ${input.investorId}, ${input.date}, ${input.type}, ${withdrawal.amount}, ${input.annualRatePercent ?? null}, ${input.notes || ""})
+        RETURNING id
+      `;
+      ledgerIds.push(ledger.rows[0].id);
+    }
+    if (withdrawals.interest > 0) {
+      const ledger = await sql`
+        INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, annual_rate_percent, notes)
+        VALUES (${null}, ${input.investorId}, ${input.date}, ${input.type}, ${withdrawals.interest}, ${input.annualRatePercent ?? null}, ${input.notes || ""})
+        RETURNING id
+      `;
+      ledgerIds.push(ledger.rows[0].id);
+    }
+  } else {
+    const ledger = await sql`
+      INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, annual_rate_percent, notes)
+      VALUES (${accountId}, ${input.investorId}, ${input.date}, ${input.type}, ${input.amount}, ${input.annualRatePercent ?? null}, ${input.notes || ""})
+      RETURNING id
+    `;
+    ledgerIds.push(ledger.rows[0].id);
+  }
+
+  for (const withdrawal of withdrawals.principal) {
     await sql`
       UPDATE fixed_savings_accounts
       SET status = 'closed'
-      WHERE id = ${accountId}
+      WHERE id = ${withdrawal.id}
         AND (
           SELECT COALESCE(SUM(CASE WHEN type = 'Deposit' THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END), 0)
           FROM fixed_savings_ledger
-          WHERE account_id = ${accountId}
+          WHERE account_id = ${withdrawal.id}
             AND audit_status = 'active'
         ) <= 0
     `;
   }
-  await writeAuditEvent("fixed_savings.add", "fixed_savings_ledger", ledger.rows[0].id, {
+  await writeAuditEvent("fixed_savings.add", "fixed_savings_ledger", ledgerIds[0], {
     accountId,
     investorId: input.investorId,
     type: input.type,
     amount: input.amount,
+    ledgerIds,
   });
   return { success: true };
 }
@@ -1344,7 +1472,12 @@ export async function getFundSummaryMetrics() {
       SELECT
         (SELECT row_to_json(latest_nav) FROM latest_nav) as latest_nav,
         (SELECT total_units FROM fund_units) as total_units,
-        (SELECT total FROM fees) as performance_fees
+        (SELECT total FROM fees) as performance_fees,
+        COALESCE((
+          SELECT SUM(nwps.brokerage_profit_loss)
+          FROM nav_week_platform_snapshots nwps
+          WHERE nwps.nav_week_id = (SELECT id FROM latest_nav)
+        ), 0) as brokerage_profit_loss
     `,
     sql`
       SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
@@ -1363,6 +1496,8 @@ export async function getFundSummaryMetrics() {
     fixedSavingsLiability: fixedSavings.totalLiability,
     fixedSavingsPrincipal: fixedSavings.principal,
     fixedSavingsInterest: fixedSavings.payableInterest,
+    totalInvestorCapital: roundMoney((latestNav ? parseFloat(latestNav.net_asset_value) : 0) + fixedSavings.totalLiability),
+    brokerageProfitLoss: roundMoney(parseFloat(row.brokerage_profit_loss || "0")),
     performanceFees: roundMoney(parseFloat(row.performance_fees || "0")),
     aum: latestNav ? roundMoney(parseFloat(latestNav.net_asset_value)) : 0,
   };
@@ -1398,7 +1533,12 @@ export async function getDashboardSummary() {
       SELECT
         (SELECT row_to_json(latest_nav) FROM latest_nav) as latest_nav,
         (SELECT total_units FROM fund_units) as total_units,
-        (SELECT total FROM fees) as performance_fees
+        (SELECT total FROM fees) as performance_fees,
+        COALESCE((
+          SELECT SUM(nwps.brokerage_profit_loss)
+          FROM nav_week_platform_snapshots nwps
+          WHERE nwps.nav_week_id = (SELECT id FROM latest_nav)
+        ), 0) as brokerage_profit_loss
     `,
     sql`
       SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
@@ -1478,6 +1618,8 @@ export async function getDashboardSummary() {
     fixedSavingsLiability: fixedSavings.totalLiability,
     fixedSavingsPrincipal: fixedSavings.principal,
     fixedSavingsInterest: fixedSavings.payableInterest,
+    totalInvestorCapital: roundMoney((latestNav ? parseFloat(latestNav.net_asset_value) : 0) + fixedSavings.totalLiability),
+    brokerageProfitLoss: roundMoney(parseFloat(summaryRow.brokerage_profit_loss || "0")),
     performanceFees: roundMoney(parseFloat(summaryRow.performance_fees || "0")),
     aum: latestNav ? roundMoney(parseFloat(latestNav.net_asset_value)) : 0,
     investors,
