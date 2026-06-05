@@ -8,7 +8,36 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Info, Plus } from "lucide-react";
 
-export function CreateNavWeekForm({ platforms }: { platforms: { id: string; name: string; unrealizedProfit: number; netInvested: number; equityNetInvested?: number; fixedSavingsNetInvested?: number; brokerageNetInvested?: number; totalValue?: number }[] }) {
+type PlatformSummary = {
+  id: string;
+  name: string;
+  unrealizedProfit: number;
+  netInvested: number;
+  equityNetInvested?: number;
+  fixedSavingsNetInvested?: number;
+  brokerageNetInvested?: number;
+  totalValue?: number;
+};
+
+function getFundingBreakdown(platform: PlatformSummary) {
+  const equity = platform.equityNetInvested ?? platform.netInvested;
+  const fixedSavings = platform.fixedSavingsNetInvested ?? 0;
+  const brokerage = platform.brokerageNetInvested ?? 0;
+  const total = equity + fixedSavings + brokerage;
+  const percentage = (value: number) => (total > 0 ? (value / total) * 100 : 0);
+
+  return [
+    { label: "Equity", value: equity, percent: percentage(equity) },
+    { label: "Fixed Savings", value: fixedSavings, percent: percentage(fixedSavings) },
+    { label: "Brokerage", value: brokerage, percent: percentage(brokerage) },
+  ];
+}
+
+function formatPercent(value: number) {
+  return `${value.toFixed(value > 0 && value < 0.1 ? 2 : 1)}%`;
+}
+
+export function CreateNavWeekForm({ platforms }: { platforms: PlatformSummary[] }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [activePlatformInfo, setActivePlatformInfo] = useState<string | null>(null);
@@ -51,60 +80,64 @@ export function CreateNavWeekForm({ platforms }: { platforms: { id: string; name
           </div>
           <div className="space-y-3">
             <Label>Platform Final Value (RM)</Label>
-            {platforms.map((platform) => (
-              <div key={platform.id} className="flex items-center gap-4 rounded-md py-0.5">
-                <Label
-                  htmlFor={`platform_value_${platform.id}`}
-                  className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium"
-                >
-                  <span className="truncate">{platform.name}</span>
-                  <span
-                    className="relative inline-flex"
-                    onMouseEnter={() => setActivePlatformInfo(platform.id)}
-                    onMouseLeave={() => setActivePlatformInfo((current) => (current === platform.id ? null : current))}
+            {platforms.map((platform) => {
+              const fundingBreakdown = getFundingBreakdown(platform);
+
+              return (
+                <div key={platform.id} className="flex items-center gap-4 rounded-md py-0.5">
+                  <Label
+                    htmlFor={`platform_value_${platform.id}`}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium"
                   >
-                    <button
-                      type="button"
-                      aria-label={`${platform.name} allocation details`}
-                      aria-expanded={activePlatformInfo === platform.id}
-                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      onFocus={() => setActivePlatformInfo(platform.id)}
-                      onBlur={() => setActivePlatformInfo((current) => (current === platform.id ? null : current))}
+                    <span className="truncate">{platform.name}</span>
+                    <span
+                      className="relative inline-flex"
+                      onMouseEnter={() => setActivePlatformInfo(platform.id)}
+                      onMouseLeave={() => setActivePlatformInfo((current) => (current === platform.id ? null : current))}
                     >
-                      <Info className="h-3.5 w-3.5" />
-                    </button>
-                    {activePlatformInfo === platform.id && (
-                      <span className="absolute left-7 top-1/2 z-[70] w-64 -translate-y-1/2 rounded-md border border-border/70 bg-popover p-3 text-xs font-normal text-popover-foreground shadow-xl ring-1 ring-foreground/5">
-                        <span className="absolute -left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 rotate-45 border-b border-l border-border/70 bg-popover" />
-                        <span className="relative block">
-                          <span className="flex items-center justify-between gap-4">
-                            <span className="text-muted-foreground">Equity</span>
-                            <span className="font-medium">RM {(platform.equityNetInvested ?? platform.netInvested).toLocaleString()}</span>
-                          </span>
-                          <span className="mt-1.5 flex items-center justify-between gap-4">
-                            <span className="text-muted-foreground">Fixed savings</span>
-                            <span className="font-medium">RM {(platform.fixedSavingsNetInvested ?? 0).toLocaleString()}</span>
-                          </span>
-                          <span className="mt-1.5 flex items-center justify-between gap-4">
-                            <span className="text-muted-foreground">Brokerage</span>
-                            <span className="font-medium">RM {(platform.brokerageNetInvested ?? 0).toLocaleString()}</span>
+                      <button
+                        type="button"
+                        aria-label={`${platform.name} allocation details`}
+                        aria-expanded={activePlatformInfo === platform.id}
+                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        onFocus={() => setActivePlatformInfo(platform.id)}
+                        onBlur={() => setActivePlatformInfo((current) => (current === platform.id ? null : current))}
+                      >
+                        <Info className="h-3.5 w-3.5" />
+                      </button>
+                      {activePlatformInfo === platform.id && (
+                        <span
+                          className="absolute left-7 top-1/2 z-[70] -translate-y-1/2 rounded-md border border-border/70 bg-popover p-3 text-xs font-normal text-popover-foreground shadow-xl ring-1 ring-foreground/5"
+                          style={{ width: "20rem" }}
+                        >
+                          <span className="absolute -left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 rotate-45 border-b border-l border-border/70 bg-popover" />
+                          <span className="relative block space-y-1.5">
+                            {fundingBreakdown.map((item) => (
+                              <span key={item.label} className="flex min-w-0 items-center gap-3 whitespace-nowrap">
+                                <span className="w-[6.75rem] shrink-0 text-muted-foreground">{item.label}</span>
+                                <span className="min-w-0 flex-1 text-right font-medium tabular-nums">RM {item.value.toLocaleString()}</span>
+                                <span className="rounded-sm bg-muted px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground">
+                                  {formatPercent(item.percent)}
+                                </span>
+                              </span>
+                            ))}
                           </span>
                         </span>
-                      </span>
-                    )}
-                  </span>
-                </Label>
-                <Input
-                  id={`platform_value_${platform.id}`}
-                  className="w-40 shrink-0"
-                  name={`platform_value_${platform.id}`}
-                  type="number"
-                  step="0.01"
-                  defaultValue={platform.totalValue ?? platform.netInvested + platform.unrealizedProfit}
-                  required
-                />
-              </div>
-            ))}
+                      )}
+                    </span>
+                  </Label>
+                  <Input
+                    id={`platform_value_${platform.id}`}
+                    className="w-40 shrink-0"
+                    name={`platform_value_${platform.id}`}
+                    type="number"
+                    step="0.01"
+                    defaultValue={platform.totalValue ?? platform.netInvested + platform.unrealizedProfit}
+                    required
+                  />
+                </div>
+              );
+            })}
             {platforms.length === 0 && (
               <p className="text-sm text-muted-foreground">Add a trading platform before creating NAV.</p>
             )}

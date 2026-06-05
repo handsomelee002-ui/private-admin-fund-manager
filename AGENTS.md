@@ -18,7 +18,7 @@ When asked to build a feature, identify the underlying business requirement befo
 
 Do not implement only the literal words of the request if that would leave the real business workflow incomplete.
 
-A feature is not complete until the user can realistically achieve the business outcome in production, using the app’s existing patterns and constraints.
+A feature is not complete until the user can realistically achieve the business outcome in production, using the app's existing patterns and constraints.
 
 Before coding, determine:
 - the business goal
@@ -100,10 +100,32 @@ Use:
 If production-ready implementation is blocked by missing information, ask for clarification or state the blocker clearly.
 
 ### 7. Respect existing conventions
-Follow the codebase’s current conventions even if another style seems better.
+Follow the codebase's current conventions even if another style seems better.
 If conventions conflict, choose the more local, recent, or tested pattern and explain why only when asked.
 
-### 8. Verify work
+Do not preserve weak UI, security, data, or architecture patterns merely because they already exist.
+If an existing convention harms accessibility, usability, maintainability, scalability, or security, state the issue and apply the smallest safe improvement.
+
+### 8. UI/UX quality gate
+For any UI or UX change, inspect the relevant existing screen, component pattern, layout constraints, and user journey before editing.
+
+A UI or UX change is not complete until it covers:
+- desktop and mobile layout behavior
+- loading, empty, error, disabled, and success states
+- accessible labels, focus states, keyboard navigation, and semantic structure
+- readable visual hierarchy, spacing, alignment, density, and information priority
+- form validation, destructive-action confirmation, and permission-aware visibility
+- consistency with the local design system unless the existing pattern is demonstrably poor
+- responsive text wrapping, overflow behavior, and prevention of incoherent overlap
+
+Build actual product workflows, not decorative screens.
+Avoid landing-page patterns, oversized hero sections, decorative card stacks, and marketing copy in admin or operational tools unless explicitly requested.
+
+When changing UI, run or request browser verification unless explicitly blocked.
+Use Playwright, the in-app browser, or the project's existing browser test workflow to inspect the changed screen at mobile and desktop viewport sizes.
+If browser verification is not run, report the exact manual checks required.
+
+### 9. Verify work
 Do not run checks such as tests, lint, typecheck, or build unless requested.
 When making changes, state what should be tested and provide the exact command if known for the user to run.
 Do not claim the change works unless the check was actually run.
@@ -120,11 +142,11 @@ Report verification as:
 - Fail: check was run and failed
 - Not run: check was not run
 
-### 9. Fail loud
+### 10. Fail loud
 Surface uncertainty, skipped checks, partial failures, and edge cases.
 Do not hide failed tests, skipped records, migration issues, or unverified behavior.
 
-### 10. Manage context and tokens
+### 11. Manage context and tokens
 Keep context small.
 Minimize file reads.
 Start with the smallest relevant set of files.
@@ -143,11 +165,11 @@ Avoid reading or editing:
 
 If the task grows too large, stop, summarize progress, and suggest starting a fresh focused task.
 
-### 11. Track progress internally
+### 12. Track progress internally
 For multi-step tasks, keep track of what changed, what remains, and any risks.
 Only report this if needed or requested.
 
-### 12. Token efficiency
+### 13. Token efficiency
 Do not write progress updates during implementation.
 
 Do not narrate investigation steps, confirmed findings, or intended fixes while working.
@@ -167,9 +189,9 @@ If command output is very large, inspect the first relevant error and stop.
 
 Prefer targeted commands that produce small output.
 
-Final responses must use the required response format only.
+Final responses must use the required response format only, except when the user explicitly asks for code, a review, a plan, or a detailed explanation.
 
-### 13. Superpowers plugin usage
+### 14. Superpowers plugin usage
 Use Superpowers only during planning.
 
 Allowed Superpowers usage:
