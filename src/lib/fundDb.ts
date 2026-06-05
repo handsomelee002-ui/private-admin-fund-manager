@@ -74,6 +74,29 @@ type PortalAccessMeta = {
   userAgent?: string;
 };
 
+type SeedPlatformTransactionInput = {
+  platformId: string;
+  accountId?: string | null;
+  assetId?: string | null;
+  date: string;
+  type: string;
+  amount: number;
+  currency?: string;
+  baseAmount?: number;
+  fxRateToBase?: number;
+  quantity?: number | null;
+  pricePerUnit?: number | null;
+  grossAmount?: number | null;
+  feeAmount?: number;
+  taxAmount?: number;
+  netAmount?: number | null;
+  realizedProfit?: number | null;
+  reference: string;
+  settlementDate?: string | null;
+  notes: string;
+  allocations?: { fundingSource: "equity" | "fixed_savings" | "brokerage"; ratioPercent: number; baseAmount: number }[];
+};
+
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const DEFAULT_BROKERAGE_FEE_RATE = "2.0";
 const RESETTABLE_FINANCIAL_TABLES = BACKUP_TABLES;
@@ -1669,45 +1692,473 @@ export async function seedDummyData() {
   await dropAllFundTables();
   await initializeFreshFundDatabase();
 
-  const alice = await sql`INSERT INTO investors (name) VALUES ('Alice Tan') RETURNING id`;
-  const ben = await sql`INSERT INTO investors (name) VALUES ('Ben Lim') RETURNING id`;
-  const chandra = await sql`INSERT INTO investors (name) VALUES ('Chandra Kumar') RETURNING id`;
+  const alice = await sql`
+    INSERT INTO investors (name, portal_access_id, portal_access_rotated_at)
+    VALUES ('Alice Tan', 'demo-alice-tan-2026', NOW())
+    RETURNING id
+  `;
+  const ben = await sql`
+    INSERT INTO investors (name, portal_access_id, portal_access_rotated_at)
+    VALUES ('Ben Lim', 'demo-ben-lim-2026', NOW())
+    RETURNING id
+  `;
+  const chandra = await sql`
+    INSERT INTO investors (name, portal_access_id, portal_access_rotated_at)
+    VALUES ('Chandra Kumar', 'demo-chandra-kumar-2026', NOW())
+    RETURNING id
+  `;
+  const farah = await sql`
+    INSERT INTO investors (name, portal_access_id, portal_access_rotated_at)
+    VALUES ('Farah Rahman', 'demo-farah-rahman-2026', NOW())
+    RETURNING id
+  `;
+  const grace = await sql`
+    INSERT INTO investors (name, portal_access_id, portal_access_rotated_at)
+    VALUES ('Grace Wong', 'demo-grace-wong-2026', NOW())
+    RETURNING id
+  `;
+
+  await sql`
+    UPDATE fund_config
+    SET value = '2.0', updated_at = NOW()
+    WHERE key = 'brokerage_fee_pct'
+  `;
+
+  const ibkr = await sql`
+    INSERT INTO platforms (name, base_currency, default_currency)
+    VALUES ('Interactive Brokers', 'MYR', 'USD')
+    RETURNING id
+  `;
+  const moomoo = await sql`
+    INSERT INTO platforms (name, base_currency, default_currency)
+    VALUES ('Moomoo Malaysia', 'MYR', 'MYR')
+    RETURNING id
+  `;
+  const binance = await sql`
+    INSERT INTO platforms (name, base_currency, default_currency)
+    VALUES ('Binance Custody', 'MYR', 'USDT')
+    RETURNING id
+  `;
+  const maybank = await sql`
+    INSERT INTO platforms (name, base_currency, default_currency)
+    VALUES ('Maybank Cash Reserve', 'MYR', 'MYR')
+    RETURNING id
+  `;
+
+  const ibkrMargin = await sql`
+    INSERT INTO platform_accounts (platform_id, name, account_type, currency)
+    VALUES (${ibkr.rows[0].id}, 'Margin Portfolio', 'BROKER_MARGIN', 'USD')
+    RETURNING id
+  `;
+  const ibkrCash = await sql`
+    INSERT INTO platform_accounts (platform_id, name, account_type, currency)
+    VALUES (${ibkr.rows[0].id}, 'USD Cash', 'BROKER_CASH', 'USD')
+    RETURNING id
+  `;
+  const moomooCash = await sql`
+    INSERT INTO platform_accounts (platform_id, name, account_type, currency)
+    VALUES (${moomoo.rows[0].id}, 'MYR Trading Cash', 'BROKER_CASH', 'MYR')
+    RETURNING id
+  `;
+  const binanceSpot = await sql`
+    INSERT INTO platform_accounts (platform_id, name, account_type, currency)
+    VALUES (${binance.rows[0].id}, 'Spot Wallet', 'CRYPTO_SPOT', 'USDT')
+    RETURNING id
+  `;
+  const reserveCash = await sql`
+    INSERT INTO platform_accounts (platform_id, name, account_type, currency)
+    VALUES (${maybank.rows[0].id}, 'Operating Reserve', 'BANK_CASH', 'MYR')
+    RETURNING id
+  `;
+
+  const aapl = await sql`
+    INSERT INTO platform_assets (platform_id, symbol, name, asset_type, currency, latest_price, latest_fx_rate_to_myr)
+    VALUES (${ibkr.rows[0].id}, 'AAPL', 'Apple Inc.', 'EQUITY', 'USD', 198.12000000, 4.72000000)
+    RETURNING id
+  `;
+  const voo = await sql`
+    INSERT INTO platform_assets (platform_id, symbol, name, asset_type, currency, latest_price, latest_fx_rate_to_myr)
+    VALUES (${ibkr.rows[0].id}, 'VOO', 'Vanguard S&P 500 ETF', 'ETF', 'USD', 518.44000000, 4.72000000)
+    RETURNING id
+  `;
+  const maybankStock = await sql`
+    INSERT INTO platform_assets (platform_id, symbol, name, asset_type, currency, latest_price, latest_fx_rate_to_myr)
+    VALUES (${moomoo.rows[0].id}, 'MAYBANK', 'Malayan Banking Berhad', 'EQUITY', 'MYR', 10.12000000, 1.00000000)
+    RETURNING id
+  `;
+  const btc = await sql`
+    INSERT INTO platform_assets (platform_id, symbol, name, asset_type, currency, latest_price, latest_fx_rate_to_myr)
+    VALUES (${binance.rows[0].id}, 'BTC', 'Bitcoin', 'CRYPTO', 'USDT', 104250.00000000, 4.71000000)
+    RETURNING id
+  `;
+
+  async function insertPlatformTransaction(input: SeedPlatformTransactionInput) {
+    const currency = input.currency || "MYR";
+    const baseAmount = input.baseAmount ?? input.amount;
+    const fxRateToBase = input.fxRateToBase ?? 1;
+    const inserted = await sql`
+      INSERT INTO platform_transactions (
+        platform_id, account_id, asset_id, funding_source, date, type, amount, currency, base_currency, base_amount,
+        fx_rate_to_base, quantity, price_per_unit, gross_amount, fee_amount, tax_amount, net_amount,
+        realized_profit, reference, status, settlement_date, notes, allocation_method
+      )
+      VALUES (
+        ${input.platformId}, ${input.accountId || null}, ${input.assetId || null}, ${input.allocations?.[0]?.fundingSource || "equity"},
+        ${input.date}, ${input.type}, ${input.amount}, ${currency}, 'MYR', ${baseAmount}, ${fxRateToBase},
+        ${input.quantity ?? null}, ${input.pricePerUnit ?? null}, ${input.grossAmount ?? null},
+        ${input.feeAmount ?? 0}, ${input.taxAmount ?? 0}, ${input.netAmount ?? null}, ${input.realizedProfit ?? null},
+        ${input.reference}, 'SETTLED', ${input.settlementDate || input.date}, ${input.notes},
+        ${input.allocations?.length ? "manual" : "none"}
+      )
+      RETURNING id
+    `;
+    for (const allocation of input.allocations || []) {
+      await sql`
+        INSERT INTO platform_transaction_allocations (transaction_id, funding_source, ratio_percent, base_amount)
+        VALUES (${inserted.rows[0].id}, ${allocation.fundingSource}, ${allocation.ratioPercent}, ${allocation.baseAmount})
+      `;
+    }
+    return inserted.rows[0].id as string;
+  }
 
   await createNavWeek({
-    weekEnding: "2026-05-01",
-    platformSnapshots: [],
-    adjustments: 0,
-    notes: "Bootstrap NAV",
+    weekEnding: "2026-03-06",
+    settlementDate: "2026-03-06",
+    platformSnapshots: [
+      { platformId: ibkr.rows[0].id, unrealizedProfit: 0 },
+      { platformId: moomoo.rows[0].id, unrealizedProfit: 0 },
+      { platformId: binance.rows[0].id, unrealizedProfit: 0 },
+      { platformId: maybank.rows[0].id, unrealizedProfit: 0 },
+    ],
+    adjustments: 10000,
+    notes: "Bootstrap NAV before investor subscriptions",
   });
-  const week1 = await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-05-01'`;
+  const week1 = await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-03-06'`;
   await lockNavWeek(week1.rows[0].id);
-  await recordCashMovement({ investorId: alice.rows[0].id, date: "2026-05-04", type: "Deposit", amount: 60000, notes: "Initial subscription" });
-  await recordCashMovement({ investorId: ben.rows[0].id, date: "2026-05-04", type: "Deposit", amount: 40000, notes: "Initial subscription" });
+
+  await recordCashMovement({ investorId: alice.rows[0].id, date: "2026-03-09", type: "Deposit", amount: 75000, notes: "Initial equity subscription" });
+  await recordCashMovement({ investorId: ben.rows[0].id, date: "2026-03-09", type: "Deposit", amount: 52000, notes: "Initial equity subscription" });
+  await recordCashMovement({ investorId: chandra.rows[0].id, date: "2026-03-10", type: "Deposit", amount: 38000, notes: "Initial equity subscription" });
+  await recordFixedSavings({ investorId: alice.rows[0].id, date: "2026-03-11", type: "Deposit", amount: 18000, annualRatePercent: 3.65, notes: "Twelve-month fixed savings placement" });
+  await recordFixedSavings({ investorId: farah.rows[0].id, date: "2026-03-11", type: "Deposit", amount: 42000, annualRatePercent: 3.85, notes: "Fixed savings-only mandate" });
+
+  await insertPlatformTransaction({
+    platformId: ibkr.rows[0].id,
+    accountId: ibkrCash.rows[0].id,
+    date: "2026-03-12",
+    type: "BROKER_DEPOSIT",
+    amount: 85000,
+    baseAmount: 85000,
+    reference: "SEED-IBKR-FUNDING-001",
+    notes: "Initial IBKR funding from equity pool",
+    allocations: [{ fundingSource: "equity", ratioPercent: 100, baseAmount: 85000 }],
+  });
+  await insertPlatformTransaction({
+    platformId: moomoo.rows[0].id,
+    accountId: moomooCash.rows[0].id,
+    date: "2026-03-12",
+    type: "BROKER_DEPOSIT",
+    amount: 45000,
+    baseAmount: 45000,
+    reference: "SEED-MOOMOO-FUNDING-001",
+    notes: "MYR brokerage funding from equity pool",
+    allocations: [{ fundingSource: "equity", ratioPercent: 100, baseAmount: 45000 }],
+  });
+  await insertPlatformTransaction({
+    platformId: maybank.rows[0].id,
+    accountId: reserveCash.rows[0].id,
+    date: "2026-03-12",
+    type: "BROKER_DEPOSIT",
+    amount: 25000,
+    baseAmount: 25000,
+    reference: "SEED-RESERVE-FUNDING-001",
+    notes: "Operating cash reserve",
+    allocations: [{ fundingSource: "equity", ratioPercent: 100, baseAmount: 25000 }],
+  });
+  await insertPlatformTransaction({
+    platformId: ibkr.rows[0].id,
+    accountId: ibkrMargin.rows[0].id,
+    assetId: voo.rows[0].id,
+    date: "2026-03-13",
+    type: "BUY",
+    amount: 33019.2,
+    currency: "USD",
+    baseAmount: 155850,
+    fxRateToBase: 4.72,
+    quantity: 64,
+    pricePerUnit: 515.3,
+    grossAmount: 155745.4,
+    feeAmount: 104.6,
+    netAmount: 155850,
+    reference: "SEED-IBKR-VOO-BUY-001",
+    notes: "Core ETF allocation",
+  });
+  await insertPlatformTransaction({
+    platformId: moomoo.rows[0].id,
+    accountId: moomooCash.rows[0].id,
+    assetId: maybankStock.rows[0].id,
+    date: "2026-03-13",
+    type: "BUY",
+    amount: 30150,
+    baseAmount: 30150,
+    quantity: 3000,
+    pricePerUnit: 10.05,
+    grossAmount: 30150,
+    feeAmount: 18.5,
+    netAmount: 30168.5,
+    reference: "SEED-MOOMOO-MAYBANK-BUY-001",
+    notes: "Local bank equity position",
+  });
 
   await createNavWeek({
-    weekEnding: "2026-05-08",
-    platformSnapshots: [],
-    adjustments: 112000,
-    notes: "Trading gain week",
+    weekEnding: "2026-03-13",
+    settlementDate: "2026-03-13",
+    platformSnapshots: [
+      { platformId: ibkr.rows[0].id, unrealizedProfit: 2180 },
+      { platformId: moomoo.rows[0].id, unrealizedProfit: -420 },
+      { platformId: binance.rows[0].id, unrealizedProfit: 0 },
+      { platformId: maybank.rows[0].id, unrealizedProfit: 0 },
+    ],
+    adjustments: 0,
+    notes: "First funded trading week with unallocated operating cash",
   });
-  const week2 = await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-05-08'`;
+  const week2 = await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-03-13'`;
   await lockNavWeek(week2.rows[0].id);
-  await recordCashMovement({ investorId: chandra.rows[0].id, date: "2026-05-11", type: "Deposit", amount: 28000, notes: "Late subscription at locked NAV" });
+  await recordCashMovement({ investorId: farah.rows[0].id, date: "2026-03-16", type: "Deposit", amount: 24000, notes: "Secondary equity subscription" });
+  await recordCashMovement({ investorId: grace.rows[0].id, date: "2026-03-16", type: "Deposit", amount: 65000, notes: "New investor equity subscription" });
+  await recordFixedSavings({ investorId: ben.rows[0].id, date: "2026-03-17", type: "Deposit", amount: 16000, annualRatePercent: 3.55, notes: "Fixed savings diversification" });
+  await recordFixedSavings({ investorId: grace.rows[0].id, date: "2026-03-17", type: "Deposit", amount: 25000, annualRatePercent: 3.75, notes: "Fixed savings placement" });
+  await insertPlatformTransaction({
+    platformId: binance.rows[0].id,
+    accountId: binanceSpot.rows[0].id,
+    date: "2026-03-18",
+    type: "BROKER_DEPOSIT",
+    amount: 30000,
+    baseAmount: 30000,
+    reference: "SEED-BINANCE-FUNDING-001",
+    notes: "Digital asset allocation funded from mixed sources",
+    allocations: [
+      { fundingSource: "equity", ratioPercent: 66.6667, baseAmount: 20000 },
+      { fundingSource: "fixed_savings", ratioPercent: 33.3333, baseAmount: 10000 },
+    ],
+  });
+  await insertPlatformTransaction({
+    platformId: binance.rows[0].id,
+    accountId: binanceSpot.rows[0].id,
+    assetId: btc.rows[0].id,
+    date: "2026-03-19",
+    type: "BUY",
+    amount: 6369.43,
+    currency: "USDT",
+    baseAmount: 30000,
+    fxRateToBase: 4.71,
+    quantity: 0.06125,
+    pricePerUnit: 103990,
+    grossAmount: 29972.5,
+    feeAmount: 27.5,
+    netAmount: 30000,
+    reference: "SEED-BINANCE-BTC-BUY-001",
+    notes: "BTC spot position",
+  });
+  await insertPlatformTransaction({
+    platformId: ibkr.rows[0].id,
+    accountId: ibkrMargin.rows[0].id,
+    assetId: aapl.rows[0].id,
+    date: "2026-03-20",
+    type: "BUY",
+    amount: 8411.9,
+    currency: "USD",
+    baseAmount: 39725,
+    fxRateToBase: 4.722,
+    quantity: 42,
+    pricePerUnit: 200.12,
+    grossAmount: 39710,
+    feeAmount: 15,
+    netAmount: 39725,
+    reference: "SEED-IBKR-AAPL-BUY-001",
+    notes: "US single-name equity allocation",
+  });
 
   await createNavWeek({
-    weekEnding: "2026-05-15",
-    platformSnapshots: [],
-    adjustments: 142000,
-    notes: "Loss adjustment and fees accrued",
+    weekEnding: "2026-03-20",
+    settlementDate: "2026-03-20",
+    platformSnapshots: [
+      { platformId: ibkr.rows[0].id, unrealizedProfit: 6420 },
+      { platformId: moomoo.rows[0].id, unrealizedProfit: 1180 },
+      { platformId: binance.rows[0].id, unrealizedProfit: 2650 },
+      { platformId: maybank.rows[0].id, unrealizedProfit: 0 },
+    ],
+    adjustments: 79000,
+    notes: "Growth week after secondary subscriptions and unallocated cash",
   });
-  const week3 = await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-05-15'`;
+  const week3 = await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-03-20'`;
   await lockNavWeek(week3.rows[0].id);
-  await recordCashMovement({ investorId: ben.rows[0].id, date: "2026-05-18", type: "Withdrawal", amount: 12000, notes: "Partial redemption" });
-  await recordFixedSavings({ investorId: alice.rows[0].id, date: "2026-05-04", type: "Deposit", amount: 15000, annualRatePercent: 3.65, notes: "Fixed savings placement" });
+  await recordCashMovement({ investorId: ben.rows[0].id, date: "2026-03-23", type: "Withdrawal", amount: 9000, notes: "Partial equity redemption" });
+  await recordCashMovement({ investorId: chandra.rows[0].id, date: "2026-03-23", type: "Deposit", amount: 12000, notes: "Top-up subscription" });
+  await recordFixedSavings({ investorId: alice.rows[0].id, date: "2026-03-24", type: "Withdrawal", amount: 4500, notes: "Partial fixed savings withdrawal" });
+  await insertPlatformTransaction({
+    platformId: ibkr.rows[0].id,
+    accountId: ibkrMargin.rows[0].id,
+    assetId: aapl.rows[0].id,
+    date: "2026-03-24",
+    type: "SELL",
+    amount: 4210.1,
+    currency: "USD",
+    baseAmount: 19875,
+    fxRateToBase: 4.72,
+    quantity: 20,
+    pricePerUnit: 210.5,
+    grossAmount: 19890,
+    feeAmount: 15,
+    netAmount: 19875,
+    realizedProfit: 1015,
+    reference: "SEED-IBKR-AAPL-SELL-001",
+    notes: "Partial AAPL profit realization",
+  });
+  await insertPlatformTransaction({
+    platformId: maybank.rows[0].id,
+    accountId: reserveCash.rows[0].id,
+    date: "2026-03-25",
+    type: "BROKER_DEPOSIT",
+    amount: 9500,
+    baseAmount: 9500,
+    reference: "SEED-RESERVE-FUNDING-002",
+    notes: "Brokerage fee and realized gain reserve",
+    allocations: [
+      { fundingSource: "brokerage", ratioPercent: 35, baseAmount: 3325 },
+      { fundingSource: "equity", ratioPercent: 65, baseAmount: 6175 },
+    ],
+  });
+
+  await createNavWeek({
+    weekEnding: "2026-03-27",
+    settlementDate: "2026-03-27",
+    platformSnapshots: [
+      { platformId: ibkr.rows[0].id, unrealizedProfit: 3925 },
+      { platformId: moomoo.rows[0].id, unrealizedProfit: 2340 },
+      { platformId: binance.rows[0].id, unrealizedProfit: -1120 },
+      { platformId: maybank.rows[0].id, unrealizedProfit: 0 },
+    ],
+    adjustments: 75825,
+    notes: "Mixed P/L week with one redemption and retained cash",
+  });
+  const week4 = await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-03-27'`;
+  await lockNavWeek(week4.rows[0].id);
+
+  const latestNav = await sql`
+    SELECT id, nav_per_unit
+    FROM nav_weeks
+    WHERE status = 'locked'
+    ORDER BY week_ending DESC
+    LIMIT 1
+  `;
+  const navPerUnit = parseFloat(latestNav.rows[0].nav_per_unit);
+  const aliceBonusAmount = 1250;
+  const aliceBonusUnits = issueUnitsForDeposit({ amount: aliceBonusAmount, navPerUnit });
+  const aliceBonusUnit = await sql`
+    INSERT INTO investor_unit_ledger (investor_id, nav_week_id, date, type, units, nav_per_unit, gross_amount, notes)
+    VALUES (${alice.rows[0].id}, ${latestNav.rows[0].id}, '2026-03-30', 'UnitIssue', ${aliceBonusUnits}, ${navPerUnit}, ${aliceBonusAmount}, 'Manager discretionary equity bonus')
+    RETURNING id
+  `;
+  const aliceBonus = await sql`
+    INSERT INTO bonus_payments (investor_id, ledger_type, source_id, amount, date, notes)
+    VALUES (${alice.rows[0].id}, 'equity', ${aliceBonusUnit.rows[0].id}, ${aliceBonusAmount}, '2026-03-30', 'Manager discretionary equity bonus')
+    RETURNING id
+  `;
+  const graceSavingsBonusLedger = await sql`
+    INSERT INTO fixed_savings_ledger (investor_id, date, type, amount, notes)
+    VALUES (${grace.rows[0].id}, '2026-03-30', 'Bonus', 380, 'Fixed savings loyalty bonus')
+    RETURNING id
+  `;
+  const graceBonus = await sql`
+    INSERT INTO bonus_payments (investor_id, ledger_type, source_id, amount, date, notes)
+    VALUES (${grace.rows[0].id}, 'fixed_savings', ${graceSavingsBonusLedger.rows[0].id}, 380, '2026-03-30', 'Fixed savings loyalty bonus')
+    RETURNING id
+  `;
+
+  await createNavWeek({
+    weekEnding: "2026-04-03",
+    settlementDate: "2026-04-03",
+    platformSnapshots: [
+      { platformId: ibkr.rows[0].id, unrealizedProfit: 7825 },
+      { platformId: moomoo.rows[0].id, unrealizedProfit: 3140 },
+      { platformId: binance.rows[0].id, unrealizedProfit: 4850 },
+      { platformId: maybank.rows[0].id, unrealizedProfit: 0 },
+    ],
+    adjustments: 77075,
+    notes: "Latest demo locked NAV with positive cross-platform P/L and retained cash",
+  });
+  const week5 = await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-04-03'`;
+  await lockNavWeek(week5.rows[0].id);
 
   await sql`
     INSERT INTO performance_fees (investor_id, nav_week_id, crystallized_gain, fee_rate_percent, fee_amount, date, notes)
-    VALUES (${ben.rows[0].id}, ${week3.rows[0].id}, 2000, 20, 400, '2026-05-18', 'Dummy crystallized performance fee')
+    VALUES
+      (${ben.rows[0].id}, ${week3.rows[0].id}, 1750, 2.0, 35, '2026-03-23', 'Withdrawal crystallized performance fee'),
+      (${chandra.rows[0].id}, ${week5.rows[0].id}, 2400, 2.0, 48, '2026-04-03', 'Quarterly realized gain fee accrual')
   `;
-  await writeAuditEvent("development.seed", "database", null, { seed: "weekly-unit-nav" });
+  await sql`
+    INSERT INTO investor_profit_claims (investor_id, locked_amount, settled_amount, brokerage_fee, status, claim_date, settled_date, notes)
+    VALUES
+      (${alice.rows[0].id}, 3200, 3136, 64, 'settled', '2026-03-31', '2026-04-02', 'March realized profit distribution'),
+      (${chandra.rows[0].id}, 1800, 900, 36, 'partial', '2026-04-01', '2026-04-03', 'Partial settlement for realized strategy profit'),
+      (${grace.rows[0].id}, 2100, 0, 42, 'pending', '2026-04-03', NULL, 'Pending approval for April profit cycle')
+  `;
+  await sql`
+    INSERT INTO capital_ledger (investor_id, date, type, amount, notes)
+    VALUES
+      (${alice.rows[0].id}, '2026-04-02', 'ProfitDistribution', 3136, 'Settled March profit claim net of brokerage fee'),
+      (${chandra.rows[0].id}, '2026-04-03', 'ProfitDistribution', 900, 'Partial profit claim settlement'),
+      (${alice.rows[0].id}, '2026-03-30', 'Bonus', 1250, 'Mirror entry for equity bonus visibility')
+  `;
+  await sql`
+    INSERT INTO cash_balances (account_name, current_balance)
+    VALUES
+      ('Maybank Operating Reserve', 34500),
+      ('IBKR USD Cash Equivalent', 18750),
+      ('Moomoo MYR Available Cash', 14820),
+      ('Binance USDT Available Cash', 6220)
+  `;
+  await sql`
+    INSERT INTO trading_ledger (date, platform, ticker, type, currency, price, quantity, amount_rm, profit_loss, date_closed, receipt_url)
+    VALUES
+      ('2026-03-13', 'Interactive Brokers', 'VOO', 'BUY', 'USD', 515.3000, 64, 155850.00, NULL, NULL, NULL),
+      ('2026-03-20', 'Interactive Brokers', 'AAPL', 'BUY', 'USD', 200.1200, 42, 39725.00, NULL, NULL, NULL),
+      ('2026-03-24', 'Interactive Brokers', 'AAPL', 'SELL', 'USD', 210.5000, 20, 19875.00, 1015.00, '2026-03-24', NULL),
+      ('2026-03-13', 'Moomoo Malaysia', 'MAYBANK', 'BUY', 'MYR', 10.0500, 3000, 30168.50, NULL, NULL, NULL),
+      ('2026-03-19', 'Binance Custody', 'BTC', 'BUY', 'USDT', 103990.0000, 0.0613, 30000.00, NULL, NULL, NULL)
+  `;
+  await writeAuditEvent("bonus_payment.add", "bonus_payments", aliceBonus.rows[0].id, {
+    investorId: alice.rows[0].id,
+    ledgerType: "equity",
+    amount: aliceBonusAmount,
+    seed: "development-demo",
+  });
+  await writeAuditEvent("bonus_payment.add", "bonus_payments", graceBonus.rows[0].id, {
+    investorId: grace.rows[0].id,
+    ledgerType: "fixed_savings",
+    amount: 380,
+    seed: "development-demo",
+  });
+  await writeAuditEvent("portal_access.rotate", "investors", alice.rows[0].id, { seed: "development-demo" });
+  await writeAuditEvent("development.seed", "database", null, {
+    seed: "complete-development-fund",
+    investors: 5,
+    platforms: 4,
+    lockedNavWeeks: 5,
+    portalAccessIds: [
+      "demo-alice-tan-2026",
+      "demo-ben-lim-2026",
+      "demo-chandra-kumar-2026",
+      "demo-farah-rahman-2026",
+      "demo-grace-wong-2026",
+    ],
+  });
+  await sql`
+    INSERT INTO portal_access_events (investor_id, portal_access_hash, client_key, user_agent, outcome)
+    VALUES
+      (${alice.rows[0].id}, ${hashPortalAccessId("demo-alice-tan-2026")}, 'seed-browser', 'Development seed import', 'success'),
+      (${ben.rows[0].id}, ${hashPortalAccessId("demo-ben-lim-2026")}, 'seed-browser', 'Development seed import', 'success'),
+      (NULL, ${hashPortalAccessId("invalid-demo-token")}, 'seed-browser', 'Development seed import', 'not_found')
+  `;
 }
