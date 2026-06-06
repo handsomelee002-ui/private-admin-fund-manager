@@ -133,3 +133,57 @@
                       radial-gradient(circle at bottom left, oklch(0.96 0.01 250), transparent 50%);
   }
 }
+
+@layer components {
+  .admin-sidebar {
+    width: 16rem;
+  }
+
+  .admin-sidebar-logo {
+    justify-content: flex-start;
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+
+  .admin-sidebar-nav {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .admin-sidebar-link {
+    justify-content: flex-start;
+  }
+
+  .admin-sidebar-icon {
+    margin-right: 0.75rem;
+  }
+
+  @media (max-width: 767px) {
+    .admin-sidebar {
+      width: 4rem;
+    }
+
+    .admin-sidebar-logo {
+      justify-content: center;
+      padding-left: 0.5rem;
+      padding-right: 0.5rem;
+    }
+
+    .admin-sidebar-nav {
+      padding-left: 0.5rem;
+      padding-right: 0.5rem;
+    }
+
+    .admin-sidebar-link {
+      justify-content: center;
+    }
+
+    .admin-sidebar-icon {
+      margin-right: 0;
+    }
+
+    .admin-sidebar-label {
+      display: none;
+    }
+  }
+}

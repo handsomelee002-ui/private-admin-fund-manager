@@ -2,7 +2,7 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { calculateFixedSavingsLiability, ensureAuditColumns, writeAuditEvent } from "@/lib/fundDb";
+import { calculateFixedSavingsLiability, ensureAuditColumns, getFixedSavingsRateInputs, writeAuditEvent } from "@/lib/fundDb";
 import { requireAdmin } from "@/lib/auth";
 import {
   BASE_CURRENCY,
@@ -281,7 +281,7 @@ export async function getPlatforms() {
 }
 
 async function getCapitalAllocationBasis() {
-  const [summary, savings, bonusPayments, deployed] = await Promise.all([
+  const [summary, savings, bonusPayments, deployed, rateInput] = await Promise.all([
     sql`
       WITH latest_nav AS (
         SELECT id, net_asset_value
@@ -316,7 +316,7 @@ async function getCapitalAllocationBasis() {
         ), 0) as brokerage_profit_loss
     `,
     sql`
-      SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+      SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM fixed_savings_ledger
       WHERE audit_status = 'active'
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
@@ -327,9 +327,10 @@ async function getCapitalAllocationBasis() {
       WHERE audit_status = 'active'
     `.catch(() => ({ rows: [{ total: 0 }] })),
     getPlatformSourceBalances(),
+    getFixedSavingsRateInputs(),
   ]);
 
-  const fixedSavings = calculateFixedSavingsLiability(savings.rows as any[]);
+  const fixedSavings = calculateFixedSavingsLiability(savings.rows as any[], undefined, rateInput);
   const row = summary.rows[0] ?? {};
   const brokerageBalance = roundMoney(
     parseFloat(row.brokerage_profit_loss || "0")

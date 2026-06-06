@@ -7,7 +7,7 @@ import {
   getAllBonusPayments,
   deleteBonusPayment,
 } from "@/actions/settings";
-import { calculateFixedSavingsLiability } from "@/lib/fundDb";
+import { calculateFixedSavingsLiability, getFixedSavingsRateInputs } from "@/lib/fundDb";
 import { getInvestors } from "@/actions/investors";
 import { BrokerageFeeConfig } from "@/components/BrokerageFeeConfig";
 import { AddBonusForm } from "@/components/AddBonusForm";
@@ -36,6 +36,7 @@ export default async function BrokeragePage({
     brokeragePnlRes,
     withdrawalFeesRes,
     fsRows,
+    fixedSavingsRates,
     bonusPayments,
     investors,
   ] = await Promise.all([
@@ -58,10 +59,11 @@ export default async function BrokeragePage({
       WHERE audit_status <> 'reverted'
     `, { route: "/brokerage" }).catch(() => null),
     timeAsync("route.brokerage.fixedSavingsRowsQuery", () => sql`
-      SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+      SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM fixed_savings_ledger
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
     `, { route: "/brokerage" }),
+    timeAsync("route.brokerage.getFixedSavingsRateInputs", () => getFixedSavingsRateInputs(), { route: "/brokerage" }),
     timeAsync("route.brokerage.getAllBonusPayments", () => getAllBonusPayments(), { route: "/brokerage" }),
     timeAsync("route.brokerage.getInvestors", () => getInvestors(), { route: "/brokerage" }),
   ]);
@@ -71,7 +73,7 @@ export default async function BrokeragePage({
 
   const brokerageFeeEarned = withdrawalBrokerageEarned;
 
-  const fixedSavingsLiability = calculateFixedSavingsLiability(fsRows.rows as any[]);
+  const fixedSavingsLiability = calculateFixedSavingsLiability(fsRows.rows as any[], undefined, fixedSavingsRates);
   const totalInterestOwed = fixedSavingsLiability.accruedInterest;
 
   const sortedBonusPayments = sortRows(bonusPayments, sortState, {

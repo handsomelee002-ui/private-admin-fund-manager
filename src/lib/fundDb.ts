@@ -1,8 +1,6 @@
 import { sql } from "@vercel/postgres";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
-  accrueDailyCompoundInterest,
-  allocateFixedSavingsWithdrawal,
   calculateBrokerageFundingAllocation,
   calculateNavPerUnit,
   calculateOwnershipPercent,
@@ -43,6 +41,7 @@ type FixedSavingsLedgerRow = {
   investor_id?: string;
   id?: string;
   account_id?: string | null;
+  withdrawal_batch_id?: string | null;
   date: string;
   type: string;
   amount: string | number;
@@ -65,8 +64,31 @@ type FixedSavingsInput = {
   date: string;
   type: "Deposit" | "Withdrawal";
   amount: number;
-  annualRatePercent?: number | null;
   notes?: string;
+};
+
+export type FixedSavingsBaseRateRow = {
+  id?: string;
+  effective_date: string;
+  annual_rate_percent: string | number;
+  created_at?: string;
+};
+
+export type FixedSavingsPromotionRow = {
+  id?: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  annual_rate_percent: string | number;
+  balance_cap?: string | number | null;
+  status: string;
+  notes?: string | null;
+  created_at?: string;
+};
+
+export type FixedSavingsRateInput = {
+  baseRates: FixedSavingsBaseRateRow[];
+  promotions: FixedSavingsPromotionRow[];
 };
 
 type PortalAccessMeta = {
@@ -97,8 +119,96 @@ type SeedPlatformTransactionInput = {
   allocations?: { fundingSource: "equity" | "fixed_savings" | "brokerage"; ratioPercent: number; baseAmount: number }[];
 };
 
+function calculateCurrentEquityNav(latestNav: any, totalUnits: number) {
+  if (!latestNav) return 0;
+  return roundMoney(totalUnits * parseFloat(latestNav.nav_per_unit || "0"));
+}
+
+function fixedSavingsActivityRow(movement: any) {
+  return {
+    id: `savings-${movement.id}`,
+    date: movement.date,
+    category: "Fixed Savings",
+    type: movement.type,
+    amount: parseFloat(movement.amount || "0"),
+    units: null,
+    navPerUnit: null,
+    annualRatePercent: movement.type === "Deposit" && movement.effective_annual_rate_percent != null
+      ? parseFloat(movement.effective_annual_rate_percent || "0")
+      : null,
+    notes: movement.notes,
+    auditStatus: movement.audit_status,
+    createdAt: movement.created_at,
+  };
+}
+
+function fixedSavingsActivityLedger(rows: any[]) {
+  const groupedWithdrawals = new Map<string, any>();
+  const activityRows: any[] = [];
+
+  for (const movement of rows.filter((row: any) => row.type !== "Bonus")) {
+    if (movement.type !== "Withdrawal" || !movement.withdrawal_batch_id) {
+      activityRows.push(fixedSavingsActivityRow(movement));
+      continue;
+    }
+
+    const key = String(movement.withdrawal_batch_id);
+    const existing = groupedWithdrawals.get(key);
+    if (!existing) {
+      groupedWithdrawals.set(key, {
+        ...fixedSavingsActivityRow(movement),
+        id: `savings-withdrawal-${key}`,
+        amount: roundMoney(parseFloat(movement.amount || "0")),
+      });
+      continue;
+    }
+
+    existing.amount = roundMoney(existing.amount + parseFloat(movement.amount || "0"));
+    if (String(movement.created_at || "") > String(existing.createdAt || "")) {
+      existing.createdAt = movement.created_at;
+    }
+  }
+
+  return [...activityRows, ...groupedWithdrawals.values()];
+}
+
+function fixedSavingsLedgerRows(rows: any[]) {
+  const groupedWithdrawals = new Map<string, any>();
+  const ledgerRows: any[] = [];
+
+  for (const movement of rows) {
+    if (movement.type !== "Withdrawal" || !movement.withdrawal_batch_id) {
+      ledgerRows.push(movement);
+      continue;
+    }
+
+    const key = String(movement.withdrawal_batch_id);
+    const existing = groupedWithdrawals.get(key);
+    if (!existing) {
+      groupedWithdrawals.set(key, {
+        ...movement,
+        id: `fixed-savings-withdrawal-${key}`,
+        amount: roundMoney(parseFloat(movement.amount || "0")),
+      });
+      continue;
+    }
+
+    existing.amount = roundMoney(existing.amount + parseFloat(movement.amount || "0"));
+    if (String(movement.created_at || "") > String(existing.created_at || "")) {
+      existing.created_at = movement.created_at;
+    }
+  }
+
+  return [...ledgerRows, ...groupedWithdrawals.values()].sort((a: any, b: any) => {
+    const dateOrder = String(b.date).localeCompare(String(a.date));
+    if (dateOrder !== 0) return dateOrder;
+    return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+  });
+}
+
 const todayIso = () => new Date().toISOString().slice(0, 10);
 const DEFAULT_BROKERAGE_FEE_RATE = "2.0";
+const DEFAULT_FIXED_SAVINGS_RATE = "4.0";
 const RESETTABLE_FINANCIAL_TABLES = BACKUP_TABLES;
 const PORTAL_ACCESS_WINDOW_MINUTES = 15;
 const PORTAL_ACCESS_MAX_REQUESTS = 120;
@@ -131,6 +241,7 @@ async function resetFundConfigDefaults() {
     VALUES ('brokerage_fee_pct', ${DEFAULT_BROKERAGE_FEE_RATE}, NOW())
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
   `;
+  await ensureFixedSavingsRateTables();
 }
 
 function ledgerAmount(row: FixedSavingsLedgerRow) {
@@ -144,6 +255,7 @@ function ledgerRate(row: FixedSavingsLedgerRow, fallback = 0) {
 
 let auditColumnsPromise: Promise<void> | null = null;
 let investorPortalAccessColumnsPromise: Promise<void> | null = null;
+let fixedSavingsRateTablesPromise: Promise<void> | null = null;
 
 function runOnce(current: Promise<void> | null, setCurrent: (promise: Promise<void> | null) => void, work: () => Promise<void>) {
   if (current) return current;
@@ -156,6 +268,7 @@ function runOnce(current: Promise<void> | null, setCurrent: (promise: Promise<vo
 }
 
 async function ensureAuditColumnsUncached() {
+  await ensureFixedSavingsRateTables();
   await sql`
     CREATE TABLE IF NOT EXISTS audit_events (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -174,6 +287,7 @@ async function ensureAuditColumnsUncached() {
   await sql`ALTER TABLE cash_movements ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
   await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
+  await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS withdrawal_batch_id UUID`;
   await sql`ALTER TABLE fixed_savings_ledger DROP CONSTRAINT IF EXISTS fixed_savings_ledger_type_check`;
   await sql`ALTER TABLE fixed_savings_ledger ADD CONSTRAINT fixed_savings_ledger_type_check CHECK (type IN ('Deposit', 'Withdrawal', 'Bonus', 'InterestWithdrawal'))`;
   await sql`ALTER TABLE performance_fees ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
@@ -197,12 +311,82 @@ async function ensureAuditColumnsUncached() {
   await sql`CREATE INDEX IF NOT EXISTS investor_unit_ledger_latest_active_idx ON investor_unit_ledger (investor_id, date DESC, created_at DESC) WHERE audit_status = 'active'`;
   await sql`CREATE INDEX IF NOT EXISTS fixed_savings_account_latest_active_idx ON fixed_savings_ledger (account_id, date DESC, created_at DESC) WHERE audit_status = 'active' AND account_id IS NOT NULL`;
   await sql`CREATE INDEX IF NOT EXISTS fixed_savings_legacy_latest_active_idx ON fixed_savings_ledger (investor_id, date DESC, created_at DESC) WHERE audit_status = 'active' AND account_id IS NULL`;
+  await sql`CREATE INDEX IF NOT EXISTS fixed_savings_withdrawal_batch_idx ON fixed_savings_ledger (withdrawal_batch_id, date DESC, created_at DESC) WHERE withdrawal_batch_id IS NOT NULL`;
 }
 
 export async function ensureAuditColumns() {
   return runOnce(auditColumnsPromise, (promise) => {
     auditColumnsPromise = promise;
   }, ensureAuditColumnsUncached);
+}
+
+async function ensureFixedSavingsRateTablesUncached() {
+  await sql`
+    CREATE TABLE IF NOT EXISTS fixed_savings_base_rates (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      effective_date DATE NOT NULL UNIQUE,
+      annual_rate_percent NUMERIC(8, 4) NOT NULL CHECK (annual_rate_percent >= 0 AND annual_rate_percent <= 100),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS fixed_savings_promotions (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      name TEXT NOT NULL,
+      start_date DATE NOT NULL,
+      end_date DATE NOT NULL,
+      annual_rate_percent NUMERIC(8, 4) NOT NULL CHECK (annual_rate_percent >= 0 AND annual_rate_percent <= 100),
+      balance_cap NUMERIC(15, 4),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+      notes TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      CHECK (end_date >= start_date),
+      CHECK (balance_cap IS NULL OR balance_cap > 0)
+    );
+  `;
+  await sql`
+    INSERT INTO fixed_savings_base_rates (effective_date, annual_rate_percent)
+    VALUES ('1970-01-01', ${DEFAULT_FIXED_SAVINGS_RATE})
+    ON CONFLICT (effective_date) DO NOTHING
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS fixed_savings_base_rates_effective_date_idx ON fixed_savings_base_rates (effective_date DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS fixed_savings_promotions_active_period_idx ON fixed_savings_promotions (start_date, end_date) WHERE status = 'active'`;
+}
+
+export async function ensureFixedSavingsRateTables() {
+  return runOnce(fixedSavingsRateTablesPromise, (promise) => {
+    fixedSavingsRateTablesPromise = promise;
+  }, ensureFixedSavingsRateTablesUncached);
+}
+
+export async function getFixedSavingsRateInputs(): Promise<FixedSavingsRateInput> {
+  await ensureFixedSavingsRateTables();
+  const [baseRates, promotions] = await Promise.all([
+    sql`
+      SELECT id, TO_CHAR(effective_date, 'YYYY-MM-DD') as effective_date, annual_rate_percent, created_at
+      FROM fixed_savings_base_rates
+      ORDER BY effective_date ASC, created_at ASC
+    `,
+    sql`
+      SELECT id, name, TO_CHAR(start_date, 'YYYY-MM-DD') as start_date, TO_CHAR(end_date, 'YYYY-MM-DD') as end_date,
+        annual_rate_percent, balance_cap, status, notes, created_at
+      FROM fixed_savings_promotions
+      ORDER BY start_date DESC, created_at DESC
+    `,
+  ]);
+  return {
+    baseRates: baseRates.rows as FixedSavingsBaseRateRow[],
+    promotions: promotions.rows as FixedSavingsPromotionRow[],
+  };
+}
+
+export async function getFixedSavingsRateSettings() {
+  const rateInput = await getFixedSavingsRateInputs();
+  const today = todayIso();
+  return {
+    ...rateInput,
+    currentBaseRate: baseRateForDate(today, normalizeFixedSavingsRates(rateInput).baseRates, Number(DEFAULT_FIXED_SAVINGS_RATE)),
+  };
 }
 
 function calculateEquityCapitalPosition(rows: EquityUnitLedgerRow[]) {
@@ -237,95 +421,200 @@ async function getBrokerageFeeRateValue() {
   return parseFloat(res.rows[0]?.value ?? DEFAULT_BROKERAGE_FEE_RATE);
 }
 
-export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], endDate = todayIso()) {
-  const orderedRows = [...rows].sort((a, b) => {
+function addDaysIso(date: string, days: number) {
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function normalizeFixedSavingsRates(rateInput?: FixedSavingsRateInput) {
+  const baseRates = (rateInput?.baseRates.length ? rateInput.baseRates : [{ effective_date: "1970-01-01", annual_rate_percent: DEFAULT_FIXED_SAVINGS_RATE }])
+    .map((rate) => ({
+      effectiveDate: String(rate.effective_date),
+      annualRatePercent: Number(rate.annual_rate_percent || 0),
+    }))
+    .filter((rate) => Number.isFinite(rate.annualRatePercent) && rate.annualRatePercent >= 0)
+    .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
+  const promotions = (rateInput?.promotions ?? [])
+    .filter((promotion) => promotion.status === "active")
+    .map((promotion) => ({
+      startDate: String(promotion.start_date),
+      endDate: String(promotion.end_date),
+      annualRatePercent: Number(promotion.annual_rate_percent || 0),
+      balanceCap: promotion.balance_cap == null ? null : Number(promotion.balance_cap),
+    }))
+    .filter((promotion) => Number.isFinite(promotion.annualRatePercent) && promotion.annualRatePercent >= 0)
+    .sort((a, b) => a.startDate.localeCompare(b.startDate));
+  return { baseRates, promotions };
+}
+
+function baseRateForDate(date: string, baseRates: ReturnType<typeof normalizeFixedSavingsRates>["baseRates"], fallbackRate: number) {
+  let rate = Number.isFinite(fallbackRate) && fallbackRate > 0 ? fallbackRate : Number(DEFAULT_FIXED_SAVINGS_RATE);
+  for (const baseRate of baseRates) {
+    if (baseRate.effectiveDate <= date) rate = baseRate.annualRatePercent;
+    else break;
+  }
+  return rate;
+}
+
+function promotionForDate(date: string, promotions: ReturnType<typeof normalizeFixedSavingsRates>["promotions"]) {
+  return promotions.find((promotion) => promotion.startDate <= date && promotion.endDate >= date) ?? null;
+}
+
+function accruePooledNominalInterest({
+  balance,
+  startDate,
+  endDate,
+  fallbackRate,
+  rateInput,
+}: {
+  balance: number;
+  startDate: string;
+  endDate: string;
+  fallbackRate: number;
+  rateInput?: FixedSavingsRateInput;
+}) {
+  if (balance <= 0 || startDate >= endDate) return { balance, interest: 0 };
+  const rates = normalizeFixedSavingsRates(rateInput);
+  let currentDate = startDate;
+  let currentBalance = balance;
+  let totalInterest = 0;
+
+  while (currentDate < endDate) {
+    const baseRate = baseRateForDate(currentDate, rates.baseRates, fallbackRate);
+    const promotion = promotionForDate(currentDate, rates.promotions);
+    const baseDailyRate = baseRate / 100 / 365;
+    let dailyInterest = currentBalance * baseDailyRate;
+
+    if (promotion) {
+      const promotedBalance = promotion.balanceCap == null
+        ? currentBalance
+        : Math.min(currentBalance, promotion.balanceCap);
+      const standardBalance = Math.max(0, currentBalance - promotedBalance);
+      dailyInterest = (promotedBalance * (promotion.annualRatePercent / 100 / 365)) + (standardBalance * baseDailyRate);
+    }
+
+    currentBalance += dailyInterest;
+    totalInterest += dailyInterest;
+    currentDate = addDaysIso(currentDate, 1);
+  }
+
+  return { balance: roundMoney(currentBalance), interest: roundMoney(totalInterest) };
+}
+
+export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], endDate = todayIso(), rateInput?: FixedSavingsRateInput) {
+  const orderedRows = [...rows].filter((row) => row.audit_status !== "reverted").sort((a, b) => {
     const dateOrder = String(a.date).localeCompare(String(b.date));
     if (dateOrder !== 0) return dateOrder;
     return String(a.id || "").localeCompare(String(b.id || ""));
   });
-  const accountInterestState = new Map<string, { balance: number; annualRatePercent: number; accruedThrough: string }>();
-  const investorSummaries = new Map<string, { principal: number; accruedInterest: number; bonusPayable: number }>();
+  const withdrawalBatches = new Map<string, FixedSavingsLedgerRow & { amount: number }>();
+  const transactions: FixedSavingsLedgerRow[] = [];
+
+  for (const row of orderedRows) {
+    if (row.type === "Withdrawal" && row.withdrawal_batch_id) {
+      const existing = withdrawalBatches.get(row.withdrawal_batch_id);
+      if (existing) {
+        existing.amount = roundMoney(existing.amount + ledgerAmount(row));
+      } else {
+        withdrawalBatches.set(row.withdrawal_batch_id, { ...row, amount: ledgerAmount(row), account_id: null });
+      }
+      continue;
+    }
+    transactions.push(row);
+  }
+
+  transactions.push(...withdrawalBatches.values());
+  transactions.sort((a, b) => {
+    const dateOrder = String(a.date).localeCompare(String(b.date));
+    if (dateOrder !== 0) return dateOrder;
+    return String(a.id || "").localeCompare(String(b.id || ""));
+  });
+
+  const investorStates = new Map<string, { principal: number; accruedInterest: number; bonusPayable: number; balance: number; accruedThrough: string; fallbackRate: number }>();
+
+  function stateFor(row: FixedSavingsLedgerRow) {
+    const investorId = row.investor_id || "fund";
+    const existing = investorStates.get(investorId);
+    if (existing) return existing;
+    const state = {
+      principal: 0,
+      accruedInterest: 0,
+      bonusPayable: 0,
+      balance: 0,
+      accruedThrough: row.date,
+      fallbackRate: ledgerRate(row),
+    };
+    investorStates.set(investorId, state);
+    return state;
+  }
+
+  function accrueState(state: { principal: number; accruedInterest: number; balance: number; accruedThrough: string; fallbackRate: number }, date: string) {
+    const result = accruePooledNominalInterest({
+      balance: state.balance,
+      startDate: state.accruedThrough,
+      endDate: date,
+      fallbackRate: state.fallbackRate,
+      rateInput,
+    });
+    state.balance = result.balance;
+    state.accruedInterest = roundMoney(state.accruedInterest + result.interest);
+    state.accruedThrough = date;
+  }
+
+  function reduceState(state: { principal: number; accruedInterest: number; bonusPayable: number; balance: number }, amount: number) {
+    let remaining = roundMoney(amount);
+    const interestReduction = Math.min(remaining, state.accruedInterest);
+    state.accruedInterest = roundMoney(state.accruedInterest - interestReduction);
+    remaining = roundMoney(remaining - interestReduction);
+
+    const principalReduction = Math.min(remaining, state.principal);
+    state.principal = roundMoney(state.principal - principalReduction);
+    remaining = roundMoney(remaining - principalReduction);
+
+    const bonusReduction = Math.min(remaining, state.bonusPayable);
+    state.bonusPayable = roundMoney(state.bonusPayable - bonusReduction);
+    state.balance = roundMoney(Math.max(0, state.balance - amount));
+  }
+
+  for (const row of transactions) {
+    const state = stateFor(row);
+    accrueState(state, row.date);
+    const amount = ledgerAmount(row);
+
+    if (row.type === "Deposit") {
+      state.principal = roundMoney(state.principal + amount);
+      state.balance = roundMoney(state.balance + amount);
+      const rowRate = ledgerRate(row);
+      if (rowRate > 0) state.fallbackRate = rowRate;
+    } else if (row.type === "Withdrawal" || row.type === "InterestWithdrawal") {
+      reduceState(state, amount);
+    } else if (row.type === "Bonus") {
+      state.bonusPayable = roundMoney(state.bonusPayable + amount);
+      state.balance = roundMoney(state.balance + amount);
+    }
+  }
+
+  for (const state of investorStates.values()) {
+    accrueState(state, endDate);
+  }
+
   let principal = 0;
   let accruedInterest = 0;
   let bonusPayable = 0;
+  const byInvestor = new Map<string, { principal: number; accruedInterest: number; bonusPayable: number; payableInterest: number; totalLiability: number }>();
 
-  function investorSummary(investorId: string | undefined) {
-    if (!investorId) return null;
-    const existing = investorSummaries.get(investorId) ?? { principal: 0, accruedInterest: 0, bonusPayable: 0 };
-    investorSummaries.set(investorId, existing);
-    return existing;
-  }
-
-  function applyInterestWithdrawal(amount: number, summary: { accruedInterest: number; bonusPayable: number } | null) {
-    const accruedReduction = Math.min(amount, accruedInterest);
-    accruedInterest = roundMoney(accruedInterest - accruedReduction);
-    if (summary) summary.accruedInterest = roundMoney(summary.accruedInterest - Math.min(amount, summary.accruedInterest));
-
-    const remaining = roundMoney(amount - accruedReduction);
-    if (remaining <= 0) return;
-
-    const bonusReduction = Math.min(remaining, bonusPayable);
-    bonusPayable = roundMoney(bonusPayable - bonusReduction);
-    if (summary) summary.bonusPayable = roundMoney(summary.bonusPayable - Math.min(remaining, summary.bonusPayable));
-  }
-
-  for (const movement of orderedRows) {
-    const amount = ledgerAmount(movement);
-    const accountKey = movement.account_id || `legacy:${movement.investor_id || "fund"}`;
-    const state = accountInterestState.get(accountKey) ?? {
-      balance: 0,
-      annualRatePercent: ledgerRate(movement),
-      accruedThrough: movement.date,
-    };
-    const summary = investorSummary(movement.investor_id);
-
-    if (state.balance > 0 && state.annualRatePercent > 0) {
-      const interest = accrueDailyCompoundInterest({
-        principal: state.balance,
-        annualRatePercent: state.annualRatePercent,
-        startDate: state.accruedThrough,
-        endDate: movement.date,
-      });
-      accruedInterest += interest;
-      if (summary) summary.accruedInterest += interest;
-    }
-
-    state.accruedThrough = movement.date;
-    if (movement.type === "Deposit") {
-      state.balance += amount;
-      state.annualRatePercent = ledgerRate(movement, state.annualRatePercent);
-      principal += amount;
-      if (summary) summary.principal += amount;
-    } else if (movement.type === "Withdrawal") {
-      const withdrawal = Math.min(amount, state.balance);
-      state.balance = Math.max(0, state.balance - amount);
-      principal -= withdrawal;
-      if (summary) summary.principal -= withdrawal;
-      const interestWithdrawal = roundMoney(amount - withdrawal);
-      if (interestWithdrawal > 0) {
-        applyInterestWithdrawal(interestWithdrawal, summary);
-      }
-    } else if (movement.type === "Bonus") {
-      bonusPayable += amount;
-      if (summary) summary.bonusPayable += amount;
-    } else if (movement.type === "InterestWithdrawal") {
-      applyInterestWithdrawal(amount, summary);
-    }
-    accountInterestState.set(accountKey, state);
-  }
-
-  for (const [accountKey, state] of accountInterestState.entries()) {
-    if (state.balance <= 0 || state.annualRatePercent <= 0) continue;
-    const interest = accrueDailyCompoundInterest({
-      principal: state.balance,
-      annualRatePercent: state.annualRatePercent,
-      startDate: state.accruedThrough,
-      endDate,
+  for (const [investorId, state] of investorStates.entries()) {
+    principal = roundMoney(principal + state.principal);
+    accruedInterest = roundMoney(accruedInterest + state.accruedInterest);
+    bonusPayable = roundMoney(bonusPayable + state.bonusPayable);
+    byInvestor.set(investorId, {
+      principal: roundMoney(state.principal),
+      accruedInterest: roundMoney(state.accruedInterest),
+      bonusPayable: roundMoney(state.bonusPayable),
+      payableInterest: roundMoney(state.accruedInterest + state.bonusPayable),
+      totalLiability: roundMoney(state.balance),
     });
-    accruedInterest += interest;
-    const investorId = accountKey.startsWith("legacy:") ? accountKey.split(":")[1] : orderedRows.find((row) => row.account_id === accountKey)?.investor_id;
-    const summary = investorSummary(investorId);
-    if (summary) summary.accruedInterest += interest;
   }
 
   return {
@@ -333,19 +622,8 @@ export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], en
     accruedInterest: roundMoney(accruedInterest),
     bonusPayable: roundMoney(bonusPayable),
     payableInterest: roundMoney(accruedInterest + bonusPayable),
-    totalLiability: roundMoney(principal + accruedInterest + bonusPayable),
-    byInvestor: new Map(
-      [...investorSummaries.entries()].map(([investorId, summary]) => [
-        investorId,
-        {
-          principal: roundMoney(summary.principal),
-          accruedInterest: roundMoney(summary.accruedInterest),
-          bonusPayable: roundMoney(summary.bonusPayable),
-          payableInterest: roundMoney(summary.accruedInterest + summary.bonusPayable),
-          totalLiability: roundMoney(summary.principal + summary.accruedInterest + summary.bonusPayable),
-        },
-      ]),
-    ),
+    totalLiability: roundMoney([...byInvestor.values()].reduce((sum, item) => sum + item.totalLiability, 0)),
+    byInvestor,
   };
 }
 
@@ -428,6 +706,7 @@ async function writePortalAccessEvent({
 }
 
 export async function ensureFreshFundSchema() {
+  await ensureFixedSavingsRateTables();
   await sql`
     CREATE TABLE IF NOT EXISTS investors (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -528,6 +807,7 @@ export async function ensureFreshFundSchema() {
   await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS account_id UUID REFERENCES fixed_savings_accounts(id) ON DELETE CASCADE`;
   await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS annual_rate_percent NUMERIC(8, 4)`;
   await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS interest_rate NUMERIC(8, 4) DEFAULT NULL`;
+  await sql`ALTER TABLE fixed_savings_ledger ADD COLUMN IF NOT EXISTS withdrawal_batch_id UUID`;
   await sql`ALTER TABLE fixed_savings_ledger DROP CONSTRAINT IF EXISTS fixed_savings_ledger_type_check`;
   await sql`ALTER TABLE fixed_savings_ledger ADD CONSTRAINT fixed_savings_ledger_type_check CHECK (type IN ('Deposit', 'Withdrawal', 'Bonus', 'InterestWithdrawal'))`;
   await sql`
@@ -1088,87 +1368,38 @@ export async function recordCashMovement(input: CashMovementInput) {
 
 export async function recordFixedSavings(input: FixedSavingsInput) {
   await ensureAuditColumns();
-  let accountId: string | null = null;
-  let withdrawals: { principal: { id: string; amount: number }[]; interest: number } = { principal: [], interest: 0 };
-  if (input.type === "Deposit") {
-    const account = await sql`
-      INSERT INTO fixed_savings_accounts (investor_id, opened_at, annual_rate_percent)
-      VALUES (${input.investorId}, ${input.date}, ${input.annualRatePercent || 0})
-      RETURNING id
-    `;
-    accountId = account.rows[0].id;
-  } else {
-    const accounts = await sql`
-      SELECT fsa.id,
-        COALESCE(SUM(CASE WHEN fsl.type = 'Deposit' THEN fsl.amount WHEN fsl.type = 'Withdrawal' THEN -fsl.amount ELSE 0 END), 0) as balance
-      FROM fixed_savings_accounts fsa
-      LEFT JOIN fixed_savings_ledger fsl ON fsl.account_id = fsa.id AND fsl.audit_status = 'active'
-      WHERE fsa.investor_id = ${input.investorId} AND fsa.status = 'active'
-      GROUP BY fsa.id, fsa.opened_at
-      HAVING COALESCE(SUM(CASE WHEN fsl.type = 'Deposit' THEN fsl.amount WHEN fsl.type = 'Withdrawal' THEN -fsl.amount ELSE 0 END), 0) > 0
-      ORDER BY fsa.opened_at ASC
-    `;
+  const ledgerIds: string[] = [];
+
+  if (input.type === "Withdrawal") {
     const savingsRows = await sql`
-      SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+      SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM fixed_savings_ledger
       WHERE investor_id = ${input.investorId}
         AND audit_status = 'active'
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
     `;
-    const savingsSummary = calculateFixedSavingsLiability(savingsRows.rows as FixedSavingsLedgerRow[], input.date);
-    withdrawals = allocateFixedSavingsWithdrawal({
-      accounts: accounts.rows.map((account: any) => ({
-        id: account.id,
-        balance: parseFloat(account.balance || "0"),
-      })),
-      amount: input.amount,
-      interestBalance: savingsSummary.payableInterest,
-    });
-    accountId = withdrawals.principal[0]?.id ?? null;
-  }
+    const rateInput = await getFixedSavingsRateInputs();
+    const savingsSummary = calculateFixedSavingsLiability(savingsRows.rows as FixedSavingsLedgerRow[], input.date, rateInput);
+    if (input.amount > savingsSummary.totalLiability + 0.005) {
+      throw new Error(`Withdrawal exceeds available fixed savings balance of RM ${savingsSummary.totalLiability.toFixed(2)}.`);
+    }
 
-  const ledgerIds: string[] = [];
-  if (input.type === "Withdrawal") {
-    for (const withdrawal of withdrawals.principal) {
-      const ledger = await sql`
-        INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, annual_rate_percent, notes)
-        VALUES (${withdrawal.id}, ${input.investorId}, ${input.date}, ${input.type}, ${withdrawal.amount}, ${input.annualRatePercent ?? null}, ${input.notes || ""})
-        RETURNING id
-      `;
-      ledgerIds.push(ledger.rows[0].id);
-    }
-    if (withdrawals.interest > 0) {
-      const ledger = await sql`
-        INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, annual_rate_percent, notes)
-        VALUES (${null}, ${input.investorId}, ${input.date}, ${input.type}, ${withdrawals.interest}, ${input.annualRatePercent ?? null}, ${input.notes || ""})
-        RETURNING id
-      `;
-      ledgerIds.push(ledger.rows[0].id);
-    }
+    const ledger = await sql`
+      INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, notes, withdrawal_batch_id)
+      VALUES (${null}, ${input.investorId}, ${input.date}, ${input.type}, ${input.amount}, ${input.notes || ""}, ${randomUUID()})
+      RETURNING id
+    `;
+    ledgerIds.push(ledger.rows[0].id);
   } else {
     const ledger = await sql`
-      INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, annual_rate_percent, notes)
-      VALUES (${accountId}, ${input.investorId}, ${input.date}, ${input.type}, ${input.amount}, ${input.annualRatePercent ?? null}, ${input.notes || ""})
+      INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, notes)
+      VALUES (${null}, ${input.investorId}, ${input.date}, ${input.type}, ${input.amount}, ${input.notes || ""})
       RETURNING id
     `;
     ledgerIds.push(ledger.rows[0].id);
   }
 
-  for (const withdrawal of withdrawals.principal) {
-    await sql`
-      UPDATE fixed_savings_accounts
-      SET status = 'closed'
-      WHERE id = ${withdrawal.id}
-        AND (
-          SELECT COALESCE(SUM(CASE WHEN type = 'Deposit' THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END), 0)
-          FROM fixed_savings_ledger
-          WHERE account_id = ${withdrawal.id}
-            AND audit_status = 'active'
-        ) <= 0
-    `;
-  }
   await writeAuditEvent("fixed_savings.add", "fixed_savings_ledger", ledgerIds[0], {
-    accountId,
     investorId: input.investorId,
     type: input.type,
     amount: input.amount,
@@ -1201,14 +1432,14 @@ export async function getFixedSavingsLedger() {
     WHERE fsl.audit_status = 'active'
     ORDER BY fsl.date DESC, fsl.created_at DESC
   `;
-  return res.rows;
+  return fixedSavingsLedgerRows(res.rows);
 }
 
 export async function getInvestorsWithBalances() {
   await requireAdmin();
   await ensureAuditColumns();
   await ensureInvestorPortalAccessColumns();
-  const [res, savings, equityLedger] = await Promise.all([
+  const [res, savings, equityLedger, rateInput] = await Promise.all([
     sql`
       WITH latest_nav AS (
         SELECT nav_per_unit
@@ -1240,21 +1471,22 @@ export async function getInvestorsWithBalances() {
       ORDER BY i.created_at DESC
     `,
     sql`
-      SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+      SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM fixed_savings_ledger
       WHERE audit_status = 'active'
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
     `,
-    sql`
-      SELECT iul.investor_id, iul.type, iul.units, iul.gross_amount, TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
-        CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
+	    sql`
+	      SELECT iul.investor_id, iul.type, iul.units, iul.gross_amount, TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
+	        CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
       FROM investor_unit_ledger iul
       LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
-      WHERE iul.audit_status = 'active'
-      ORDER BY iul.date ASC, iul.created_at ASC
-    `,
-  ]);
-  const savingsByInvestor = calculateFixedSavingsLiability(savings.rows as FixedSavingsLedgerRow[]).byInvestor;
+	      WHERE iul.audit_status = 'active'
+	      ORDER BY iul.date ASC, iul.created_at ASC
+	    `,
+	    getFixedSavingsRateInputs(),
+	  ]);
+  const savingsByInvestor = calculateFixedSavingsLiability(savings.rows as FixedSavingsLedgerRow[], todayIso(), rateInput).byInvestor;
   const equityRowsByInvestor = new Map<string, EquityUnitLedgerRow[]>();
   for (const row of equityLedger.rows as (EquityUnitLedgerRow & { investor_id: string })[]) {
     const rows = equityRowsByInvestor.get(row.investor_id) ?? [];
@@ -1288,7 +1520,7 @@ export async function getInvestorsWithBalances() {
 
 export async function getInvestorStatement(investorId: string) {
   await ensureAuditColumns();
-  const [summary, unitLedger, cash, savings, bonuses, fees] = await Promise.all([
+  const [summary, unitLedger, cash, savings, bonuses, fees, rateInput] = await Promise.all([
     sql`
       WITH latest_nav AS (
         SELECT id,
@@ -1364,12 +1596,13 @@ export async function getInvestorStatement(investorId: string) {
         AND audit_status <> 'reverted'
       ORDER BY performance_fees.date DESC, performance_fees.created_at DESC
     `,
+    getFixedSavingsRateInputs(),
   ]);
   const row = summary.rows[0] ?? null;
   const investor = row ? { id: row.id, name: row.name, joined: row.joined } : null;
   if (!investor) return null;
 
-  const savingsSummary = calculateFixedSavingsLiability(savings.rows as FixedSavingsLedgerRow[]);
+  const savingsSummary = calculateFixedSavingsLiability(savings.rows as FixedSavingsLedgerRow[], todayIso(), rateInput);
   const units = roundUnits(parseFloat(row.units || "0"));
   const totalUnits = roundUnits(parseFloat(row.total_fund_units || "0"));
   const navPerUnit = parseFloat(row.nav_per_unit || "1");
@@ -1394,30 +1627,14 @@ export async function getInvestorStatement(investorId: string) {
       auditStatus: movement.audit_status,
       createdAt: movement.created_at,
     })),
-    ...savings.rows
-      .filter((movement: any) => movement.type !== "Bonus")
-      .map((movement: any) => ({
-        id: `savings-${movement.id}`,
-        date: movement.date,
-        category: "Fixed Savings",
-        type: movement.type,
-        amount: parseFloat(movement.amount || "0"),
-        units: null,
-        navPerUnit: null,
-        annualRatePercent: movement.type === "Deposit" && movement.effective_annual_rate_percent !== null
-          ? parseFloat(movement.effective_annual_rate_percent || "0")
-          : null,
-        notes: movement.notes,
-        auditStatus: movement.audit_status,
-        createdAt: movement.created_at,
-      })),
+    ...fixedSavingsActivityLedger(savings.rows),
     ...bonuses.rows
       .filter((bonus: any) => bonus.ledger_type !== "equity" || !bonus.source_unit_id)
       .map((bonus: any) => ({
         id: `bonus-${bonus.id}`,
         date: bonus.date,
-        category: bonus.ledger_type === "equity" ? "Equity Bonus" : "Fixed Savings Bonus",
-        type: "Bonus",
+        category: bonus.ledger_type === "equity" ? "Equity Bonus" : "Fixed Savings",
+        type: bonus.ledger_type === "fixed_savings" ? "BonusAccrued" : "Bonus",
         amount: parseFloat(bonus.amount || "0"),
         units: null,
         navPerUnit: null,
@@ -1485,7 +1702,7 @@ export async function getInvestorStatementByPortalAccessId(portalAccessId: strin
 export async function getFundSummaryMetrics() {
   await requireAdmin();
   await ensureAuditColumns();
-  const [summary, savings] = await Promise.all([
+  const [summary, savings, rateInput] = await Promise.all([
     sql`
       WITH latest_nav AS (
         SELECT id,
@@ -1519,26 +1736,29 @@ export async function getFundSummaryMetrics() {
         ), 0) as brokerage_profit_loss
     `,
     sql`
-      SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+      SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM fixed_savings_ledger
       WHERE audit_status = 'active'
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
     `,
+    getFixedSavingsRateInputs(),
   ]);
   const row = summary.rows[0] ?? {};
   const latestNav = row.latest_nav ?? null;
-  const fixedSavings = calculateFixedSavingsLiability(savings.rows as FixedSavingsLedgerRow[]);
+  const fixedSavings = calculateFixedSavingsLiability(savings.rows as FixedSavingsLedgerRow[], todayIso(), rateInput);
+  const totalUnits = roundUnits(parseFloat(row.total_units || "0"));
+  const currentEquityNav = calculateCurrentEquityNav(latestNav, totalUnits);
 
   return {
     latestNav,
-    totalUnits: roundUnits(parseFloat(row.total_units || "0")),
+    totalUnits,
     fixedSavingsLiability: fixedSavings.totalLiability,
     fixedSavingsPrincipal: fixedSavings.principal,
     fixedSavingsInterest: fixedSavings.payableInterest,
-    totalInvestorCapital: roundMoney((latestNav ? parseFloat(latestNav.net_asset_value) : 0) + fixedSavings.totalLiability),
+    totalInvestorCapital: roundMoney(currentEquityNav + fixedSavings.totalLiability),
     brokerageProfitLoss: roundMoney(parseFloat(row.brokerage_profit_loss || "0")),
     performanceFees: roundMoney(parseFloat(row.performance_fees || "0")),
-    aum: latestNav ? roundMoney(parseFloat(latestNav.net_asset_value)) : 0,
+    aum: currentEquityNav,
   };
 }
 
@@ -1546,7 +1766,7 @@ export async function getDashboardSummary() {
   await requireAdmin();
   await ensureAuditColumns();
   await ensureInvestorPortalAccessColumns();
-  const [summaryResult, savings, investorsResult, equityLedger] = await Promise.all([
+  const [summaryResult, savings, investorsResult, equityLedger, rateInput] = await Promise.all([
     sql`
       WITH latest_nav AS (
         SELECT id,
@@ -1580,7 +1800,7 @@ export async function getDashboardSummary() {
         ), 0) as brokerage_profit_loss
     `,
     sql`
-      SELECT id, account_id, investor_id, type, amount, annual_rate_percent, interest_rate, TO_CHAR(date, 'YYYY-MM-DD') as date
+      SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM fixed_savings_ledger
       WHERE audit_status = 'active'
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
@@ -1615,13 +1835,15 @@ export async function getDashboardSummary() {
       WHERE iul.audit_status = 'active'
       ORDER BY iul.date ASC, iul.created_at ASC
     `,
+    getFixedSavingsRateInputs(),
   ]);
   const summaryRow = summaryResult.rows[0] ?? {};
   const latestNav = summaryRow.latest_nav ?? null;
-  const fixedSavings = calculateFixedSavingsLiability(savings.rows as FixedSavingsLedgerRow[]);
+  const fixedSavings = calculateFixedSavingsLiability(savings.rows as FixedSavingsLedgerRow[], todayIso(), rateInput);
   const savingsByInvestor = fixedSavings.byInvestor;
   const totalUnits = roundUnits(parseFloat(summaryRow.total_units || "0"));
   const navPerUnit = latestNav ? parseFloat(latestNav.nav_per_unit || "1") : 1;
+  const currentEquityNav = calculateCurrentEquityNav(latestNav, totalUnits);
   const equityRowsByInvestor = new Map<string, EquityUnitLedgerRow[]>();
   for (const row of equityLedger.rows as (EquityUnitLedgerRow & { investor_id: string })[]) {
     const rows = equityRowsByInvestor.get(row.investor_id) ?? [];
@@ -1657,10 +1879,10 @@ export async function getDashboardSummary() {
     fixedSavingsLiability: fixedSavings.totalLiability,
     fixedSavingsPrincipal: fixedSavings.principal,
     fixedSavingsInterest: fixedSavings.payableInterest,
-    totalInvestorCapital: roundMoney((latestNav ? parseFloat(latestNav.net_asset_value) : 0) + fixedSavings.totalLiability),
+    totalInvestorCapital: roundMoney(currentEquityNav + fixedSavings.totalLiability),
     brokerageProfitLoss: roundMoney(parseFloat(summaryRow.brokerage_profit_loss || "0")),
     performanceFees: roundMoney(parseFloat(summaryRow.performance_fees || "0")),
-    aum: latestNav ? roundMoney(parseFloat(latestNav.net_asset_value)) : 0,
+    aum: currentEquityNav,
     investors,
     cash: [],
   };
@@ -1682,6 +1904,7 @@ export async function cleanAllData() {
 export async function dropAllFundTables() {
   auditColumnsPromise = null;
   investorPortalAccessColumnsPromise = null;
+  fixedSavingsRateTablesPromise = null;
   const tables = await existingResettableTables();
   if (tables.length > 0) {
     await sql.query(`DROP TABLE ${tables.join(", ")} CASCADE`);
@@ -1722,6 +1945,21 @@ export async function seedDummyData() {
     UPDATE fund_config
     SET value = '2.0', updated_at = NOW()
     WHERE key = 'brokerage_fee_pct'
+  `;
+  await sql`
+    INSERT INTO fixed_savings_base_rates (effective_date, annual_rate_percent)
+    VALUES
+      ('2026-03-01', 4.0000),
+      ('2026-04-01', 4.2500),
+      ('2026-07-01', 4.1000)
+    ON CONFLICT (effective_date) DO UPDATE
+    SET annual_rate_percent = EXCLUDED.annual_rate_percent
+  `;
+  await sql`
+    INSERT INTO fixed_savings_promotions (name, start_date, end_date, annual_rate_percent, balance_cap, status, notes)
+    VALUES
+      ('Seed 5% Launch Promo', '2026-03-15', '2026-06-14', 5.0000, 50000, 'active', 'Demo capped launch promotion for fixed savings balances.'),
+      ('Seed Expired 4.8% Promo', '2026-01-01', '2026-02-28', 4.8000, NULL, 'disabled', 'Disabled historical promotion for rate-settings workflow coverage.')
   `;
 
   const ibkr = await sql`
@@ -1839,8 +2077,8 @@ export async function seedDummyData() {
   await recordCashMovement({ investorId: alice.rows[0].id, date: "2026-03-09", type: "Deposit", amount: 75000, notes: "Initial equity subscription" });
   await recordCashMovement({ investorId: ben.rows[0].id, date: "2026-03-09", type: "Deposit", amount: 52000, notes: "Initial equity subscription" });
   await recordCashMovement({ investorId: chandra.rows[0].id, date: "2026-03-10", type: "Deposit", amount: 38000, notes: "Initial equity subscription" });
-  await recordFixedSavings({ investorId: alice.rows[0].id, date: "2026-03-11", type: "Deposit", amount: 18000, annualRatePercent: 3.65, notes: "Twelve-month fixed savings placement" });
-  await recordFixedSavings({ investorId: farah.rows[0].id, date: "2026-03-11", type: "Deposit", amount: 42000, annualRatePercent: 3.85, notes: "Fixed savings-only mandate" });
+  await recordFixedSavings({ investorId: alice.rows[0].id, date: "2026-03-11", type: "Deposit", amount: 18000, notes: "Twelve-month fixed savings placement" });
+  await recordFixedSavings({ investorId: farah.rows[0].id, date: "2026-03-11", type: "Deposit", amount: 42000, notes: "Fixed savings-only mandate" });
 
   await insertPlatformTransaction({
     platformId: ibkr.rows[0].id,
@@ -1926,8 +2164,8 @@ export async function seedDummyData() {
   await lockNavWeek(week2.rows[0].id);
   await recordCashMovement({ investorId: farah.rows[0].id, date: "2026-03-16", type: "Deposit", amount: 24000, notes: "Secondary equity subscription" });
   await recordCashMovement({ investorId: grace.rows[0].id, date: "2026-03-16", type: "Deposit", amount: 65000, notes: "New investor equity subscription" });
-  await recordFixedSavings({ investorId: ben.rows[0].id, date: "2026-03-17", type: "Deposit", amount: 16000, annualRatePercent: 3.55, notes: "Fixed savings diversification" });
-  await recordFixedSavings({ investorId: grace.rows[0].id, date: "2026-03-17", type: "Deposit", amount: 25000, annualRatePercent: 3.75, notes: "Fixed savings placement" });
+  await recordFixedSavings({ investorId: ben.rows[0].id, date: "2026-03-17", type: "Deposit", amount: 16000, notes: "Fixed savings diversification" });
+  await recordFixedSavings({ investorId: grace.rows[0].id, date: "2026-03-17", type: "Deposit", amount: 25000, notes: "Fixed savings placement" });
   await insertPlatformTransaction({
     platformId: binance.rows[0].id,
     accountId: binanceSpot.rows[0].id,
@@ -2140,12 +2378,25 @@ export async function seedDummyData() {
     amount: 380,
     seed: "development-demo",
   });
+  await writeAuditEvent("fixed_savings_rate.seed", "fixed_savings_base_rates", null, {
+    baseRates: [
+      { effectiveDate: "2026-03-01", annualRatePercent: 4.0 },
+      { effectiveDate: "2026-04-01", annualRatePercent: 4.25 },
+      { effectiveDate: "2026-07-01", annualRatePercent: 4.1 },
+    ],
+    promotions: [
+      { name: "Seed 5% Launch Promo", startDate: "2026-03-15", endDate: "2026-06-14", annualRatePercent: 5.0, balanceCap: 50000, status: "active" },
+      { name: "Seed Expired 4.8% Promo", startDate: "2026-01-01", endDate: "2026-02-28", annualRatePercent: 4.8, status: "disabled" },
+    ],
+  });
   await writeAuditEvent("portal_access.rotate", "investors", alice.rows[0].id, { seed: "development-demo" });
   await writeAuditEvent("development.seed", "database", null, {
     seed: "complete-development-fund",
     investors: 5,
     platforms: 4,
     lockedNavWeeks: 5,
+    fixedSavingsBaseRates: 4,
+    fixedSavingsPromotions: 2,
     portalAccessIds: [
       "demo-alice-tan-2026",
       "demo-ben-lim-2026",

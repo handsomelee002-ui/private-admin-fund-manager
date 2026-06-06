@@ -13,11 +13,26 @@ import { getInvestorStatement } from "@/lib/fundDb";
 import { requireAdmin } from "@/lib/auth";
 import { formatMoney, formatUnits } from "@/lib/formatting";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { ArrowLeft, Banknote, Percent, TrendingUp, Wallet } from "lucide-react";
+import { ArrowLeft, Banknote, Filter, Percent, TrendingUp, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-const activitySorts = ["date", "ledger", "type", "units", "nav", "rate", "amount"] as const;
+const activitySorts = ["date", "ledger", "type", "units", "nav", "amount"] as const;
+
+function firstValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function ledgerFilterHref(investorId: string, searchParams: Record<string, string | string[] | undefined>, ledger: string) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(searchParams)) {
+    const normalized = firstValue(value);
+    if (normalized && key !== "ledger" && key !== "status") params.set(key, normalized);
+  }
+  if (ledger !== "all") params.set("ledger", ledger);
+  const query = params.toString();
+  return `/investors/${investorId}${query ? `?${query}` : ""}`;
+}
 
 export default async function InvestorDetailPage({
   params,
@@ -30,22 +45,27 @@ export default async function InvestorDetailPage({
   const { id } = await params;
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, activitySorts, { sort: "date", dir: "desc" });
-  const statusFilter = typeof resolvedSearchParams.status === "string" ? resolvedSearchParams.status : "active";
+  const requestedLedger = typeof resolvedSearchParams.ledger === "string" ? resolvedSearchParams.ledger : "all";
   const [statement, investors] = await Promise.all([
     getInvestorStatement(id),
     getInvestors(),
   ]);
   if (!statement) notFound();
-  const visibleActivityLedger = statusFilter === "all"
+  const ledgerOptions = Array.from(new Set(statement.activityLedger.map((row: any) => String(row.category)))).sort();
+  const ledgerFilter = requestedLedger === "all" || ledgerOptions.includes(requestedLedger) ? requestedLedger : "all";
+  const visibleActivityLedger = ledgerFilter === "all"
     ? statement.activityLedger
-    : statement.activityLedger.filter((row: any) => row.auditStatus === "active");
+    : statement.activityLedger.filter((row: any) => row.category === ledgerFilter);
+  const ledgerCounts = new Map<string, number>();
+  for (const row of statement.activityLedger) {
+    ledgerCounts.set(row.category, (ledgerCounts.get(row.category) ?? 0) + 1);
+  }
   const sortedActivityLedger = sortRows(visibleActivityLedger, sortState, {
     date: (row: any) => row.date,
     ledger: (row: any) => row.category,
     type: (row: any) => row.type,
     units: (row: any) => row.units,
     nav: (row: any) => row.navPerUnit,
-    rate: (row: any) => row.annualRatePercent,
     amount: (row: any) => row.amount,
   });
 
@@ -111,12 +131,42 @@ export default async function InvestorDetailPage({
       </div>
 
       <Card className="bg-card/50 border-border/50">
-        <CardHeader>
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle className="text-base">Activity Ledger</CardTitle>
-            <div className="flex items-center gap-2 text-sm">
-              <NoPrefetchLink className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}`}>Active</NoPrefetchLink>
-              <NoPrefetchLink className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/investors/${id}?status=all`}>All</NoPrefetchLink>
+        <CardHeader className="space-y-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-1">
+              <CardTitle className="text-base">Activity Ledger</CardTitle>
+              <p className="text-xs text-muted-foreground">
+                Showing {sortedActivityLedger.length} of {statement.activityLedger.length} records
+              </p>
+            </div>
+            <div className="flex min-w-0 items-center gap-2 rounded-md border border-border/50 bg-background/40 p-1">
+              <div className="hidden items-center gap-1 px-2 text-xs font-medium text-muted-foreground sm:flex">
+                <Filter className="h-3.5 w-3.5" />
+                Ledger
+              </div>
+              <div className="flex min-w-0 gap-1 overflow-x-auto">
+                <NoPrefetchLink
+                  className={`inline-flex shrink-0 items-center gap-2 rounded px-2.5 py-1.5 text-sm transition-colors ${ledgerFilter === "all" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+                  href={ledgerFilterHref(id, resolvedSearchParams, "all")}
+                >
+                  All
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] tabular-nums ${ledgerFilter === "all" ? "bg-primary-foreground/15" : "bg-muted text-muted-foreground"}`}>
+                    {statement.activityLedger.length}
+                  </span>
+                </NoPrefetchLink>
+                {ledgerOptions.map((ledger) => (
+                  <NoPrefetchLink
+                    key={ledger}
+                    className={`inline-flex shrink-0 items-center gap-2 rounded px-2.5 py-1.5 text-sm transition-colors ${ledgerFilter === ledger ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+                    href={ledgerFilterHref(id, resolvedSearchParams, ledger)}
+                  >
+                    {ledger}
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] tabular-nums ${ledgerFilter === ledger ? "bg-primary-foreground/15" : "bg-muted text-muted-foreground"}`}>
+                      {ledgerCounts.get(ledger) ?? 0}
+                    </span>
+                  </NoPrefetchLink>
+                ))}
+              </div>
             </div>
           </div>
         </CardHeader>
@@ -129,7 +179,6 @@ export default async function InvestorDetailPage({
                 <SortableTableHead className="w-[116px]" sortKey="type" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Type</SortableTableHead>
                 <SortableTableHead className="w-[96px] text-right" sortKey="units" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Units</SortableTableHead>
                 <SortableTableHead className="w-[112px] text-right" sortKey="nav" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>NAV / Unit</SortableTableHead>
-                <SortableTableHead className="w-[116px] text-right" sortKey="rate" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Annual Rate</SortableTableHead>
                 <SortableTableHead className="w-[120px] text-right" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
                 <TableHead className="w-[180px] pr-6">Notes</TableHead>
               </TableRow>
@@ -140,18 +189,17 @@ export default async function InvestorDetailPage({
                   <TableCell className="pl-6">{row.date}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{row.category}</TableCell>
                   <TableCell>
-                    <Badge variant={["UnitIssue", "BonusIssue", "Deposit", "Bonus"].includes(row.type) ? "default" : "destructive"}>{row.type}</Badge>
+                    <Badge variant={["UnitIssue", "BonusIssue", "Deposit", "Bonus", "BonusAccrued"].includes(row.type) ? "default" : "destructive"}>{row.type}</Badge>
                     {row.auditStatus !== "active" && <Badge variant="outline" className="ml-2">{row.auditStatus === "reversal" ? "Reversal" : "Reverted"}</Badge>}
                   </TableCell>
                   <TableCell className="text-right">{row.units ? formatUnits(row.units) : "-"}</TableCell>
                   <TableCell className="text-right">{row.navPerUnit ? Number(row.navPerUnit).toFixed(6) : "-"}</TableCell>
-                  <TableCell className="text-right">{row.annualRatePercent !== null && row.annualRatePercent !== undefined ? `${Number(row.annualRatePercent).toFixed(4)}%` : "-"}</TableCell>
                   <TableCell className={`text-right font-semibold ${row.amount >= 0 ? "" : "text-red-400"}`}>{formatMoney(row.amount)}</TableCell>
                   <NotesTableCell value={row.notes} />
                 </TableRow>
               ))}
               {sortedActivityLedger.length === 0 && (
-                <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-12">No investor activity.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-12">No investor activity.</TableCell></TableRow>
               )}
             </TableBody>
           </Table>

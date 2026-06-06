@@ -74,15 +74,9 @@ export function AddFixedSavingsMovementForm({
               <Input id="date" name="date" type="date" required defaultValue={new Date().toISOString().slice(0, 10)} />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="amount">Amount</Label>
-              <Input id="amount" name="amount" type="number" step="0.01" min="0.01" required />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="annual_rate_percent">Annual Rate %</Label>
-              <Input id="annual_rate_percent" name="annual_rate_percent" type="number" step="0.0001" min="0.0001" required={type === "Deposit"} disabled={type !== "Deposit"} />
-            </div>
+          <div className="space-y-2">
+            <Label htmlFor="amount">Amount</Label>
+            <Input id="amount" name="amount" type="number" step="0.01" min="0.01" required />
           </div>
           <div className="space-y-2">
             <Label htmlFor="notes">Notes</Label>

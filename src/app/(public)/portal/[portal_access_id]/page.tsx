@@ -13,7 +13,7 @@ import { Banknote, Percent, TrendingUp, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-const activitySorts = ["date", "ledger", "type", "units", "nav", "rate", "amount"] as const;
+const activitySorts = ["date", "ledger", "type", "units", "nav", "amount"] as const;
 
 export default async function InvestorPortalPage({
   params,
@@ -39,7 +39,6 @@ export default async function InvestorPortalPage({
     type: (row: any) => row.type,
     units: (row: any) => row.units,
     nav: (row: any) => row.navPerUnit,
-    rate: (row: any) => row.annualRatePercent,
     amount: (row: any) => row.amount,
   });
 
@@ -103,7 +102,6 @@ export default async function InvestorPortalPage({
                   <SortableTableHead className="w-[116px]" sortKey="type" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Type</SortableTableHead>
                   <SortableTableHead className="w-[96px] text-right" sortKey="units" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Units</SortableTableHead>
                   <SortableTableHead className="w-[112px] text-right" sortKey="nav" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>NAV / Unit</SortableTableHead>
-                  <SortableTableHead className="w-[116px] text-right" sortKey="rate" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Annual Rate</SortableTableHead>
                   <SortableTableHead className="w-[120px] text-right" sortKey="amount" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Amount</SortableTableHead>
                   <TableHead className="w-[180px] pr-6">Notes</TableHead>
                 </TableRow>
@@ -114,17 +112,16 @@ export default async function InvestorPortalPage({
                     <TableCell className="pl-6">{row.date}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{row.category}</TableCell>
                     <TableCell>
-                      <Badge variant={["UnitIssue", "BonusIssue", "Deposit", "Bonus"].includes(row.type) ? "default" : "destructive"}>{row.type}</Badge>
+                      <Badge variant={["UnitIssue", "BonusIssue", "Deposit", "Bonus", "BonusAccrued"].includes(row.type) ? "default" : "destructive"}>{row.type}</Badge>
                     </TableCell>
                     <TableCell className="text-right">{row.units ? formatUnits(row.units) : "-"}</TableCell>
                     <TableCell className="text-right">{row.navPerUnit ? Number(row.navPerUnit).toFixed(6) : "-"}</TableCell>
-                    <TableCell className="text-right">{row.annualRatePercent !== null && row.annualRatePercent !== undefined ? `${Number(row.annualRatePercent).toFixed(4)}%` : "-"}</TableCell>
                     <TableCell className={`text-right font-semibold ${row.amount >= 0 ? "" : "text-red-400"}`}>{formatMoney(row.amount)}</TableCell>
                     <NotesTableCell value={row.notes} />
                   </TableRow>
                 ))}
                 {sortedActivityLedger.length === 0 && (
-                  <TableRow><TableCell colSpan={8} className="text-center text-muted-foreground py-12">No investor activity.</TableCell></TableRow>
+                  <TableRow><TableCell colSpan={7} className="text-center text-muted-foreground py-12">No investor activity.</TableCell></TableRow>
                 )}
               </TableBody>
             </Table>

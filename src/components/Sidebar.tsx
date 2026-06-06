@@ -23,6 +23,7 @@ const navigation = [
   { name: "Capital",        href: "/capital",  icon: ArrowRightLeft,  exact: false },
   { name: "Investors",      href: "/investors", icon: Users,           exact: false },
   { name: "Fixed Savings",  href: "/fixed-savings", icon: Wallet,      exact: false },
+  { name: "Savings Rates",  href: "/fixed-savings-rates", icon: CalendarClock, exact: false },
   { name: "Reports",        href: "/reports",  icon: BarChart2,       exact: false },
   { name: "Admin Logs",     href: "/admin-logs", icon: ShieldCheck,    exact: false },
   { name: "Brokerage",      href: "/brokerage", icon: Settings,       exact: false },
@@ -33,15 +34,15 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <div className="flex h-full w-64 flex-col border-r border-border/50 bg-card/50 backdrop-blur-xl transition-all duration-300">
-      <div className="flex h-16 shrink-0 items-center px-6">
+    <div className="admin-sidebar flex h-screen shrink-0 flex-col border-r border-border/50 bg-card/50 backdrop-blur-xl transition-all duration-300">
+      <div className="admin-sidebar-logo flex h-16 shrink-0 items-center">
         <div className="flex items-center gap-2 font-bold text-lg text-primary">
           <Wallet className="h-6 w-6" />
-          <span>FundManager</span>
+          <span className="admin-sidebar-label">FundManager</span>
         </div>
       </div>
       <div className="flex flex-1 flex-col overflow-y-auto pt-6">
-        <nav className="flex-1 space-y-1 px-4">
+        <nav className="admin-sidebar-nav flex-1 space-y-1">
           {navigation.map((item) => {
             const isActive = item.exact
               ? pathname === item.href
@@ -54,17 +55,18 @@ export function Sidebar() {
                   isActive
                     ? "bg-primary/10 text-primary font-semibold"
                     : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                  "group flex items-center rounded-md px-3 py-2.5 text-sm font-medium transition-all duration-200"
+                  "admin-sidebar-link group flex items-center rounded-md px-3 py-2.5 text-sm font-medium transition-all duration-200"
                 )}
+                title={item.name}
               >
                 <item.icon
                   className={cn(
                     isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground",
-                    "mr-3 h-5 w-5 shrink-0 transition-colors"
+                    "admin-sidebar-icon h-5 w-5 shrink-0 transition-colors"
                   )}
                   aria-hidden="true"
                 />
-                {item.name}
+                <span className="admin-sidebar-label">{item.name}</span>
               </NoPrefetchLink>
             );
           })}

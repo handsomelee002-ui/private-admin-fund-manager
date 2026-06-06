@@ -35,7 +35,6 @@ export default async function PlatformDetailsPage({
   const resolvedSearchParams = await searchParams;
   const transactionSortState = getSortState(resolvedSearchParams, transactionSorts, { sort: "date", dir: "desc" }, "tx");
   const snapshotSortState = getSortState(resolvedSearchParams, snapshotSorts, { sort: "week", dir: "desc" }, "snap");
-  const statusFilter = typeof resolvedSearchParams.status === "string" ? resolvedSearchParams.status : "active";
 
   const platform = await getPlatform(platformId);
   if (!platform) return notFound();
@@ -51,8 +50,7 @@ export default async function PlatformDetailsPage({
   const latestUnrealized = performance.latestUnrealized;
   const totalValue = performance.currentValue;
   const pnlPct = performance.simpleRoi ?? 0;
-  const visibleTransactions = statusFilter === "all" ? transactions : transactions.filter((transaction: any) => transaction.audit_status === "active");
-  const sortedTransactions = sortRows(visibleTransactions, transactionSortState, {
+  const sortedTransactions = sortRows(transactions, transactionSortState, {
     date: (transaction: any) => transaction.date,
     source: (transaction: any) => transaction.funding_source,
     notes: (transaction: any) => transaction.notes,
@@ -227,10 +225,6 @@ export default async function PlatformDetailsPage({
               <CardHeader className="pb-0">
                 <div className="flex items-center justify-between gap-3">
                   <CardTitle className="text-base">Transaction History</CardTitle>
-                  <div className="flex items-center gap-2 text-sm">
-                    <NoPrefetchLink className={statusFilter === "active" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}`}>Active</NoPrefetchLink>
-                    <NoPrefetchLink className={statusFilter === "all" ? "text-primary font-semibold" : "text-muted-foreground"} href={`/trading/${platformId}?status=all`}>All</NoPrefetchLink>
-                  </div>
                 </div>
               </CardHeader>
               <CardContent className="overflow-x-auto p-0">

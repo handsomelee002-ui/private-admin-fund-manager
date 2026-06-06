@@ -12,6 +12,8 @@ export const BACKUP_TABLES = [
   "nav_week_platform_snapshots",
   "investor_unit_ledger",
   "cash_movements",
+  "fixed_savings_base_rates",
+  "fixed_savings_promotions",
   "fixed_savings_accounts",
   "fixed_savings_ledger",
   "performance_fees",
