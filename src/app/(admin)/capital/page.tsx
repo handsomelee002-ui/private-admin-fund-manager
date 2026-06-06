@@ -1,5 +1,4 @@
 import { Badge } from "@/components/ui/badge";
-import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AddCashMovementForm } from "@/components/AddCashMovementForm";
@@ -27,9 +26,7 @@ export default async function CapitalLedgerPage({
     timeAsync("route.capital.getCashMovements", () => getCashMovements(), { route: "/capital" }),
     timeAsync("route.capital.getInvestors", () => getInvestors(), { route: "/capital" }),
   ]);
-  const statusFilter = typeof resolvedSearchParams.status === "string" ? resolvedSearchParams.status : "active";
-  const visibleRecords = statusFilter === "all" ? records : records.filter((record: any) => record.audit_status === "active");
-  const sortedRecords = sortRows(visibleRecords, sortState, {
+  const sortedRecords = sortRows(records, sortState, {
     date: (record: any) => record.date,
     investor: (record: any) => record.investor_name,
     type: (record: any) => record.type,
@@ -45,8 +42,6 @@ export default async function CapitalLedgerPage({
           <p className="text-muted-foreground mt-1 text-sm">Deposits issue units and withdrawals redeem units at the latest locked weekly NAV.</p>
         </div>
         <div className="flex items-center gap-2">
-          <NoPrefetchLink className={statusFilter === "active" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital">Active</NoPrefetchLink>
-          <NoPrefetchLink className={statusFilter === "all" ? "text-primary text-sm font-semibold" : "text-muted-foreground text-sm"} href="/capital?status=all">All</NoPrefetchLink>
           <AddCashMovementForm investors={investors} />
         </div>
       </div>
