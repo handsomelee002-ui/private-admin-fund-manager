@@ -1985,7 +1985,7 @@ export async function seedDummyData() {
 
   const ibkrMargin = await sql`
     INSERT INTO platform_accounts (platform_id, name, account_type, currency)
-    VALUES (${ibkr.rows[0].id}, 'Margin Portfolio', 'BROKER_MARGIN', 'USD')
+    VALUES (${ibkr.rows[0].id}, 'Margin Portfolio', 'BROKER_PORTFOLIO', 'USD')
     RETURNING id
   `;
   const ibkrCash = await sql`
@@ -2000,12 +2000,12 @@ export async function seedDummyData() {
   `;
   const binanceSpot = await sql`
     INSERT INTO platform_accounts (platform_id, name, account_type, currency)
-    VALUES (${binance.rows[0].id}, 'Spot Wallet', 'CRYPTO_SPOT', 'USDT')
+    VALUES (${binance.rows[0].id}, 'Spot Wallet', 'WALLET', 'USDT')
     RETURNING id
   `;
   const reserveCash = await sql`
     INSERT INTO platform_accounts (platform_id, name, account_type, currency)
-    VALUES (${maybank.rows[0].id}, 'Operating Reserve', 'BANK_CASH', 'MYR')
+    VALUES (${maybank.rows[0].id}, 'Operating Reserve', 'BANK', 'MYR')
     RETURNING id
   `;
 

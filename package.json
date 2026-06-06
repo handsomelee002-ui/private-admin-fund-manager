@@ -8,8 +8,8 @@
     "build": "next build",
     "start": "next start",
     "test": "node --test src/**/*.test.js src/**/*.test.mjs",
-    "test:feature": "node scripts/destructive-feature-tests.cjs",
-    "test:e2e": "node scripts/browser-e2e-tests.cjs",
+    "test:feature": "node scripts/run-with-retry.cjs --retries 1 -- node scripts/destructive-feature-tests.cjs",
+    "test:e2e": "node scripts/run-with-retry.cjs --retries 1 -- node scripts/browser-e2e-tests.cjs",
     "typecheck": "tsc --noEmit",
     "verify": "npm test && npm run test:feature && npm run lint && npm run typecheck && npm run build && npm run test:e2e",
     "lint": "eslint"

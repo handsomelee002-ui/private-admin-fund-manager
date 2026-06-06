@@ -54,6 +54,7 @@ const BACKUP_TABLE_COLUMN_ALLOWLIST: Record<BackupTableName, readonly string[]> 
     "id", "platform_id", "date", "type", "amount", "realized_profit", "notes", "created_at", "account_id", "asset_id", "currency", "base_currency",
     "base_amount", "fx_rate_to_base", "from_currency", "to_currency", "from_amount", "to_amount", "quantity", "price_per_unit", "gross_amount",
     "fee_amount", "tax_amount", "net_amount", "reference", "status", "settlement_date", "funding_source", "audit_status", "reversal_of_id",
+    "allocation_method",
   ],
   platform_performance: ["id", "platform_id", "date", "net_invested", "unrealized_profit", "created_at"],
   trading_ledger: ["id", "date", "platform", "ticker", "type", "currency", "price", "quantity", "amount_rm", "profit_loss", "date_closed", "receipt_url", "created_at"],
@@ -76,6 +77,7 @@ const BACKUP_ENUMS: Partial<Record<BackupTableName, Record<string, readonly stri
     status: ["PENDING", "SETTLED", "CANCELLED"],
     funding_source: ["equity", "fixed_savings", "brokerage"],
     audit_status: ["active", "reverted", "reversal"],
+    allocation_method: ["legacy", "none", "manual", "automatic"],
   },
 };
 
