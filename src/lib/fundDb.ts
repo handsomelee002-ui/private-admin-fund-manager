@@ -1899,10 +1899,10 @@ export async function getDashboardSummary() {
   return {
     latestNav,
     totalUnits,
-    fixedSavingsLiability: fixedSavings.totalLiability,
+    fixedSavingsLiability: fixedSavings.principal,
     fixedSavingsPrincipal: fixedSavings.principal,
     fixedSavingsInterest: fixedSavings.payableInterest,
-    totalInvestorCapital: roundMoney(currentEquityNav + fixedSavings.totalLiability),
+    totalInvestorCapital: roundMoney(currentEquityNav + fixedSavings.principal),
     brokerageProfitLoss: roundMoney(parseFloat(summaryRow.brokerage_profit_loss || "0")),
     performanceFees: roundMoney(parseFloat(summaryRow.performance_fees || "0")),
     aum: currentEquityNav,

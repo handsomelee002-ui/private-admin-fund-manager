@@ -36,7 +36,7 @@ export default async function Dashboard({
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground mt-1 text-sm">Equity NAV, investor units, and fixed savings liability.</p>
+        <p className="text-muted-foreground mt-1 text-sm">Equity NAV, investor units, and fixed savings principal.</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-5">
@@ -52,12 +52,12 @@ export default async function Dashboard({
         </Card>
         <Card className="bg-card/50 border-border/50">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Fixed Savings Liability</CardTitle>
+            <CardTitle className="text-sm text-muted-foreground">Fixed Savings Principal</CardTitle>
             <Banknote className="h-4 w-4 text-amber-400" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-amber-400">{formatMoney(summary.fixedSavingsLiability)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Excluded from equity NAV</p>
+            <p className="text-xs text-muted-foreground mt-1">Interest excluded from this total</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
@@ -67,7 +67,7 @@ export default async function Dashboard({
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatMoney(summary.totalInvestorCapital)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Equity NAV + fixed savings</p>
+            <p className="text-xs text-muted-foreground mt-1">Equity NAV + fixed savings principal</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
