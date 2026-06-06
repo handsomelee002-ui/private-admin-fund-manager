@@ -458,6 +458,7 @@ export async function addPlatform(formData: FormData) {
       VALUES (${created.rows[0].id}, ${`${name} ${defaultCurrency} Cash`}, 'BROKER_CASH', ${defaultCurrency})
       ON CONFLICT DO NOTHING
     `;
+    await writeAuditEvent("platform.add", "platforms", created.rows[0].id, { name, defaultCurrency });
     revalidateTrading(created.rows[0].id);
     return { success: true, id: created.rows[0].id };
   } catch (error) {
@@ -482,8 +483,53 @@ export async function updatePlatformName(formData: FormData) {
 
 export async function deletePlatform(id: string) {
   await requireAdmin();
-  void id;
-  return { error: "Platforms cannot be hard-deleted because transaction history depends on them. Disable new activity or use reversing transactions." };
+  await ensureTradingSchema();
+  if (!id) return { error: "Platform id is required." };
+
+  try {
+    const platform = await sql`
+      SELECT
+        p.id,
+        p.name,
+        (SELECT COUNT(*)::int FROM platform_transactions pt WHERE pt.platform_id = p.id) as transaction_count,
+        (SELECT COUNT(*)::int FROM nav_week_platform_snapshots nwps WHERE nwps.platform_id = p.id) as snapshot_count,
+        (SELECT COUNT(*)::int FROM platform_accounts pa WHERE pa.platform_id = p.id) as account_count,
+        (SELECT COUNT(*)::int FROM platform_assets passet WHERE passet.platform_id = p.id) as asset_count
+      FROM platforms p
+      WHERE p.id = ${id}
+    `;
+    const row = platform.rows[0];
+    if (!row) return { error: "Platform not found." };
+
+    const transactionCount = Number(row.transaction_count || 0);
+    const snapshotCount = Number(row.snapshot_count || 0);
+    if (transactionCount > 0 || snapshotCount > 0) {
+      return {
+        error: "Only platforms with no transactions and no NAV snapshots can be deleted. Use reversing transactions for platforms with financial history.",
+      };
+    }
+
+    const deleted = await sql`
+      DELETE FROM platforms p
+      WHERE p.id = ${id}
+        AND NOT EXISTS (SELECT 1 FROM platform_transactions pt WHERE pt.platform_id = p.id)
+        AND NOT EXISTS (SELECT 1 FROM nav_week_platform_snapshots nwps WHERE nwps.platform_id = p.id)
+      RETURNING p.id
+    `;
+    if (deleted.rows.length === 0) {
+      return { error: "Platform deletion was blocked because financial records now depend on it." };
+    }
+
+    await writeAuditEvent("platform.delete", "platforms", id, {
+      name: row.name,
+      deletedAccounts: Number(row.account_count || 0),
+      deletedAssets: Number(row.asset_count || 0),
+    });
+    revalidateTrading(id);
+    return { success: true };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Failed to delete platform." };
+  }
 }
 
 export async function addPlatformAccount(formData: FormData) {
