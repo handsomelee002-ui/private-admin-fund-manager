@@ -531,7 +531,16 @@ export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], en
     return String(a.id || "").localeCompare(String(b.id || ""));
   });
 
-  const investorStates = new Map<string, { principal: number; accruedInterest: number; bonusPayable: number; balance: number; accruedThrough: string; fallbackRate: number }>();
+  type FixedSavingsInvestorState = {
+    principal: number;
+    accruedInterest: number;
+    totalAccruedInterest: number;
+    bonusPayable: number;
+    balance: number;
+    accruedThrough: string;
+    fallbackRate: number;
+  };
+  const investorStates = new Map<string, FixedSavingsInvestorState>();
 
   function stateFor(row: FixedSavingsLedgerRow) {
     const investorId = row.investor_id || "fund";
@@ -540,6 +549,7 @@ export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], en
     const state = {
       principal: 0,
       accruedInterest: 0,
+      totalAccruedInterest: 0,
       bonusPayable: 0,
       balance: 0,
       accruedThrough: row.date,
@@ -549,7 +559,7 @@ export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], en
     return state;
   }
 
-  function accrueState(state: { principal: number; accruedInterest: number; balance: number; accruedThrough: string; fallbackRate: number }, date: string) {
+  function accrueState(state: FixedSavingsInvestorState, date: string) {
     const result = accruePooledNominalInterest({
       balance: state.balance,
       startDate: state.accruedThrough,
@@ -559,10 +569,11 @@ export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], en
     });
     state.balance = result.balance;
     state.accruedInterest = roundMoney(state.accruedInterest + result.interest);
+    state.totalAccruedInterest = roundMoney(state.totalAccruedInterest + result.interest);
     state.accruedThrough = date;
   }
 
-  function reduceState(state: { principal: number; accruedInterest: number; bonusPayable: number; balance: number }, amount: number) {
+  function reduceState(state: FixedSavingsInvestorState, amount: number) {
     let remaining = roundMoney(amount);
     const interestReduction = Math.min(remaining, state.accruedInterest);
     state.accruedInterest = roundMoney(state.accruedInterest - interestReduction);
@@ -601,16 +612,19 @@ export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], en
 
   let principal = 0;
   let accruedInterest = 0;
+  let totalAccruedInterest = 0;
   let bonusPayable = 0;
-  const byInvestor = new Map<string, { principal: number; accruedInterest: number; bonusPayable: number; payableInterest: number; totalLiability: number }>();
+  const byInvestor = new Map<string, { principal: number; accruedInterest: number; totalAccruedInterest: number; bonusPayable: number; payableInterest: number; totalLiability: number }>();
 
   for (const [investorId, state] of investorStates.entries()) {
     principal = roundMoney(principal + state.principal);
     accruedInterest = roundMoney(accruedInterest + state.accruedInterest);
+    totalAccruedInterest = roundMoney(totalAccruedInterest + state.totalAccruedInterest);
     bonusPayable = roundMoney(bonusPayable + state.bonusPayable);
     byInvestor.set(investorId, {
       principal: roundMoney(state.principal),
       accruedInterest: roundMoney(state.accruedInterest),
+      totalAccruedInterest: roundMoney(state.totalAccruedInterest),
       bonusPayable: roundMoney(state.bonusPayable),
       payableInterest: roundMoney(state.accruedInterest + state.bonusPayable),
       totalLiability: roundMoney(state.balance),
@@ -620,6 +634,7 @@ export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], en
   return {
     principal: roundMoney(principal),
     accruedInterest: roundMoney(accruedInterest),
+    totalAccruedInterest: roundMoney(totalAccruedInterest),
     bonusPayable: roundMoney(bonusPayable),
     payableInterest: roundMoney(accruedInterest + bonusPayable),
     totalLiability: roundMoney([...byInvestor.values()].reduce((sum, item) => sum + item.totalLiability, 0)),
@@ -1501,6 +1516,7 @@ export async function getInvestorsWithBalances() {
     const savingsSummary = savingsByInvestor.get(row.id) ?? {
       principal: 0,
       accruedInterest: 0,
+      totalAccruedInterest: 0,
       bonusPayable: 0,
       payableInterest: 0,
       totalLiability: 0,
@@ -1512,6 +1528,8 @@ export async function getInvestorsWithBalances() {
       marketValue: roundMoney(units * navPerUnit),
       ownershipPercent: calculateOwnershipPercent({ investorUnits: units, totalUnits }),
       fixedSavingsPrincipal: savingsSummary.principal,
+      fixedSavingsAccruedInterest: savingsSummary.accruedInterest,
+      fixedSavingsTotalAccruedInterest: savingsSummary.totalAccruedInterest,
       fixedSavingsInterest: savingsSummary.payableInterest,
       fixedSavingsBalance: savingsSummary.totalLiability,
     };
@@ -1674,6 +1692,8 @@ export async function getInvestorStatement(investorId: string) {
     performanceFees: fees.rows,
     activityLedger,
     savingsPrincipal: savingsSummary.principal,
+    savingsAccruedInterest: savingsSummary.accruedInterest,
+    savingsTotalAccruedInterest: savingsSummary.totalAccruedInterest,
     savingsInterest: savingsSummary.payableInterest,
     savingsBalance: savingsSummary.totalLiability,
   };
@@ -1856,6 +1876,7 @@ export async function getDashboardSummary() {
     const savingsSummary = savingsByInvestor.get(row.id) ?? {
       principal: 0,
       accruedInterest: 0,
+      totalAccruedInterest: 0,
       bonusPayable: 0,
       payableInterest: 0,
       totalLiability: 0,
@@ -1869,6 +1890,8 @@ export async function getDashboardSummary() {
       marketValue: roundMoney(units * navPerUnit),
       ownershipPercent: calculateOwnershipPercent({ investorUnits: units, totalUnits }),
       fixedSavingsPrincipal: savingsSummary.principal,
+      fixedSavingsAccruedInterest: savingsSummary.accruedInterest,
+      fixedSavingsTotalAccruedInterest: savingsSummary.totalAccruedInterest,
       fixedSavingsInterest: savingsSummary.payableInterest,
       fixedSavingsBalance: savingsSummary.totalLiability,
     };

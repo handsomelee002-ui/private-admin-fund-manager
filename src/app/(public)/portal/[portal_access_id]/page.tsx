@@ -89,7 +89,8 @@ export default async function InvestorPortalPage({
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-amber-400">{formatMoney(statement.savingsBalance)}</div>
-              <p className="mt-1 text-xs text-muted-foreground">{formatMoney(statement.savingsInterest)} accrued</p>
+              <p className="mt-1 text-xs text-muted-foreground">Curr accrued: {formatMoney(statement.savingsAccruedInterest)}</p>
+              <p className="mt-1 text-xs text-muted-foreground">Net accrued: {formatMoney(statement.savingsTotalAccruedInterest)}</p>
             </CardContent>
           </Card>
         </div>

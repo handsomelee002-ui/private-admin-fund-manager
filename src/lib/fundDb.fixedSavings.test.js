@@ -45,3 +45,19 @@ test("fixed savings promotion cap applies promo rate only up to the capped balan
 
   assert.equal(summary.totalLiability, 15001.92);
 });
+
+test("fixed savings tracks current and lifetime accrued interest separately", () => {
+  const summary = calculateFixedSavingsLiability(
+    [
+      { investor_id: "lee", date: "2025-01-01", type: "Deposit", amount: 1000, audit_status: "active" },
+      { investor_id: "lee", date: "2025-01-02", type: "Withdrawal", amount: 1, audit_status: "active" },
+    ],
+    "2025-01-03",
+    { baseRates: [{ effective_date: "1970-01-01", annual_rate_percent: 36.5 }], promotions: [] },
+  );
+
+  assert.equal(summary.accruedInterest, 1);
+  assert.equal(summary.totalAccruedInterest, 2);
+  assert.equal(summary.byInvestor.get("lee").accruedInterest, 1);
+  assert.equal(summary.byInvestor.get("lee").totalAccruedInterest, 2);
+});
