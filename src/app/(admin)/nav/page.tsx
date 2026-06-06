@@ -4,10 +4,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { AddPlatformForm } from "@/components/AddPlatformForm";
 import { CreateNavWeekForm } from "@/components/CreateNavWeekForm";
 import { LockNavButton } from "@/components/LockNavButton";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getPlatforms } from "@/actions/trading";
 import { getNavWeeks } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { CalendarClock } from "lucide-react";
@@ -35,6 +37,7 @@ export default async function NavPage({
     navPerUnit: (week: any) => week.nav_per_unit,
     status: (week: any) => week.status,
   });
+  const navPagination = paginateRows(sortedNavWeeks, resolvedSearchParams);
 
   return (
     <div className="space-y-6">
@@ -70,7 +73,7 @@ export default async function NavPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedNavWeeks.map((week: any) => (
+              {navPagination.pageRows.map((week: any) => (
                 <TableRow key={week.id}>
                   <TableCell className="pl-6 font-medium">{week.week_ending}</TableCell>
                   <TableCell className="text-right">{formatMoney(week.gross_assets)}</TableCell>
@@ -94,6 +97,7 @@ export default async function NavPage({
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...navPagination} searchParams={resolvedSearchParams} />
         </CardContent>
       </Card>
     </div>

@@ -11,9 +11,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AddPlatformTransactionForm } from "@/components/AddPlatformTransactionForm";
 import { PlatformTransactionsChart, PlatformNavSnapshotChart } from "@/components/PlatformCharts";
 import { NotesTableCell } from "@/components/NotesTableCell";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { Badge } from "@/components/ui/badge";
 import { formatMoney } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { calculatePlatformPerformance } from "@/lib/platformPerformance";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { NoPrefetchLink } from "@/components/NoPrefetchLink";
@@ -71,6 +73,8 @@ export default async function PlatformDetailsPage({
     unrealized: (snapshot: any) => snapshot.unrealized_profit,
     nav: (snapshot: any) => snapshot.nav_per_unit,
   });
+  const transactionPagination = paginateRows(sortedTransactions, resolvedSearchParams, "tx");
+  const snapshotPagination = paginateRows(sortedSnapshots, resolvedSearchParams, "snap");
 
   const fmt = formatMoney;
 
@@ -240,7 +244,7 @@ export default async function PlatformDetailsPage({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {sortedTransactions.map((t: any) => (
+                    {transactionPagination.pageRows.map((t: any) => (
                       <TableRow key={t.id} className="hover:bg-muted/20 transition-colors border-border/30">
                         <TableCell className="pl-6 text-sm">{t.date}</TableCell>
                         <TableCell>
@@ -294,6 +298,7 @@ export default async function PlatformDetailsPage({
                     )}
                   </TableBody>
                 </Table>
+                <PaginationControls {...transactionPagination} searchParams={resolvedSearchParams} prefix="tx" />
               </CardContent>
             </Card>
           </div>
@@ -331,7 +336,7 @@ export default async function PlatformDetailsPage({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {sortedSnapshots.map((p: any) => {
+                    {snapshotPagination.pageRows.map((p: any) => {
                       const profit = parseFloat(p.unrealized_profit);
                       return (
                         <TableRow key={p.id} className="hover:bg-muted/20 transition-colors border-border/30">
@@ -355,6 +360,7 @@ export default async function PlatformDetailsPage({
                     )}
                   </TableBody>
                 </Table>
+                <PaginationControls {...snapshotPagination} searchParams={resolvedSearchParams} prefix="snap" />
               </CardContent>
             </Card>
           </div>

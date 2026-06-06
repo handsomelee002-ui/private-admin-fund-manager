@@ -5,9 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { NotesTableCell } from "@/components/NotesTableCell";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestorStatementByPortalAccessId } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Banknote, Percent, TrendingUp, Wallet } from "lucide-react";
 
@@ -41,6 +43,7 @@ export default async function InvestorPortalPage({
     nav: (row: any) => row.navPerUnit,
     amount: (row: any) => row.amount,
   });
+  const activityPagination = paginateRows(sortedActivityLedger, resolvedSearchParams);
 
   return (
     <div className="min-h-screen bg-background p-8">
@@ -107,7 +110,7 @@ export default async function InvestorPortalPage({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sortedActivityLedger.map((row: any) => (
+                {activityPagination.pageRows.map((row: any) => (
                   <TableRow key={row.id}>
                     <TableCell className="pl-6">{row.date}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{row.category}</TableCell>
@@ -125,6 +128,7 @@ export default async function InvestorPortalPage({
                 )}
               </TableBody>
             </Table>
+            <PaginationControls {...activityPagination} searchParams={resolvedSearchParams} />
           </CardContent>
         </Card>
       </div>

@@ -13,8 +13,10 @@ import { BrokerageFeeConfig } from "@/components/BrokerageFeeConfig";
 import { AddBonusForm } from "@/components/AddBonusForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { NotesTableCell } from "@/components/NotesTableCell";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Percent, DollarSign, TrendingDown, TrendingUp, Gift, Wallet } from "lucide-react";
@@ -82,6 +84,7 @@ export default async function BrokeragePage({
     date: (bonus: any) => bonus.date,
     amount: (bonus: any) => bonus.amount,
   });
+  const bonusPagination = paginateRows(sortedBonusPayments, resolvedSearchParams);
   const totalBonusPaid = bonusPayments.reduce((sum: number, b: any) => sum + parseFloat(b.amount), 0);
 
   const netCommission = brokerageProfitLoss + brokerageFeeEarned - totalInterestOwed - totalBonusPaid;
@@ -209,7 +212,7 @@ export default async function BrokeragePage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedBonusPayments.map((b: any) => (
+              {bonusPagination.pageRows.map((b: any) => (
                 <TableRow key={b.id} className="hover:bg-muted/20 transition-colors border-border/30">
                   <TableCell className="pl-6">
                     <div className="flex items-center gap-2">
@@ -254,6 +257,7 @@ export default async function BrokeragePage({
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...bonusPagination} searchParams={resolvedSearchParams} />
         </CardContent>
       </Card>
     </div>

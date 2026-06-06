@@ -3,19 +3,28 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AddBaseRateForm, AddPromotionForm } from "@/components/FixedSavingsRateForms";
 import { DisablePromotionButton } from "@/components/DisablePromotionButton";
+import { PaginationControls } from "@/components/PaginationControls";
 import { getFixedSavingsRateSettings } from "@/lib/fundDb";
 import { formatMoney } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { CalendarClock, Percent, Tags } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-export default async function FixedSavingsRatesPage() {
+export default async function FixedSavingsRatesPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const resolvedSearchParams = await searchParams;
   const settings = await getFixedSavingsRateSettings();
   const baseRates = [...settings.baseRates].sort((a: any, b: any) => {
     const dateOrder = String(b.effective_date).localeCompare(String(a.effective_date));
     if (dateOrder !== 0) return dateOrder;
     return String(b.created_at || "").localeCompare(String(a.created_at || ""));
   });
+  const baseRatePagination = paginateRows(baseRates, resolvedSearchParams, "base");
+  const promotionPagination = paginateRows(settings.promotions, resolvedSearchParams, "promo");
 
   return (
     <div className="space-y-6">
@@ -70,7 +79,7 @@ export default async function FixedSavingsRatesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {baseRates.map((rate: any) => (
+              {baseRatePagination.pageRows.map((rate: any) => (
                 <TableRow key={rate.id || rate.effective_date}>
                   <TableCell className="pl-6">{rate.effective_date}</TableCell>
                   <TableCell className="text-right pr-6 font-semibold">{Number(rate.annual_rate_percent).toFixed(4)}%</TableCell>
@@ -78,6 +87,7 @@ export default async function FixedSavingsRatesPage() {
               ))}
             </TableBody>
           </Table>
+          <PaginationControls {...baseRatePagination} searchParams={resolvedSearchParams} prefix="base" />
         </CardContent>
       </Card>
 
@@ -101,7 +111,7 @@ export default async function FixedSavingsRatesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {settings.promotions.map((promotion: any) => (
+              {promotionPagination.pageRows.map((promotion: any) => (
                 <TableRow key={promotion.id}>
                   <TableCell className="pl-6 font-medium">{promotion.name}</TableCell>
                   <TableCell>{promotion.start_date} to {promotion.end_date}</TableCell>
@@ -122,6 +132,7 @@ export default async function FixedSavingsRatesPage() {
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...promotionPagination} searchParams={resolvedSearchParams} prefix="promo" />
         </CardContent>
       </Card>
     </div>

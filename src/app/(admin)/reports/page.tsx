@@ -1,9 +1,11 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getPlatforms } from "@/actions/trading";
 import { getFundSummaryMetrics, getNavWeeks } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { BarChart3, DollarSign, Layers3, TrendingUp } from "lucide-react";
@@ -38,6 +40,8 @@ export default async function ReportsPage({
     units: (week: any) => week.total_units,
     navPerUnit: (week: any) => week.nav_per_unit,
   });
+  const platformPagination = paginateRows(sortedPlatforms, resolvedSearchParams, "platform");
+  const navPagination = paginateRows(sortedNavWeeks, resolvedSearchParams, "nav");
   const totalRealized = platforms.reduce((sum: number, platform: any) => sum + platform.realizedProfit, 0);
   const latestLockedWeek = [...navWeeks].sort((a: any, b: any) => String(b.week_ending).localeCompare(String(a.week_ending)))[0]?.week_ending ?? "No locked NAV";
 
@@ -104,7 +108,7 @@ export default async function ReportsPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedPlatforms.map((platform: any) => (
+              {platformPagination.pageRows.map((platform: any) => (
                 <TableRow key={platform.id}>
                   <TableCell className="pl-6 font-medium">{platform.name}</TableCell>
                   <TableCell className="text-right">{formatMoney(platform.netInvested)}</TableCell>
@@ -119,6 +123,7 @@ export default async function ReportsPage({
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...platformPagination} searchParams={resolvedSearchParams} prefix="platform" />
         </CardContent>
       </Card>
 
@@ -135,7 +140,7 @@ export default async function ReportsPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedNavWeeks.map((week: any) => (
+              {navPagination.pageRows.map((week: any) => (
                 <TableRow key={week.id}>
                   <TableCell className="pl-6">{week.week_ending}</TableCell>
                   <TableCell className="text-right">{formatMoney(week.net_asset_value)}</TableCell>
@@ -150,6 +155,7 @@ export default async function ReportsPage({
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...navPagination} searchParams={resolvedSearchParams} prefix="nav" />
         </CardContent>
       </Card>
     </div>

@@ -2059,6 +2059,182 @@ export async function seedDummyData() {
     return inserted.rows[0].id as string;
   }
 
+  async function lockSeedNavWeek(weekEnding: string) {
+    const week = await sql`SELECT id FROM nav_weeks WHERE week_ending = ${weekEnding}`;
+    await lockNavWeek(week.rows[0].id);
+  }
+
+  function utcDate(value: string) {
+    const [year, month, day] = value.split("-").map(Number);
+    return new Date(Date.UTC(year, month - 1, day));
+  }
+
+  function isoDate(value: Date) {
+    return value.toISOString().slice(0, 10);
+  }
+
+  function addDays(value: Date, days: number) {
+    const next = new Date(value);
+    next.setUTCDate(next.getUTCDate() + days);
+    return next;
+  }
+
+  const seedFixedSavingsBalances = new Map<string, number>();
+
+  async function seedWeeklyDemoHistory(start: string, end: string, startIndex: number) {
+    const investors = [
+      { id: alice.rows[0].id, name: "Alice" },
+      { id: ben.rows[0].id, name: "Ben" },
+      { id: chandra.rows[0].id, name: "Chandra" },
+      { id: farah.rows[0].id, name: "Farah" },
+      { id: grace.rows[0].id, name: "Grace" },
+    ];
+    const platforms = [
+      { id: ibkr.rows[0].id, accountId: ibkrCash.rows[0].id, assetId: voo.rows[0].id, name: "IBKR", currency: "USD", fx: 4.68 },
+      { id: moomoo.rows[0].id, accountId: moomooCash.rows[0].id, assetId: maybankStock.rows[0].id, name: "Moomoo", currency: "MYR", fx: 1 },
+      { id: binance.rows[0].id, accountId: binanceSpot.rows[0].id, assetId: btc.rows[0].id, name: "Binance", currency: "USDT", fx: 4.7 },
+      { id: maybank.rows[0].id, accountId: reserveCash.rows[0].id, assetId: null, name: "Reserve", currency: "MYR", fx: 1 },
+    ];
+    let index = startIndex;
+
+    for (let date = utcDate(start); date <= utcDate(end); date = addDays(date, 7)) {
+      const weekEnding = isoDate(date);
+      const eventDate = isoDate(addDays(date, -2));
+      const investor = investors[index % investors.length];
+      const platform = platforms[index % platforms.length];
+      const baseFlow = 4500 + ((index * 1375) % 18500);
+
+      if (index % 4 === 0) {
+        await recordCashMovement({
+          investorId: investor.id,
+          date: eventDate,
+          type: "Deposit",
+          amount: 5000 + ((index * 925) % 16000),
+          notes: `Seed recurring equity subscription ${index + 1}`,
+        });
+      }
+      if (index > 12 && index % 17 === 0) {
+        await recordCashMovement({
+          investorId: investors[(index + 1) % investors.length].id,
+          date: eventDate,
+          type: "Withdrawal",
+          amount: 1800 + ((index * 350) % 4200),
+          notes: `Seed partial equity redemption ${index + 1}`,
+        });
+      }
+      if (index % 8 === 0) {
+        const savingsInvestor = investors[(index + 2) % investors.length];
+        const savingsAmount = 3000 + ((index * 575) % 11000);
+        await recordFixedSavings({
+          investorId: savingsInvestor.id,
+          date: eventDate,
+          type: "Deposit",
+          amount: savingsAmount,
+          notes: `Seed fixed savings placement ${index + 1}`,
+        });
+        seedFixedSavingsBalances.set(savingsInvestor.id, (seedFixedSavingsBalances.get(savingsInvestor.id) ?? 0) + savingsAmount);
+      }
+      if (index > 16 && index % 23 === 0) {
+        const savingsInvestor = investors.find((candidate) => (seedFixedSavingsBalances.get(candidate.id) ?? 0) > 5000);
+        if (savingsInvestor) {
+          const savingsAmount = Math.min(1200 + ((index * 225) % 2800), (seedFixedSavingsBalances.get(savingsInvestor.id) ?? 0) - 1000);
+          await recordFixedSavings({
+            investorId: savingsInvestor.id,
+            date: eventDate,
+            type: "Withdrawal",
+            amount: savingsAmount,
+            notes: `Seed fixed savings withdrawal ${index + 1}`,
+          });
+          seedFixedSavingsBalances.set(savingsInvestor.id, (seedFixedSavingsBalances.get(savingsInvestor.id) ?? 0) - savingsAmount);
+        }
+      }
+
+      await insertPlatformTransaction({
+        platformId: platform.id,
+        accountId: platform.accountId,
+        date: eventDate,
+        type: index % 11 === 0 ? "BROKER_WITHDRAWAL" : "BROKER_DEPOSIT",
+        amount: platform.fx === 1 ? baseFlow : roundMoney(baseFlow / platform.fx),
+        currency: platform.currency,
+        baseAmount: baseFlow,
+        fxRateToBase: platform.fx,
+        reference: `SEED-${platform.name.toUpperCase()}-FLOW-${String(index + 1).padStart(3, "0")}`,
+        notes: `Seed ${platform.name} funding flow ${index + 1}`,
+        allocations: index % 11 === 0
+          ? [{ fundingSource: "equity", ratioPercent: 100, baseAmount: -baseFlow }]
+          : [
+              { fundingSource: "equity", ratioPercent: 70, baseAmount: roundMoney(baseFlow * 0.7) },
+              { fundingSource: index % 3 === 0 ? "fixed_savings" : "brokerage", ratioPercent: 30, baseAmount: roundMoney(baseFlow * 0.3) },
+            ],
+      });
+
+      if (platform.assetId) {
+        const tradeBaseAmount = 1800 + ((index * 741) % 14500);
+        const isSell = index > 10 && index % 5 === 0;
+        await insertPlatformTransaction({
+          platformId: platform.id,
+          accountId: platform.accountId,
+          assetId: platform.assetId,
+          date: isoDate(addDays(date, -1)),
+          type: isSell ? "SELL" : "BUY",
+          amount: platform.fx === 1 ? tradeBaseAmount : roundMoney(tradeBaseAmount / platform.fx),
+          currency: platform.currency,
+          baseAmount: tradeBaseAmount,
+          fxRateToBase: platform.fx,
+          quantity: platform.name === "Binance" ? Number((0.005 + (index % 9) * 0.0017).toFixed(8)) : 10 + (index % 70),
+          pricePerUnit: platform.name === "Binance" ? 68000 + index * 275 : 8 + (index % 40) * 3.7,
+          grossAmount: tradeBaseAmount,
+          feeAmount: roundMoney(tradeBaseAmount * 0.0015),
+          netAmount: tradeBaseAmount,
+          realizedProfit: isSell ? roundMoney(250 + ((index * 113) % 3900) - (index % 2 === 0 ? 0 : 600)) : null,
+          reference: `SEED-${platform.name.toUpperCase()}-TRADE-${String(index + 1).padStart(3, "0")}`,
+          notes: `Seed ${isSell ? "sell" : "buy"} trade ${index + 1}`,
+        });
+      }
+
+      await createNavWeek({
+        weekEnding,
+        settlementDate: weekEnding,
+        platformSnapshots: [
+          { platformId: ibkr.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 4) * 4800 + index * 210) },
+          { platformId: moomoo.rows[0].id, unrealizedProfit: roundMoney(Math.cos(index / 5) * 2600 + index * 95) },
+          { platformId: binance.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 3) * 7200 + index * 150) },
+          { platformId: maybank.rows[0].id, unrealizedProfit: roundMoney(Math.cos(index / 6) * 350) },
+        ],
+        adjustments: 8000 + ((index * 425) % 22000),
+        notes: `Seed locked weekly NAV ${weekEnding}`,
+      });
+      await lockSeedNavWeek(weekEnding);
+      index += 1;
+    }
+
+    return index;
+  }
+
+  await createNavWeek({
+    weekEnding: "2024-01-05",
+    settlementDate: "2024-01-05",
+    platformSnapshots: [
+      { platformId: ibkr.rows[0].id, unrealizedProfit: 0 },
+      { platformId: moomoo.rows[0].id, unrealizedProfit: 0 },
+      { platformId: binance.rows[0].id, unrealizedProfit: 0 },
+      { platformId: maybank.rows[0].id, unrealizedProfit: 0 },
+    ],
+    adjustments: 10000,
+    notes: "Seed opening NAV for 2024 dummy history",
+  });
+  await lockSeedNavWeek("2024-01-05");
+  await recordCashMovement({ investorId: alice.rows[0].id, date: "2024-01-08", type: "Deposit", amount: 50000, notes: "Seed 2024 opening equity subscription" });
+  await recordCashMovement({ investorId: ben.rows[0].id, date: "2024-01-08", type: "Deposit", amount: 45000, notes: "Seed 2024 opening equity subscription" });
+  await recordCashMovement({ investorId: chandra.rows[0].id, date: "2024-01-09", type: "Deposit", amount: 35000, notes: "Seed 2024 opening equity subscription" });
+  await recordCashMovement({ investorId: farah.rows[0].id, date: "2024-01-09", type: "Deposit", amount: 25000, notes: "Seed 2024 opening equity subscription" });
+  await recordCashMovement({ investorId: grace.rows[0].id, date: "2024-01-10", type: "Deposit", amount: 30000, notes: "Seed 2024 opening equity subscription" });
+  await recordFixedSavings({ investorId: alice.rows[0].id, date: "2024-01-10", type: "Deposit", amount: 12000, notes: "Seed 2024 opening fixed savings placement" });
+  await recordFixedSavings({ investorId: farah.rows[0].id, date: "2024-01-10", type: "Deposit", amount: 18000, notes: "Seed 2024 opening fixed savings placement" });
+  seedFixedSavingsBalances.set(alice.rows[0].id, 12000);
+  seedFixedSavingsBalances.set(farah.rows[0].id, 18000);
+  const nextSeedIndex = await seedWeeklyDemoHistory("2024-01-12", "2026-02-27", 1);
+
   await createNavWeek({
     weekEnding: "2026-03-06",
     settlementDate: "2026-03-06",
@@ -2328,6 +2504,7 @@ export async function seedDummyData() {
   });
   const week5 = await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-04-03'`;
   await lockNavWeek(week5.rows[0].id);
+  await seedWeeklyDemoHistory("2026-04-10", "2026-06-05", nextSeedIndex);
 
   await sql`
     INSERT INTO performance_fees (investor_id, nav_week_id, crystallized_gain, fee_rate_percent, fee_amount, date, notes)
@@ -2394,8 +2571,8 @@ export async function seedDummyData() {
     seed: "complete-development-fund",
     investors: 5,
     platforms: 4,
-    lockedNavWeeks: 5,
-    fixedSavingsBaseRates: 4,
+    lockedNavWeeks: 127,
+    fixedSavingsBaseRates: 3,
     fixedSavingsPromotions: 2,
     portalAccessIds: [
       "demo-alice-tan-2026",

@@ -3,10 +3,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AddFixedSavingsMovementForm } from "@/components/AddFixedSavingsMovementForm";
 import { NotesTableCell } from "@/components/NotesTableCell";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestors } from "@/actions/investors";
 import { getFixedSavingsLedger } from "@/lib/fundDb";
 import { formatMoney } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Banknote } from "lucide-react";
@@ -32,6 +34,7 @@ export default async function FixedSavingsPage({
     type: (record: any) => record.type,
     amount: (record: any) => record.amount,
   });
+  const recordPagination = paginateRows(sortedRecords, resolvedSearchParams);
 
   return (
     <div className="space-y-6">
@@ -64,7 +67,7 @@ export default async function FixedSavingsPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedRecords.map((record: any) => (
+              {recordPagination.pageRows.map((record: any) => (
                 <TableRow key={record.id}>
                   <TableCell className="pl-6">{record.date}</TableCell>
                   <TableCell className="font-medium">{record.investor_name}</TableCell>
@@ -85,6 +88,7 @@ export default async function FixedSavingsPage({
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...recordPagination} searchParams={resolvedSearchParams} />
         </CardContent>
       </Card>
     </div>

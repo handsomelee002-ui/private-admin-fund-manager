@@ -1,9 +1,11 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getDashboardSummary } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Activity, Banknote, Landmark, Percent, Users, Wallet } from "lucide-react";
@@ -26,6 +28,7 @@ export default async function Dashboard({
     ownership: (investor: any) => investor.ownershipPercent,
     marketValue: (investor: any) => investor.marketValue,
   });
+  const investorPagination = paginateRows(sortedInvestors, resolvedSearchParams);
   const latestNav = summary.latestNav;
   const navPerUnit = latestNav ? Number(latestNav.nav_per_unit) : 1;
 
@@ -107,7 +110,7 @@ export default async function Dashboard({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedInvestors.map((investor: any) => (
+              {investorPagination.pageRows.map((investor: any) => (
                 <TableRow key={investor.id}>
                   <TableCell className="pl-6 font-medium">{investor.name}</TableCell>
                   <TableCell className="text-right">{formatUnits(investor.units)}</TableCell>
@@ -126,6 +129,7 @@ export default async function Dashboard({
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...investorPagination} searchParams={resolvedSearchParams} />
         </CardContent>
       </Card>
     </div>

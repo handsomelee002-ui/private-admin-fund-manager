@@ -7,11 +7,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { AddCashMovementForm } from "@/components/AddCashMovementForm";
 import { AddFixedSavingsMovementForm } from "@/components/AddFixedSavingsMovementForm";
 import { NotesTableCell } from "@/components/NotesTableCell";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestors } from "@/actions/investors";
 import { getInvestorStatement } from "@/lib/fundDb";
 import { requireAdmin } from "@/lib/auth";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { ArrowLeft, Banknote, Filter, Percent, TrendingUp, Wallet } from "lucide-react";
 
@@ -27,7 +29,7 @@ function ledgerFilterHref(investorId: string, searchParams: Record<string, strin
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(searchParams)) {
     const normalized = firstValue(value);
-    if (normalized && key !== "ledger" && key !== "status") params.set(key, normalized);
+    if (normalized && key !== "ledger" && key !== "status" && key !== "page") params.set(key, normalized);
   }
   if (ledger !== "all") params.set("ledger", ledger);
   const query = params.toString();
@@ -68,6 +70,7 @@ export default async function InvestorDetailPage({
     nav: (row: any) => row.navPerUnit,
     amount: (row: any) => row.amount,
   });
+  const activityPagination = paginateRows(sortedActivityLedger, resolvedSearchParams);
 
   return (
     <div className="space-y-6">
@@ -136,7 +139,7 @@ export default async function InvestorDetailPage({
             <div className="space-y-1">
               <CardTitle className="text-base">Activity Ledger</CardTitle>
               <p className="text-xs text-muted-foreground">
-                Showing {sortedActivityLedger.length} of {statement.activityLedger.length} records
+                Showing {activityPagination.showingStart}-{activityPagination.showingEnd} of {sortedActivityLedger.length} records
               </p>
             </div>
             <div className="flex min-w-0 items-center gap-2 rounded-md border border-border/50 bg-background/40 p-1">
@@ -184,7 +187,7 @@ export default async function InvestorDetailPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedActivityLedger.map((row: any) => (
+              {activityPagination.pageRows.map((row: any) => (
                 <TableRow key={row.id}>
                   <TableCell className="pl-6">{row.date}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">{row.category}</TableCell>
@@ -203,6 +206,7 @@ export default async function InvestorDetailPage({
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...activityPagination} searchParams={resolvedSearchParams} />
         </CardContent>
       </Card>
     </div>

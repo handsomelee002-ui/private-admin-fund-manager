@@ -4,8 +4,10 @@ import { getPlatforms, deletePlatform, updatePlatformName } from "@/actions/trad
 import { AddPlatformForm } from "@/components/AddPlatformForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { EditNameDialog } from "@/components/EditNameDialog";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { NoPrefetchLink } from "@/components/NoPrefetchLink";
@@ -31,6 +33,7 @@ export default async function TradingLedgerPage({
     unrealized: (platform: any) => platform.unrealizedProfit,
     totalValue: (platform: any) => platform.totalValue,
   });
+  const platformPagination = paginateRows(sortedPlatforms, resolvedSearchParams);
 
   const totalNetInvested = platforms.reduce((sum: number, p: any) => sum + p.netInvested, 0);
   const totalRealized = platforms.reduce((sum: number, p: any) => sum + p.realizedProfit, 0);
@@ -139,7 +142,7 @@ export default async function TradingLedgerPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedPlatforms.map((platform: any) => {
+              {platformPagination.pageRows.map((platform: any) => {
                 const pnlPct = platform.netInvested > 0
                   ? ((platform.unrealizedProfit / platform.netInvested) * 100)
                   : 0;
@@ -206,6 +209,7 @@ export default async function TradingLedgerPage({
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...platformPagination} searchParams={resolvedSearchParams} />
 
           {/* Totals footer */}
           {platforms.length > 0 && (

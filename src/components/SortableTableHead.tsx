@@ -38,6 +38,7 @@ export function SortableTableHead({
   }
   params.set(`${prefix}sort`, sortKey);
   params.set(`${prefix}dir`, nextDir);
+  params.delete(`${prefix}page`);
 
   const Icon = isActive ? (activeDir === "asc" ? ArrowUp : ArrowDown) : ArrowUpDown;
 

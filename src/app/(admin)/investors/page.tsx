@@ -5,10 +5,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { AddInvestorForm } from "@/components/AddInvestorForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { EditNameDialog } from "@/components/EditNameDialog";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { PortalAccessControl } from "@/components/PortalAccessControl";
 import { deleteInvestor, getInvestors, updateInvestorName } from "@/actions/investors";
 import { formatMoney, formatUnits } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { ChevronRight, Users } from "lucide-react";
@@ -34,6 +36,7 @@ export default async function InvestorsPage({
     marketValue: (investor: any) => investor.marketValue,
     fixedSavings: (investor: any) => investor.fixedSavingsBalance,
   });
+  const investorPagination = paginateRows(sortedInvestors, resolvedSearchParams);
 
   return (
     <div className="space-y-6">
@@ -68,7 +71,7 @@ export default async function InvestorsPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedInvestors.map((investor: any) => (
+              {investorPagination.pageRows.map((investor: any) => (
                 <TableRow key={investor.id} className="group">
                   <TableCell className="pl-6">
                     <NoPrefetchLink href={`/investors/${investor.id}`} className="flex items-center gap-3 w-fit">
@@ -109,6 +112,7 @@ export default async function InvestorsPage({
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...investorPagination} searchParams={resolvedSearchParams} />
         </CardContent>
       </Card>
     </div>

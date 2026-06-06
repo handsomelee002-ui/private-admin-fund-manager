@@ -5,8 +5,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { SettleClaimDialog } from "@/components/SettleClaimDialog";
 import { DeleteButton } from "@/components/DeleteButton";
 import { NotesTableCell } from "@/components/NotesTableCell";
+import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
+import { paginateRows } from "@/lib/pagination";
 import { getSortState, sortRows } from "@/lib/tableSorting";
 import { Handshake, Clock, CheckCircle, AlertCircle, DollarSign } from "lucide-react";
 
@@ -55,6 +57,7 @@ export default async function ClaimsPage({
     status: (claim: any) => claim.status,
     settledDate: (claim: any) => claim.settled_date,
   });
+  const claimPagination = paginateRows(sortedClaims, resolvedSearchParams);
 
   const totalLocked   = claims.reduce((s: number, c: any) => s + parseFloat(c.locked_amount), 0);
   const totalSettled  = claims.reduce((s: number, c: any) => s + parseFloat(c.settled_amount), 0);
@@ -161,7 +164,7 @@ export default async function ClaimsPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedClaims.map((c: any) => {
+              {claimPagination.pageRows.map((c: any) => {
                 const locked       = parseFloat(c.locked_amount);
                 const brokerageFee = parseFloat(c.brokerage_fee || "0");
                 const netPayable   = locked - brokerageFee;
@@ -224,6 +227,7 @@ export default async function ClaimsPage({
               )}
             </TableBody>
           </Table>
+          <PaginationControls {...claimPagination} searchParams={resolvedSearchParams} />
         </CardContent>
       </Card>
     </div>

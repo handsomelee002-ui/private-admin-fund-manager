@@ -164,7 +164,8 @@ export function DevelopmentDataTools({ adminPassword, onProtectedActionSuccess }
             <p className="text-xs text-muted-foreground">
               <span className="block">Rebuild demo investors,</span>
               <span className="block">NAV weeks, platforms,</span>
-              <span className="block">trades, claims, fees,</span>
+              <span className="block">2024-now transactions,</span>
+              <span className="block">claims, fees, trades,</span>
               <span className="block">and audit records.</span>
             </p>
           </div>
