@@ -1,6 +1,6 @@
 # Private Admin Fund Manager
 
-Private Admin Fund Manager is a self-hosted Next.js application for administering a private unit-based investment fund. It supports weekly NAV accounting, investor units, capital movements, fixed-savings liabilities, trading platform records, profit claims, brokerage fees, audit logs, JSON backups, and read-only investor portal links.
+Private Admin Fund Manager is a self-hosted Next.js application for administering a private unit-based investment fund. It supports weekly NAV accounting, investor units and equity performance, capital movements, fixed-savings liabilities, trading platform records, profit claims, profit performance fees, brokerage reconciliation, audit logs, JSON backups, and read-only investor portal links.
 
 This repository is operational software for private administration. It is not investment advice, tax advice, legal advice, a public fundraising platform, a payment processor, or a regulated custody product.
 
@@ -26,12 +26,12 @@ This repository is operational software for private administration. It is not in
 ## Features
 
 - Weekly unit-based NAV accounting with draft and locked NAV weeks.
-- Investor directory with unit balances, ownership, market value, fixed-savings balance, and statement history.
+- Investor directory with unit balances, ownership, market value, equity P&L, equity return percentage, fixed-savings balance, and statement history.
 - Capital deposits and withdrawals settled against the latest locked NAV per unit.
 - Fixed-savings deposits, withdrawals, interest accrual, base rates, and promotional rate periods outside equity NAV.
-- Trading platform, account, asset, transaction, allocation, NAV snapshot, and performance tracking.
-- Profit claim creation and settlement with configurable brokerage/performance fee handling.
-- Brokerage account reconciliation for platform P/L, fees, accrued interest, and bonuses.
+- Trading platform, account, asset, transaction, funding allocation, NAV snapshot, realized profit, and unrealized P&L tracking.
+- Profit claim creation and settlement with configurable profit performance fee handling.
+- Brokerage account reconciliation for non-equity investment P&L, profit performance fees, accrued fixed-savings interest, and bonuses.
 - Audit log with supported reversal workflows and guardrails against unsafe historical mutation.
 - Read-only investor portal links with rotation and access logging.
 - Manual JSON backup export, validation, preview, and restore.
@@ -46,11 +46,16 @@ This repository is operational software for private administration. It is not in
 - Deposits issue units at the latest locked NAV per unit.
 - Withdrawals redeem units at the latest locked NAV per unit.
 - Investor ownership is calculated from current investor units divided by total active fund units.
+- Equity P&L is calculated as current equity market value minus remaining investor equity cost basis.
+- Equity return percentage is calculated from equity P&L divided by remaining investor equity cost basis.
 - Late investors do not receive gains from periods before their unit issuance.
 - Fixed savings is treated as a liability book and excluded from equity NAV ownership.
 - Fixed-savings interest accrues independently from equity units.
+- Fixed-savings principal and accrued interest remain contractual liabilities even when fixed-savings-funded capital is used in platform investments.
 - Platform funding can be attributed to equity, fixed savings, and brokerage sources.
-- Profit claims and brokerage fees are tracked separately from investor unit ownership.
+- Equity-funded platform P&L flows into equity NAV.
+- Fixed-savings-funded and brokerage-funded platform P&L is reported as non-equity investment P&L and reconciled through the brokerage workflow.
+- Profit claims and profit performance fees are tracked separately from investor unit ownership.
 - Locked NAV weeks are immutable by design.
 
 Default operating cycle:
@@ -60,7 +65,7 @@ Default operating cycle:
 3. Review platform snapshots, gross assets, adjustments, and calculated NAV per unit.
 4. Lock the weekly NAV.
 5. Settle deposits, withdrawals, fixed-savings movements, claims, and bonuses.
-6. Review investor statements, reports, brokerage reconciliation, and audit logs.
+6. Review investor statements, equity performance, reports, brokerage reconciliation, and audit logs.
 
 ## Access Model
 
@@ -76,11 +81,11 @@ Default operating cycle:
 | `/capital` | Admin session | Equity cash movement ledger. |
 | `/fixed-savings` | Admin session | Fixed-savings liability ledger. |
 | `/fixed-savings-rates` | Admin session | Fixed-savings base and promotional rates. |
-| `/trading` | Admin session | Trading platform directory. |
-| `/trading/[platformId]` | Admin session | Platform transactions, snapshots, and allocation. |
+| `/trading` | Admin session | Trading platform directory, realized profit, unrealized P&L, and portfolio value. |
+| `/trading/[platformId]` | Admin session | Platform transactions, snapshots, funding allocation, and performance. |
 | `/claims` | Admin session | Profit claims and settlement workflow. |
-| `/brokerage` | Admin session | Brokerage fee and reconciliation workflow. |
-| `/reports` | Admin session | Fund reports and NAV trends. |
+| `/brokerage` | Admin session | Profit performance fee settings and non-equity reconciliation workflow. |
+| `/reports` | Admin session | Fund reports, profit performance fees, platform performance, and NAV trends. |
 | `/settings` | Admin session | Backup and protected data tools. |
 | `/admin-logs` | Admin session | Audit history and supported reversals. |
 | `/development` | Admin session | Development tooling route. |
@@ -278,16 +283,16 @@ public/                   Static assets
 
 Primary modules:
 
-- Dashboard: fund overview, NAV per unit, units, fixed-savings liability, and investor summary.
+- Dashboard: fund overview, NAV per unit, units, equity P&L, equity return, fixed-savings liability, and investor summary.
 - Weekly NAV: draft, review, lock, and list weekly NAV snapshots.
-- Investors: directory, balances, portal links, and investor statements.
+- Investors: directory, equity P&L, equity return, balances, portal links, and investor statements.
 - Capital: equity deposits and withdrawals.
 - Fixed Savings: liability ledger and interest-bearing savings activity.
 - Fixed Savings Rates: base rates and promotions.
-- Trading: platforms, accounts, assets, transactions, snapshots, and performance.
+- Trading: platforms, accounts, assets, transactions, funding allocation, realized profit, unrealized P&L, snapshots, and performance.
 - Claims: profit claim settlement and outstanding balances.
-- Brokerage: fee configuration, brokerage reconciliation, and bonus workflows.
-- Reports: platform performance and NAV history.
+- Brokerage: profit performance fee configuration, non-equity investment P&L reconciliation, fixed-savings interest liability, and bonus workflows.
+- Reports: platform performance, profit performance fees, and NAV history.
 - Settings: protected backup and data tools.
 - Admin Logs: audit trail and supported reversal controls.
 

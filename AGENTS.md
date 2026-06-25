@@ -125,6 +125,9 @@ When changing UI, run or request browser verification unless explicitly blocked.
 Use Playwright, the in-app browser, or the project's existing browser test workflow to inspect the changed screen at mobile and desktop viewport sizes.
 If browser verification is not run, report the exact manual checks required.
 
+Metric and financial summary cards must keep labels, icons, values, and helper text visually aligned across sibling cards.
+Exact financial values must remain visible and must not be abbreviated unless the user explicitly requests compact display.
+
 ### 9. Verify work
 Do not run checks such as tests, lint, typecheck, or build unless requested.
 When making changes, state what should be tested and provide the exact command if known for the user to run.
@@ -165,11 +168,23 @@ Avoid reading or editing:
 
 If the task grows too large, stop, summarize progress, and suggest starting a fresh focused task.
 
-### 12. Track progress internally
+### 12. Documentation stays current
+When a change affects behavior, routes, terminology, accounting rules, security posture, setup, scripts, environment variables, public API behavior, user workflows, or UI meaning, update the related Markdown documentation in the same task.
+
+At minimum, check whether `README.md` and `AGENTS.md` need updates before finishing.
+
+Do not let source code and documentation disagree on financial terminology.
+Examples:
+- Use `Profit Performance Fees` for fee income from crystallized equity redemption gains.
+- Use `Unrealized P&L` for current open platform profit/loss.
+- Use `Non-Equity Investment P&L` for fixed-savings-funded and brokerage-funded platform P&L outside equity NAV.
+- Keep fixed savings documented as a fixed-rate liability product, not equity risk capital.
+
+### 13. Track progress internally
 For multi-step tasks, keep track of what changed, what remains, and any risks.
 Only report this if needed or requested.
 
-### 13. Token efficiency
+### 14. Token efficiency
 Do not write progress updates during implementation.
 
 Do not narrate investigation steps, confirmed findings, or intended fixes while working.
@@ -191,7 +206,7 @@ Prefer targeted commands that produce small output.
 
 Final responses must use the required response format only, except when the user explicitly asks for code, a review, a plan, or a detailed explanation.
 
-### 14. Superpowers plugin usage
+### 15. Superpowers plugin usage
 Use Superpowers only during planning.
 
 Allowed Superpowers usage:
