@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getDashboardSummary } from "@/lib/fundDb";
-import { formatMoney, formatUnits } from "@/lib/formatting";
+import { formatMoney, formatPercent, formatUnits } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
@@ -13,6 +13,13 @@ import { Activity, Banknote, Landmark, Percent, Users, Wallet } from "lucide-rea
 export const dynamic = "force-dynamic";
 
 const dashboardInvestorSorts = ["investor", "units", "ownership", "marketValue"] as const;
+const metricHeaderClass = "flex min-h-12 flex-row items-start justify-between gap-3 pb-2";
+const metricTitleClass = "text-sm leading-5 text-muted-foreground";
+const metricValueClass = "text-[1.625rem] leading-8 font-bold whitespace-nowrap tabular-nums tracking-normal";
+
+function signedMoney(value: number) {
+  return `${value > 0 ? "+" : ""}${formatMoney(value)}`;
+}
 
 export default async function Dashboard({
   searchParams,
@@ -41,52 +48,58 @@ export default async function Dashboard({
 
       <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-5">
         <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Equity NAV</CardTitle>
-            <Wallet className="h-4 w-4 text-primary" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Equity NAV</CardTitle>
+            <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatMoney(summary.aum)}</div>
+            <div className={metricValueClass}>{formatMoney(summary.aum)}</div>
+            <p
+              className={`text-xs mt-1 ${summary.equityPnlAmount >= 0 ? "text-emerald-400" : "text-red-400"}`}
+              title="Equity P&L equals current equity NAV minus remaining investor equity cost basis."
+            >
+              {signedMoney(summary.equityPnlAmount)} | {formatPercent(summary.equityReturnPercent, { signed: true })}
+            </p>
             <p className="text-xs text-muted-foreground mt-1">Excludes fixed savings funding</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Fixed Savings Principal</CardTitle>
-            <Banknote className="h-4 w-4 text-amber-400" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Fixed Savings Principal</CardTitle>
+            <Banknote className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-amber-400">{formatMoney(summary.fixedSavingsLiability)}</div>
+            <div className={`${metricValueClass} text-amber-400`}>{formatMoney(summary.fixedSavingsLiability)}</div>
             <p className="text-xs text-muted-foreground mt-1">Interest excluded from this total</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Investor Capital</CardTitle>
-            <Landmark className="h-4 w-4 text-blue-400" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Investor Capital</CardTitle>
+            <Landmark className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatMoney(summary.totalInvestorCapital)}</div>
+            <div className={metricValueClass}>{formatMoney(summary.totalInvestorCapital)}</div>
             <p className="text-xs text-muted-foreground mt-1">Equity NAV + fixed savings principal</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">NAV / Unit</CardTitle>
-            <Percent className="h-4 w-4 text-emerald-400" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>NAV / Unit</CardTitle>
+            <Percent className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-emerald-400">{navPerUnit.toFixed(6)}</div>
+            <div className={`${metricValueClass} text-emerald-400`}>{navPerUnit.toFixed(6)}</div>
             <p className="text-xs text-muted-foreground mt-1">{latestNav?.week_ending ?? "No locked NAV"}</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Total Units</CardTitle>
-            <Users className="h-4 w-4 text-violet-400" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Total Units</CardTitle>
+            <Users className="mt-0.5 h-4 w-4 shrink-0 text-violet-400" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatUnits(summary.totalUnits)}</div>
+            <div className={metricValueClass}>{formatUnits(summary.totalUnits)}</div>
             <p className="text-xs text-muted-foreground mt-1">{summary.investors.length} investors</p>
           </CardContent>
         </Card>
@@ -117,7 +130,15 @@ export default async function Dashboard({
                   <TableCell className="text-right">
                     <Badge variant="outline">{investor.ownershipPercent.toFixed(4)}%</Badge>
                   </TableCell>
-                  <TableCell className="text-right pr-6 font-semibold">{formatMoney(investor.marketValue)}</TableCell>
+                  <TableCell className="text-right pr-6">
+                    <div className="font-semibold">{formatMoney(investor.marketValue)}</div>
+                    <div
+                      className={`text-xs ${investor.equityPnlAmount >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                      title="Equity return equals current market value minus remaining equity cost basis."
+                    >
+                      {formatPercent(investor.equityReturnPercent, { signed: true })}
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))}
               {sortedInvestors.length === 0 && (

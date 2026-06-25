@@ -9,7 +9,7 @@ import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { PortalAccessControl } from "@/components/PortalAccessControl";
 import { deleteInvestor, getInvestors, updateInvestorName } from "@/actions/investors";
-import { formatMoney, formatUnits } from "@/lib/formatting";
+import { formatMoney, formatPercent, formatUnits } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
@@ -17,7 +17,7 @@ import { ChevronRight, Users } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-const investorSorts = ["investor", "joined", "units", "ownership", "netInvested", "marketValue", "fixedSavings"] as const;
+const investorSorts = ["investor", "joined", "units", "ownership", "netInvested", "marketValue", "equityReturn", "equityPnl", "fixedSavings"] as const;
 
 export default async function InvestorsPage({
   searchParams,
@@ -34,6 +34,8 @@ export default async function InvestorsPage({
     ownership: (investor: any) => investor.ownershipPercent,
     netInvested: (investor: any) => investor.netInvestedCapital,
     marketValue: (investor: any) => investor.marketValue,
+    equityReturn: (investor: any) => investor.equityReturnPercent ?? Number.NEGATIVE_INFINITY,
+    equityPnl: (investor: any) => investor.equityPnlAmount,
     fixedSavings: (investor: any) => investor.fixedSavingsBalance,
   });
   const investorPagination = paginateRows(sortedInvestors, resolvedSearchParams);
@@ -65,6 +67,8 @@ export default async function InvestorsPage({
                 <SortableTableHead className="text-right" sortKey="ownership" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Ownership</SortableTableHead>
                 <SortableTableHead className="text-right" sortKey="netInvested" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Net Invested</SortableTableHead>
                 <SortableTableHead className="text-right" sortKey="marketValue" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Market Value</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="equityReturn" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Return %</SortableTableHead>
+                <SortableTableHead className="text-right" sortKey="equityPnl" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Equity P&L</SortableTableHead>
                 <SortableTableHead className="text-right" sortKey="fixedSavings" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Fixed Savings</SortableTableHead>
                 <TableHead className="text-right">Portal</TableHead>
                 <TableHead className="text-right pr-6">Actions</TableHead>
@@ -90,7 +94,19 @@ export default async function InvestorsPage({
                     <Badge variant="outline">{investor.ownershipPercent.toFixed(4)}%</Badge>
                   </TableCell>
                   <TableCell className="text-right font-semibold">{formatMoney(investor.netInvestedCapital)}</TableCell>
-                  <TableCell className="text-right font-semibold">{formatMoney(investor.marketValue)}</TableCell>
+                  <TableCell className="text-right whitespace-nowrap font-semibold">{formatMoney(investor.marketValue)}</TableCell>
+                  <TableCell
+                    className={`text-right whitespace-nowrap font-semibold ${investor.equityPnlAmount >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                    title="Equity return percentage equals equity P&L divided by remaining equity cost basis."
+                  >
+                    {formatPercent(investor.equityReturnPercent, { signed: true })}
+                  </TableCell>
+                  <TableCell
+                    className={`text-right whitespace-nowrap font-semibold ${investor.equityPnlAmount >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                    title="Equity P&L equals current market value minus remaining equity cost basis."
+                  >
+                    {formatMoney(investor.equityPnlAmount)}
+                  </TableCell>
                   <TableCell className="text-right font-semibold text-amber-400">{formatMoney(investor.fixedSavingsBalance)}</TableCell>
                   <TableCell className="text-right">
                     <PortalAccessControl investorId={investor.id} initialPortalAccessId={investor.portal_access_id} />
@@ -105,7 +121,7 @@ export default async function InvestorsPage({
               ))}
               {sortedInvestors.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center text-muted-foreground py-12">
+                  <TableCell colSpan={11} className="text-center text-muted-foreground py-12">
                     No investors found.
                   </TableCell>
                 </TableRow>

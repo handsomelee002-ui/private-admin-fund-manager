@@ -16,6 +16,9 @@ import { Banknote, Percent, TrendingUp, Wallet } from "lucide-react";
 export const dynamic = "force-dynamic";
 
 const activitySorts = ["date", "ledger", "type", "units", "nav", "amount"] as const;
+const metricHeaderClass = "flex min-h-12 flex-row items-start justify-between gap-3 pb-2";
+const metricTitleClass = "text-sm leading-5 text-muted-foreground";
+const metricValueClass = "text-[1.625rem] leading-8 font-bold whitespace-nowrap tabular-nums tracking-normal";
 
 export default async function InvestorPortalPage({
   params,
@@ -55,40 +58,40 @@ export default async function InvestorPortalPage({
 
         <div className="grid gap-4 md:grid-cols-5">
           <Card className="bg-card/50 border-border/50">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm text-muted-foreground">Net Invested</CardTitle>
-              <TrendingUp className="h-4 w-4 text-sky-400" />
+            <CardHeader className={metricHeaderClass}>
+              <CardTitle className={metricTitleClass}>Net Invested</CardTitle>
+              <TrendingUp className="mt-0.5 h-4 w-4 shrink-0 text-sky-400" />
             </CardHeader>
-            <CardContent><div className="text-2xl font-bold text-sky-400">{formatMoney(statement.netInvestedCapital)}</div></CardContent>
+            <CardContent><div className={`${metricValueClass} text-sky-400`}>{formatMoney(statement.netInvestedCapital)}</div></CardContent>
           </Card>
           <Card className="bg-card/50 border-border/50">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm text-muted-foreground">Market Value</CardTitle>
-              <Wallet className="h-4 w-4 text-primary" />
+            <CardHeader className={metricHeaderClass}>
+              <CardTitle className={metricTitleClass}>Market Value</CardTitle>
+              <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
             </CardHeader>
-            <CardContent><div className="text-2xl font-bold">{formatMoney(statement.marketValue)}</div></CardContent>
+            <CardContent><div className={metricValueClass}>{formatMoney(statement.marketValue)}</div></CardContent>
           </Card>
           <Card className="bg-card/50 border-border/50">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm text-muted-foreground">Units</CardTitle>
-              <Percent className="h-4 w-4 text-emerald-400" />
+            <CardHeader className={metricHeaderClass}>
+              <CardTitle className={metricTitleClass}>Units</CardTitle>
+              <Percent className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
             </CardHeader>
-            <CardContent><div className="text-2xl font-bold">{formatUnits(statement.units)}</div></CardContent>
+            <CardContent><div className={metricValueClass}>{formatUnits(statement.units)}</div></CardContent>
           </Card>
           <Card className="bg-card/50 border-border/50">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm text-muted-foreground">Ownership</CardTitle>
-              <Percent className="h-4 w-4 text-violet-400" />
+            <CardHeader className={metricHeaderClass}>
+              <CardTitle className={metricTitleClass}>Ownership</CardTitle>
+              <Percent className="mt-0.5 h-4 w-4 shrink-0 text-violet-400" />
             </CardHeader>
-            <CardContent><div className="text-2xl font-bold text-violet-400">{statement.ownershipPercent.toFixed(4)}%</div></CardContent>
+            <CardContent><div className={`${metricValueClass} text-violet-400`}>{statement.ownershipPercent.toFixed(4)}%</div></CardContent>
           </Card>
           <Card className="bg-card/50 border-border/50">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm text-muted-foreground">Fixed Savings</CardTitle>
-              <Banknote className="h-4 w-4 text-amber-400" />
+            <CardHeader className={metricHeaderClass}>
+              <CardTitle className={metricTitleClass}>Fixed Savings</CardTitle>
+              <Banknote className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-amber-400">{formatMoney(statement.savingsBalance)}</div>
+              <div className={`${metricValueClass} text-amber-400`}>{formatMoney(statement.savingsBalance)}</div>
               <p className="mt-1 text-xs text-muted-foreground">Curr accrued: {formatMoney(statement.savingsAccruedInterest)}</p>
               <p className="mt-1 text-xs text-muted-foreground">Net accrued: {formatMoney(statement.savingsTotalAccruedInterest)}</p>
             </CardContent>

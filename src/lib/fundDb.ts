@@ -416,6 +416,14 @@ function calculateEquityCapitalPosition(rows: EquityUnitLedgerRow[]) {
   };
 }
 
+function calculateEquityPerformance(marketValue: number, investedCapital: number) {
+  const equityPnlAmount = roundMoney(marketValue - investedCapital);
+  return {
+    equityPnlAmount,
+    equityReturnPercent: investedCapital > 0 ? roundMoney((equityPnlAmount / investedCapital) * 100) : null,
+  };
+}
+
 async function getBrokerageFeeRateValue() {
   const res = await sql`SELECT value FROM fund_config WHERE key = 'brokerage_fee_pct'`;
   return parseFloat(res.rows[0]?.value ?? DEFAULT_BROKERAGE_FEE_RATE);
@@ -1513,6 +1521,8 @@ export async function getInvestorsWithBalances() {
     const totalUnits = roundUnits(parseFloat(row.total_units || "0"));
     const navPerUnit = parseFloat(row.nav_per_unit || "1");
     const equityPosition = calculateEquityCapitalPosition(equityRowsByInvestor.get(row.id) ?? []);
+    const marketValue = roundMoney(units * navPerUnit);
+    const equityPerformance = calculateEquityPerformance(marketValue, equityPosition.investedCapital);
     const savingsSummary = savingsByInvestor.get(row.id) ?? {
       principal: 0,
       accruedInterest: 0,
@@ -1525,7 +1535,8 @@ export async function getInvestorsWithBalances() {
       ...row,
       units,
       netInvestedCapital: equityPosition.investedCapital,
-      marketValue: roundMoney(units * navPerUnit),
+      marketValue,
+      ...equityPerformance,
       ownershipPercent: calculateOwnershipPercent({ investorUnits: units, totalUnits }),
       fixedSavingsPrincipal: savingsSummary.principal,
       fixedSavingsAccruedInterest: savingsSummary.accruedInterest,
@@ -1624,6 +1635,7 @@ export async function getInvestorStatement(investorId: string) {
   const units = roundUnits(parseFloat(row.units || "0"));
   const totalUnits = roundUnits(parseFloat(row.total_fund_units || "0"));
   const navPerUnit = parseFloat(row.nav_per_unit || "1");
+  const marketValue = roundMoney(units * navPerUnit);
   const equityPosition = calculateEquityCapitalPosition(
     [...unitLedger.rows]
       .sort((a: any, b: any) => {
@@ -1632,6 +1644,7 @@ export async function getInvestorStatement(investorId: string) {
         return String(a.created_at || "").localeCompare(String(b.created_at || ""));
       }) as EquityUnitLedgerRow[],
   );
+  const equityPerformance = calculateEquityPerformance(marketValue, equityPosition.investedCapital);
   const activityLedger = [
     ...unitLedger.rows.map((movement: any) => ({
       id: `unit-${movement.id}`,
@@ -1683,7 +1696,8 @@ export async function getInvestorStatement(investorId: string) {
     latestNav: row.latest_nav,
     units,
     netInvestedCapital: equityPosition.investedCapital,
-    marketValue: roundMoney(units * navPerUnit),
+    marketValue,
+    ...equityPerformance,
     ownershipPercent: calculateOwnershipPercent({ investorUnits: units, totalUnits }),
     unitLedger: unitLedger.rows,
     cashMovements: cash.rows,
@@ -1873,6 +1887,8 @@ export async function getDashboardSummary() {
   const investors = investorsResult.rows.map((row: any) => {
     const units = roundUnits(parseFloat(row.units || "0"));
     const equityPosition = calculateEquityCapitalPosition(equityRowsByInvestor.get(row.id) ?? []);
+    const marketValue = roundMoney(units * navPerUnit);
+    const equityPerformance = calculateEquityPerformance(marketValue, equityPosition.investedCapital);
     const savingsSummary = savingsByInvestor.get(row.id) ?? {
       principal: 0,
       accruedInterest: 0,
@@ -1887,7 +1903,8 @@ export async function getDashboardSummary() {
       total_units: totalUnits,
       nav_per_unit: navPerUnit,
       netInvestedCapital: equityPosition.investedCapital,
-      marketValue: roundMoney(units * navPerUnit),
+      marketValue,
+      ...equityPerformance,
       ownershipPercent: calculateOwnershipPercent({ investorUnits: units, totalUnits }),
       fixedSavingsPrincipal: savingsSummary.principal,
       fixedSavingsAccruedInterest: savingsSummary.accruedInterest,
@@ -1896,12 +1913,18 @@ export async function getDashboardSummary() {
       fixedSavingsBalance: savingsSummary.totalLiability,
     };
   });
+  const totalEquityInvestedCapital = roundMoney(
+    investors.reduce((sum: number, investor: any) => sum + investor.netInvestedCapital, 0),
+  );
+  const equityPerformance = calculateEquityPerformance(currentEquityNav, totalEquityInvestedCapital);
   return {
     latestNav,
     totalUnits,
     fixedSavingsLiability: fixedSavings.principal,
     fixedSavingsPrincipal: fixedSavings.principal,
     fixedSavingsInterest: fixedSavings.payableInterest,
+    totalEquityInvestedCapital,
+    ...equityPerformance,
     totalInvestorCapital: roundMoney(currentEquityNav + fixedSavings.principal),
     brokerageProfitLoss: roundMoney(parseFloat(summaryRow.brokerage_profit_loss || "0")),
     performanceFees: roundMoney(parseFloat(summaryRow.performance_fees || "0")),

@@ -25,6 +25,10 @@ export const dynamic = "force-dynamic";
 
 const transactionSorts = ["date", "source", "notes", "amount", "realized", "unrealized"] as const;
 const snapshotSorts = ["week", "netInvested", "unrealized", "nav"] as const;
+const metricHeaderClass = "flex min-h-12 flex-row items-start justify-between gap-3 pb-2";
+const metricTitleClass = "text-sm leading-5 font-medium text-muted-foreground";
+const metricIconWrapClass = "flex h-8 w-8 shrink-0 items-center justify-center rounded-full";
+const metricValueClass = "text-[1.625rem] leading-8 font-bold whitespace-nowrap tabular-nums tracking-normal";
 
 export default async function PlatformDetailsPage({
   params,
@@ -102,28 +106,28 @@ export default async function PlatformDetailsPage({
       <div className="grid gap-4 grid-cols-1 md:grid-cols-4">
         <Card className="relative overflow-hidden bg-gradient-to-br from-primary/20 to-primary/5 border-primary/30 shadow-lg hover:shadow-primary/10 transition-all duration-300">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent pointer-events-none" />
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Net Invested</CardTitle>
-            <div className="h-8 w-8 rounded-full bg-primary/15 flex items-center justify-center">
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Net Invested</CardTitle>
+            <div className={`${metricIconWrapClass} bg-primary/15`}>
               <Wallet className="h-4 w-4 text-primary" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold tracking-tight">{fmt(netInvested)}</div>
+            <div className={metricValueClass}>{fmt(netInvested)}</div>
             <p className="text-xs text-muted-foreground mt-1.5">Total Deposits − Withdrawals</p>
           </CardContent>
         </Card>
 
         <Card className="relative overflow-hidden bg-gradient-to-br from-blue-500/15 to-blue-500/5 border-blue-500/25 shadow-lg hover:shadow-blue-500/10 transition-all duration-300">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-transparent pointer-events-none" />
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Latest Unrealized</CardTitle>
-            <div className="h-8 w-8 rounded-full bg-blue-500/15 flex items-center justify-center">
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Latest Unrealized</CardTitle>
+            <div className={`${metricIconWrapClass} bg-blue-500/15`}>
               <TrendingUp className="h-4 w-4 text-blue-400" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className={`text-3xl font-bold tracking-tight ${latestUnrealized >= 0 ? "text-blue-400" : "text-red-400"}`}>
+            <div className={`${metricValueClass} ${latestUnrealized >= 0 ? "text-blue-400" : "text-red-400"}`}>
               {latestUnrealized >= 0 ? "+" : ""}{fmt(latestUnrealized)}
             </div>
             <p className="text-xs text-muted-foreground mt-1.5 flex items-center gap-1">
@@ -137,14 +141,14 @@ export default async function PlatformDetailsPage({
 
         <Card className="relative overflow-hidden bg-gradient-to-br from-violet-500/15 to-violet-500/5 border-violet-500/25 shadow-lg hover:shadow-violet-500/10 transition-all duration-300">
           <div className="absolute inset-0 bg-gradient-to-br from-violet-500/10 to-transparent pointer-events-none" />
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Realized Profit</CardTitle>
-            <div className="h-8 w-8 rounded-full bg-violet-500/15 flex items-center justify-center">
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Realized Profit</CardTitle>
+            <div className={`${metricIconWrapClass} bg-violet-500/15`}>
               <DollarSign className="h-4 w-4 text-violet-400" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className={`text-3xl font-bold tracking-tight ${realizedProfit >= 0 ? "text-violet-400" : "text-red-400"}`}>
+            <div className={`${metricValueClass} ${realizedProfit >= 0 ? "text-violet-400" : "text-red-400"}`}>
               {fmt(realizedProfit)}
             </div>
             <p className="text-xs text-muted-foreground mt-1.5">Closed profit from withdrawals</p>
@@ -153,14 +157,14 @@ export default async function PlatformDetailsPage({
 
         <Card className="relative overflow-hidden bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border-emerald-500/25 shadow-lg hover:shadow-emerald-500/10 transition-all duration-300">
           <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent pointer-events-none" />
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Value</CardTitle>
-            <div className="h-8 w-8 rounded-full bg-emerald-500/15 flex items-center justify-center">
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Total Value</CardTitle>
+            <div className={`${metricIconWrapClass} bg-emerald-500/15`}>
               <DollarSign className="h-4 w-4 text-emerald-500" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold tracking-tight text-emerald-500">{fmt(totalValue)}</div>
+            <div className={`${metricValueClass} text-emerald-500`}>{fmt(totalValue)}</div>
             <p className="text-xs text-muted-foreground mt-1.5">Net Invested + Unrealized</p>
           </CardContent>
         </Card>

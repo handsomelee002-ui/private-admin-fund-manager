@@ -14,6 +14,9 @@ export const dynamic = "force-dynamic";
 
 const reportPlatformSorts = ["platform", "netInvested", "realized", "unrealized"] as const;
 const reportNavSorts = ["week", "nav", "units", "navPerUnit"] as const;
+const metricHeaderClass = "flex min-h-12 flex-row items-start justify-between gap-3 pb-2";
+const metricTitleClass = "text-sm leading-5 text-muted-foreground";
+const metricValueClass = "text-[1.625rem] leading-8 font-bold whitespace-nowrap tabular-nums tracking-normal";
 
 export default async function ReportsPage({
   searchParams,
@@ -54,42 +57,42 @@ export default async function ReportsPage({
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Realized Profit</CardTitle>
-            <TrendingUp className="h-4 w-4 text-violet-400" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Realized Profit</CardTitle>
+            <TrendingUp className="mt-0.5 h-4 w-4 shrink-0 text-violet-400" />
           </CardHeader>
           <CardContent>
-            <div className={`text-2xl font-bold ${totalRealized >= 0 ? "text-violet-400" : "text-red-400"}`}>{formatMoney(totalRealized)}</div>
+            <div className={`${metricValueClass} ${totalRealized >= 0 ? "text-violet-400" : "text-red-400"}`}>{formatMoney(totalRealized)}</div>
             <p className="text-xs text-muted-foreground mt-1">Closed platform transactions</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Performance Fees</CardTitle>
-            <DollarSign className="h-4 w-4 text-emerald-400" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Profit Performance Fees</CardTitle>
+            <DollarSign className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-emerald-400">{formatMoney(summary.performanceFees)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Audited fee income</p>
+            <div className={`${metricValueClass} text-emerald-400`}>{formatMoney(summary.performanceFees)}</div>
+            <p className="text-xs text-muted-foreground mt-1">Equity redemption fee income</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Platforms</CardTitle>
-            <Layers3 className="h-4 w-4 text-blue-400" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Platforms</CardTitle>
+            <Layers3 className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{platforms.length}</div>
+            <div className={metricValueClass}>{platforms.length}</div>
             <p className="text-xs text-muted-foreground mt-1">Included in realized report</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Locked NAV Weeks</CardTitle>
-            <BarChart3 className="h-4 w-4 text-primary" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Locked NAV Weeks</CardTitle>
+            <BarChart3 className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{navWeeks.length}</div>
+            <div className={metricValueClass}>{navWeeks.length}</div>
             <p className="text-xs text-muted-foreground mt-1">Latest: {latestLockedWeek}</p>
           </CardContent>
         </Card>

@@ -37,6 +37,10 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 const claimSorts = ["investor", "claimDate", "gross", "fee", "net", "settled", "outstanding", "status", "settledDate"] as const;
+const metricHeaderClass = "flex min-h-12 flex-row items-start justify-between gap-3 pb-2";
+const metricTitleClass = "text-sm leading-5 font-medium text-muted-foreground";
+const metricIconWrapClass = "flex h-8 w-8 shrink-0 items-center justify-center rounded-full";
+const metricValueClass = "text-[1.625rem] leading-8 font-bold whitespace-nowrap tabular-nums tracking-normal";
 
 export default async function ClaimsPage({
   searchParams,
@@ -82,42 +86,42 @@ export default async function ClaimsPage({
       <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
         <Card className="relative overflow-hidden bg-gradient-to-br from-orange-500/15 to-orange-500/5 border-orange-500/25 shadow-lg">
           <div className="absolute inset-0 bg-gradient-to-br from-orange-500/10 to-transparent pointer-events-none" />
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Pending IOU</CardTitle>
-            <div className="h-8 w-8 rounded-full bg-orange-500/15 flex items-center justify-center">
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Total Pending IOU</CardTitle>
+            <div className={`${metricIconWrapClass} bg-orange-500/15`}>
               <Clock className="h-4 w-4 text-orange-400" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold tracking-tight text-orange-400">{fmt(totalPending)}</div>
+            <div className={`${metricValueClass} text-orange-400`}>{fmt(totalPending)}</div>
             <p className="text-xs text-muted-foreground mt-1.5">{pendingCount} active claim{pendingCount !== 1 ? "s" : ""}</p>
           </CardContent>
         </Card>
 
         <Card className="relative overflow-hidden bg-gradient-to-br from-emerald-500/15 to-emerald-500/5 border-emerald-500/25 shadow-lg">
           <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/10 to-transparent pointer-events-none" />
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Settled</CardTitle>
-            <div className="h-8 w-8 rounded-full bg-emerald-500/15 flex items-center justify-center">
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Total Settled</CardTitle>
+            <div className={`${metricIconWrapClass} bg-emerald-500/15`}>
               <CheckCircle className="h-4 w-4 text-emerald-500" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold tracking-tight text-emerald-500">{fmt(totalSettled)}</div>
+            <div className={`${metricValueClass} text-emerald-500`}>{fmt(totalSettled)}</div>
             <p className="text-xs text-muted-foreground mt-1.5">Paid out to investors</p>
           </CardContent>
         </Card>
 
         <Card className="relative overflow-hidden bg-gradient-to-br from-primary/20 to-primary/5 border-primary/30 shadow-lg">
           <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent pointer-events-none" />
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Total Locked</CardTitle>
-            <div className="h-8 w-8 rounded-full bg-primary/15 flex items-center justify-center">
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Total Locked</CardTitle>
+            <div className={`${metricIconWrapClass} bg-primary/15`}>
               <DollarSign className="h-4 w-4 text-primary" />
             </div>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold tracking-tight">{fmt(totalLocked)}</div>
+            <div className={metricValueClass}>{fmt(totalLocked)}</div>
             <p className="text-xs text-muted-foreground mt-1.5">All-time IOU created</p>
           </CardContent>
         </Card>

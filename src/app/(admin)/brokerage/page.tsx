@@ -24,6 +24,7 @@ import { Percent, DollarSign, TrendingDown, TrendingUp, Gift, Wallet } from "luc
 export const dynamic = "force-dynamic";
 
 const bonusSorts = ["investor", "ledger", "date", "amount"] as const;
+const metricValueClass = "text-[1.625rem] leading-8 font-bold whitespace-nowrap tabular-nums tracking-normal";
 
 export default async function BrokeragePage({
   searchParams,
@@ -129,7 +130,7 @@ export default async function BrokeragePage({
               <p className="text-xs text-muted-foreground mt-1">Brokerage P&L + fees - accrued interest - investor bonuses.</p>
             </div>
             <div className="text-right">
-              <div className={`text-3xl font-bold ${netCommission >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+              <div className={`${metricValueClass} ${netCommission >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                 {netCommission >= 0 ? "+" : ""}{fmt(netCommission)}
               </div>
               <p className="text-xs text-muted-foreground mt-1">Net available</p>
@@ -141,21 +142,21 @@ export default async function BrokeragePage({
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <TrendingUp className="h-4 w-4 text-blue-400" />
-                    Brokerage P&L
+                    Non-Equity Investment P&L
                   </div>
                   <span className={`font-semibold ${brokerageProfitLoss >= 0 ? "text-blue-400" : "text-red-400"}`}>{fmt(brokerageProfitLoss)}</span>
                 </div>
-                <p className="text-[10px] text-muted-foreground mt-2">Fixed-savings/business share from latest locked NAV.</p>
+                <p className="text-[10px] text-muted-foreground mt-2">Fixed-savings and brokerage-funded share from latest locked NAV.</p>
               </div>
               <div className="rounded-md border border-border/50 bg-background/40 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <DollarSign className="h-4 w-4 text-emerald-400" />
-                    Withdrawal Fees
+                    Profit Performance Fees
                   </div>
                   <span className="font-semibold text-emerald-400">{fmt(brokerageFeeEarned)}</span>
                 </div>
-                <p className="text-[10px] text-muted-foreground mt-2">Equity withdrawal performance fees only.</p>
+                <p className="text-[10px] text-muted-foreground mt-2">Equity redemption fee income.</p>
               </div>
               <div className="rounded-md border border-border/50 bg-background/40 p-3">
                 <div className="flex items-center justify-between gap-3">

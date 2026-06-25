@@ -11,6 +11,10 @@ import { CalendarClock, Percent, Tags } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
+const metricHeaderClass = "flex min-h-12 flex-row items-start justify-between gap-3 pb-2";
+const metricTitleClass = "text-sm leading-5 text-muted-foreground";
+const metricValueClass = "text-[1.625rem] leading-8 font-bold whitespace-nowrap tabular-nums tracking-normal";
+
 export default async function FixedSavingsRatesPage({
   searchParams,
 }: {
@@ -41,19 +45,19 @@ export default async function FixedSavingsRatesPage({
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="bg-card/50 border-border/50">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Current Base Rate</CardTitle>
-            <Percent className="h-4 w-4 text-primary" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Current Base Rate</CardTitle>
+            <Percent className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{Number(settings.currentBaseRate).toFixed(4)}%</div>
+            <div className={metricValueClass}>{Number(settings.currentBaseRate).toFixed(4)}%</div>
             <p className="text-xs text-muted-foreground mt-1">Nominal p.a., credited daily</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50 md:col-span-2">
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm text-muted-foreground">Rate Rule</CardTitle>
-            <CalendarClock className="h-4 w-4 text-amber-400" />
+          <CardHeader className={metricHeaderClass}>
+            <CardTitle className={metricTitleClass}>Rate Rule</CardTitle>
+            <CalendarClock className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
           </CardHeader>
           <CardContent>
             <p className="text-sm text-muted-foreground">
