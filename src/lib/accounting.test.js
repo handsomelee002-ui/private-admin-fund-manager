@@ -96,6 +96,19 @@ test("brokerage value allocation excludes fixed savings funded profit from equit
   assert.equal(allocation.brokerageProfitLoss, 4000);
 });
 
+test("non-equity investment P&L includes fixed savings and brokerage funded shares", () => {
+  const allocation = calculateBrokerageFundingAllocation({
+    equityNetInvested: 60000,
+    fixedSavingsNetInvested: 30000,
+    brokerageNetInvested: 10000,
+    totalValue: 110000,
+  });
+
+  assert.equal(allocation.equityProfitLoss, 6000);
+  assert.equal(allocation.fixedSavingsProfitLoss, 3000);
+  assert.equal(allocation.brokerageProfitLoss, 4000);
+});
+
 test("fixed savings withdrawal is allocated across active accounts", () => {
   assert.deepEqual(
     allocateFixedSavingsWithdrawal({

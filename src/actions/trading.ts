@@ -86,6 +86,12 @@ function primaryFundingSource(allocations: AllocationInput[]) {
   )?.fundingSource || "equity";
 }
 
+function defaultNetAmount(type: string, amount: number, feeAmount: number, taxAmount: number) {
+  if (type === "BUY") return roundMoney(amount + feeAmount + taxAmount);
+  if (type === "SELL") return roundMoney(amount - feeAmount - taxAmount);
+  return roundMoney(amount);
+}
+
 function revalidateTrading(platformId?: string) {
   revalidatePath("/trading");
   revalidatePath("/nav");
@@ -693,7 +699,7 @@ export async function addPlatformTransaction(formData: FormData) {
   }
 
   const grossAmount = formData.get("gross_amount") ? parseNumber(formData.get("gross_amount"), "Gross amount") : amount;
-  const netAmount = formData.get("net_amount") ? parseNumber(formData.get("net_amount"), "Net amount") : amount - feeAmount - taxAmount;
+  const netAmount = formData.get("net_amount") ? parseNumber(formData.get("net_amount"), "Net amount") : defaultNetAmount(type, amount, feeAmount, taxAmount);
   const reference = formData.get("reference")?.toString().trim() || null;
   const settlementDate = formData.get("settlement_date")?.toString() || null;
   const notes = formData.get("notes")?.toString() || "";

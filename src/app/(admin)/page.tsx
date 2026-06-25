@@ -65,12 +65,12 @@ export default async function Dashboard({
         </Card>
         <Card className="bg-card/50 border-border/50">
           <CardHeader className={metricHeaderClass}>
-            <CardTitle className={metricTitleClass}>Fixed Savings Principal</CardTitle>
+            <CardTitle className={metricTitleClass}>Fixed Savings Liability</CardTitle>
             <Banknote className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
           </CardHeader>
           <CardContent>
             <div className={`${metricValueClass} text-amber-400`}>{formatMoney(summary.fixedSavingsLiability)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Interest excluded from this total</p>
+            <p className="text-xs text-muted-foreground mt-1">Principal, accrued interest, and bonuses</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">
@@ -80,7 +80,7 @@ export default async function Dashboard({
           </CardHeader>
           <CardContent>
             <div className={metricValueClass}>{formatMoney(summary.totalInvestorCapital)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Equity NAV + fixed savings principal</p>
+            <p className="text-xs text-muted-foreground mt-1">Equity NAV + fixed savings liability</p>
           </CardContent>
         </Card>
         <Card className="bg-card/50 border-border/50">

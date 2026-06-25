@@ -1304,6 +1304,7 @@ export async function recordCashMovement(input: CashMovementInput) {
       FROM investor_unit_ledger iul
       LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
       WHERE iul.investor_id = ${input.investorId}
+        AND iul.audit_status = 'active'
       ORDER BY iul.date ASC, iul.created_at ASC
     `;
     const equityPosition = calculateEquityCapitalPosition(priorLedger.rows as EquityUnitLedgerRow[]);
@@ -1920,12 +1921,12 @@ export async function getDashboardSummary() {
   return {
     latestNav,
     totalUnits,
-    fixedSavingsLiability: fixedSavings.principal,
+    fixedSavingsLiability: fixedSavings.totalLiability,
     fixedSavingsPrincipal: fixedSavings.principal,
     fixedSavingsInterest: fixedSavings.payableInterest,
     totalEquityInvestedCapital,
     ...equityPerformance,
-    totalInvestorCapital: roundMoney(currentEquityNav + fixedSavings.principal),
+    totalInvestorCapital: roundMoney(currentEquityNav + fixedSavings.totalLiability),
     brokerageProfitLoss: roundMoney(parseFloat(summaryRow.brokerage_profit_loss || "0")),
     performanceFees: roundMoney(parseFloat(summaryRow.performance_fees || "0")),
     aum: currentEquityNav,
