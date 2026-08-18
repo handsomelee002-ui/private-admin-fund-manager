@@ -279,7 +279,7 @@ async function noHorizontalOverflow(page) {
       const expectations = [
         { url: "/capital", trigger: "Cash Movement", text: "Record Deposit or Withdrawal", opensDialog: true },
         { url: "/fixed-savings", trigger: "Fixed Savings", text: "Record Fixed Savings", opensDialog: true },
-        { url: "/nav", trigger: "New NAV Week", text: "Create Weekly NAV", opensDialog: true },
+        { url: "/nav", trigger: "New NAV", text: "Review & create NAV", opensDialog: true },
         { url: "/claims", trigger: "Settle", text: "Settle Profit Claim", opensDialog: true, jsClick: true },
         { url: "/admin-logs", trigger: "Revert", text: "Revert", opensDialog: false },
       ];

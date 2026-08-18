@@ -2,7 +2,11 @@ import {
   BACKUP_APP_NAME,
   BACKUP_BASE_CURRENCY,
   BACKUP_SCHEMA_VERSION,
+  BACKUP_TABLE_ORDER_BY_VERSION,
   BACKUP_TABLES,
+  IGNORED_LEGACY_TABLES,
+  SUPPORTED_BACKUP_SCHEMA_VERSIONS,
+  TABLES_MISSING_IN_VERSION,
   type BackupTableName,
 } from "@/lib/backupTables";
 
@@ -32,13 +36,14 @@ export type BackupPreview = {
 const BACKUP_TABLE_COLUMN_ALLOWLIST: Record<BackupTableName, readonly string[]> = {
   investors: ["id", "name", "portal_access_id", "portal_access_rotated_at", "created_at"],
   fund_config: ["key", "value", "updated_at"],
-  platforms: ["id", "name", "base_currency", "default_currency", "created_at"],
+  platforms: ["id", "name", "base_currency", "default_currency", "tracking_mode", "created_at"],
   platform_accounts: ["id", "platform_id", "name", "account_type", "currency", "created_at"],
   platform_assets: ["id", "platform_id", "symbol", "name", "asset_type", "currency", "latest_price", "latest_fx_rate_to_myr", "updated_at", "created_at"],
   nav_weeks: ["id", "week_ending", "settlement_date", "gross_assets", "liabilities", "adjustments", "net_asset_value", "total_units", "nav_per_unit", "status", "locked_at", "notes", "created_at"],
   nav_week_platform_snapshots: [
     "id", "nav_week_id", "platform_id", "net_invested", "unrealized_profit", "total_value", "equity_net_invested",
     "fixed_savings_net_invested", "brokerage_net_invested", "equity_unrealized_profit", "brokerage_profit_loss", "created_at",
+    "valuation_date", "valuation_source", "valuation_age_days", "weight_percent",
   ],
   investor_unit_ledger: ["id", "investor_id", "nav_week_id", "date", "type", "units", "nav_per_unit", "gross_amount", "notes", "created_at", "audit_status", "reversal_of_id"],
   cash_movements: ["id", "investor_id", "nav_week_id", "unit_ledger_id", "date", "type", "amount", "status", "notes", "created_at", "audit_status", "reversal_of_id"],
@@ -56,7 +61,8 @@ const BACKUP_TABLE_COLUMN_ALLOWLIST: Record<BackupTableName, readonly string[]> 
     "fee_amount", "tax_amount", "net_amount", "reference", "status", "settlement_date", "funding_source", "audit_status", "reversal_of_id",
     "allocation_method",
   ],
-  platform_performance: ["id", "platform_id", "date", "net_invested", "unrealized_profit", "created_at"],
+  platform_transaction_allocations: ["id", "transaction_id", "funding_source", "ratio_percent", "base_amount", "created_at"],
+  platform_valuations: ["id", "platform_id", "as_of_date", "total_value", "source", "notes", "audit_status", "reversal_of_id", "created_at"],
   trading_ledger: ["id", "date", "platform", "ticker", "type", "currency", "price", "quantity", "amount_rm", "profit_loss", "date_closed", "receipt_url", "created_at"],
   cash_balances: ["id", "account_name", "current_balance", "updated_at"],
   audit_events: ["id", "actor_id", "action", "entity_type", "entity_id", "details", "created_at", "reason"],
@@ -72,6 +78,12 @@ const BACKUP_ENUMS: Partial<Record<BackupTableName, Record<string, readonly stri
   bonus_payments: { ledger_type: ["equity", "fixed_savings"], audit_status: ["active", "reverted", "reversal"] },
   investor_profit_claims: { status: ["pending", "partial", "settled"] },
   platform_accounts: { account_type: ["BANK", "WALLET", "BROKER_CASH", "BROKER_PORTFOLIO", "OTHER"] },
+  platforms: { tracking_mode: ["CASHFLOW", "POSITION"] },
+  platform_valuations: {
+    source: ["MANUAL", "STATEMENT", "IMPORT"],
+    audit_status: ["active", "reverted", "reversal"],
+  },
+  platform_transaction_allocations: { funding_source: ["equity", "fixed_savings", "brokerage"] },
   platform_transactions: {
     type: ["TRANSFER", "FX_CONVERSION", "BROKER_DEPOSIT", "BROKER_WITHDRAWAL", "BUY", "SELL", "DIVIDEND", "INTEREST", "FEE", "TAX", "CORPORATE_ACTION", "ADJUSTMENT", "Deposit", "Withdraw"],
     status: ["PENDING", "SETTLED", "CANCELLED"],
@@ -160,12 +172,21 @@ export function parseBackupJson(raw: string): FundBackupFile {
 
   const metadata = parsed.metadata;
   if (metadata.app !== BACKUP_APP_NAME) throw new Error("Backup belongs to a different application.");
-  if (metadata.schemaVersion !== BACKUP_SCHEMA_VERSION) throw new Error("Backup schema version is not supported.");
+  const fileVersion = metadata.schemaVersion;
+  if (
+    typeof fileVersion !== "number" ||
+    !SUPPORTED_BACKUP_SCHEMA_VERSIONS.includes(fileVersion as (typeof SUPPORTED_BACKUP_SCHEMA_VERSIONS)[number])
+  ) {
+    throw new Error(
+      `Backup schema version is not supported. Supported versions: ${SUPPORTED_BACKUP_SCHEMA_VERSIONS.join(", ")}.`,
+    );
+  }
   if (metadata.baseCurrency !== BACKUP_BASE_CURRENCY) throw new Error("Backup base currency is not supported.");
   const exportedAt = metadata.exportedAt;
   assertValidExportDate(exportedAt);
 
-  if (!Array.isArray(metadata.tableOrder) || metadata.tableOrder.join(",") !== BACKUP_TABLES.join(",")) {
+  const expectedOrder = BACKUP_TABLE_ORDER_BY_VERSION[fileVersion] ?? BACKUP_TABLES;
+  if (!Array.isArray(metadata.tableOrder) || metadata.tableOrder.join(",") !== expectedOrder.join(",")) {
     throw new Error("Backup table order does not match this application version.");
   }
 
@@ -173,8 +194,15 @@ export function parseBackupJson(raw: string): FundBackupFile {
 
   const tables = {} as Record<BackupTableName, BackupRow[]>;
   const rowCounts = {} as Record<BackupTableName, number>;
+  const absentTables = new Set(TABLES_MISSING_IN_VERSION[fileVersion] ?? []);
 
   for (const tableName of BACKUP_TABLES) {
+    // Tables introduced after this backup was written restore as empty.
+    if (absentTables.has(tableName)) {
+      tables[tableName] = [];
+      rowCounts[tableName] = 0;
+      continue;
+    }
     const count = metadata.rowCounts[tableName];
     if (typeof count !== "number" || !Number.isInteger(count) || count < 0) {
       throw new Error(`Backup row count for ${tableName} is invalid.`);
@@ -184,6 +212,9 @@ export function parseBackupJson(raw: string): FundBackupFile {
     tables[tableName] = rows;
     rowCounts[tableName] = count;
   }
+
+  // v2 exported platform_performance, a table no migration ever created.
+  void IGNORED_LEGACY_TABLES;
 
   return {
     metadata: {

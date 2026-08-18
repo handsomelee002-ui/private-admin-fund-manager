@@ -5,6 +5,7 @@ import { AddPlatformForm } from "@/components/AddPlatformForm";
 import { CreateNavWeekForm } from "@/components/CreateNavWeekForm";
 import { LockNavButton } from "@/components/LockNavButton";
 import { PaginationControls } from "@/components/PaginationControls";
+import { RecordValuationForm } from "@/components/RecordValuationForm";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getPlatforms } from "@/actions/trading";
 import { getNavWeeks } from "@/lib/fundDb";
@@ -12,7 +13,7 @@ import { formatMoney, formatUnits } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { CalendarClock } from "lucide-react";
+import { CalendarClock, LineChart } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -43,14 +44,66 @@ export default async function NavPage({
     <div className="space-y-6">
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Weekly NAV</h1>
-          <p className="text-muted-foreground mt-1 text-sm">Locked platform snapshots are the source of truth for unit pricing.</p>
+          <h1 className="text-3xl font-bold tracking-tight">Valuations &amp; NAV</h1>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Create a NAV when you need to price something — a deposit, a withdrawal, or a reporting date. Locked NAV is
+            the source of truth for unit pricing.
+          </p>
         </div>
         <div className="flex gap-2">
           <AddPlatformForm />
-          <CreateNavWeekForm platforms={platforms} />
+          <CreateNavWeekForm />
         </div>
       </div>
+
+      <Card className="bg-card/50 border-border/50">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <LineChart className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Platform Values</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {platforms.length === 0 ? (
+            <p className="text-muted-foreground text-sm">Add a platform to start recording values.</p>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {platforms.map((platform: any) => {
+                const isStale = platform.isValuationStale;
+                return (
+                  <div
+                    key={platform.id}
+                    className="border-border/50 flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{platform.name}</p>
+                      <p className="text-muted-foreground text-xs">
+                        {formatMoney(platform.totalValue)}
+                        {" · "}
+                        {platform.trackingMode === "POSITION"
+                          ? "from positions"
+                          : platform.latestValuationDate
+                            ? `valued ${platform.latestValuationDate}`
+                            : "never valued"}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {isStale && <Badge variant="destructive" className="text-[10px]">stale</Badge>}
+                      <RecordValuationForm
+                        compact
+                        platformId={platform.id}
+                        platformName={platform.name}
+                        currentValue={platform.totalValue}
+                        latestValuationDate={platform.latestValuationDate}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="bg-card/50 border-border/50">
         <CardHeader>

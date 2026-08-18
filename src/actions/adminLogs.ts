@@ -219,6 +219,22 @@ async function enrichAuditLogs(rows: any[], { includeReadableDetails = true, inc
     LEFT JOIN platforms p ON p.id = passet.platform_id
     WHERE passet.id = ANY($1::uuid[])
   `, collectEntityIds(rows, "platform_assets"));
+  const profitClaims = await lookupById(`
+    SELECT ipc.id, ipc.investor_id, ipc.locked_amount, ipc.settled_amount, ipc.brokerage_fee, ipc.status,
+      TO_CHAR(ipc.claim_date, 'YYYY-MM-DD') as claim_date,
+      TO_CHAR(ipc.settled_date, 'YYYY-MM-DD') as settled_date,
+      i.name as investor_name
+    FROM investor_profit_claims ipc
+    LEFT JOIN investors i ON i.id = ipc.investor_id
+    WHERE ipc.id = ANY($1::uuid[])
+  `, collectEntityIds(rows, "investor_profit_claims"));
+  const platformValuations = await lookupById(`
+    SELECT pv.id, pv.platform_id, TO_CHAR(pv.as_of_date, 'YYYY-MM-DD') as as_of_date,
+      pv.total_value, pv.source, pv.audit_status, p.name as platform_name
+    FROM platform_valuations pv
+    LEFT JOIN platforms p ON p.id = pv.platform_id
+    WHERE pv.id = ANY($1::uuid[])
+  `, collectEntityIds(rows, "platform_valuations"));
 
   const detailInvestorIds = uniqueIds(rows.map((row) => row.details?.investorId));
   const detailPlatformIds = uniqueIds(rows.map((row) => row.details?.platformId));
@@ -278,6 +294,8 @@ async function enrichAuditLogs(rows: any[], { includeReadableDetails = true, inc
       nav_weeks: navWeeks,
       platform_accounts: platformAccounts,
       platform_assets: platformAssets,
+      investor_profit_claims: profitClaims,
+      platform_valuations: platformValuations,
     }[row.entity_type as string];
     const entity = entityLookup?.get(row.entity_id);
     if (includeReadableDetails) {

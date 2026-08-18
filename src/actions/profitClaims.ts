@@ -4,7 +4,38 @@ import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { getBrokerageFeeRate } from "@/actions/settings";
 import { requireAdmin } from "@/lib/auth";
+import { assertNotFutureDate, ensureAuditColumns, getInvestorStatement, writeAuditEvent } from "@/lib/fundDb";
 import { calculateClaimSettlement } from "@/lib/profitClaimAccounting";
+
+/**
+ * Profit an investor can still lock into a claim: their equity gain at the
+ * latest locked NAV (market value less remaining cost basis) minus profit
+ * already locked in existing claims. Claiming beyond this books profit the
+ * investor has not made.
+ *
+ * The gain comes from getInvestorStatement so the cost-basis and bonus-unit
+ * handling stays in one place.
+ */
+async function getClaimableProfit(investorId: string) {
+  const [statement, locked] = await Promise.all([
+    getInvestorStatement(investorId),
+    sql`
+      SELECT COALESCE(SUM(locked_amount), 0) as total
+      FROM investor_profit_claims
+      WHERE investor_id = ${investorId}
+    `,
+  ]);
+
+  const equityProfit = Number(statement?.marketValue ?? 0) - Number(statement?.netInvestedCapital ?? 0);
+  const alreadyLocked = parseFloat(locked.rows[0]?.total || "0");
+  const round = (value: number) => Math.round(value * 100) / 100;
+
+  return {
+    attributableProfit: round(equityProfit),
+    alreadyLocked: round(alreadyLocked),
+    claimable: round(Math.max(0, equityProfit - alreadyLocked)),
+  };
+}
 
 // ── Schema Migration ─────────────────────────────────────────────────────────
 export async function ensureClaimsTable() {
@@ -89,6 +120,12 @@ export async function addProfitClaim(formData: FormData) {
   const amount = parseFloat(amountStr);
   if (isNaN(amount) || amount <= 0) return { error: "Amount must be a positive number" };
 
+  try {
+    assertNotFutureDate(claimDate, "Claim date");
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Invalid claim date." };
+  }
+
   // Pre-calculate and round brokerage fee (performance fee, 2dp precision)
   const brokerageRate     = await getBrokerageFeeRate();
   const roundedAmount     = Math.round(amount * 100) / 100;
@@ -96,17 +133,38 @@ export async function addProfitClaim(formData: FormData) {
   const netAmount         = Math.round((roundedAmount - roundedBrokerage) * 100) / 100;
 
   try {
-    await sql`
+    await ensureAuditColumns();
+    const { attributableProfit, alreadyLocked, claimable } = await getClaimableProfit(investorId);
+    if (roundedAmount > claimable + 0.005) {
+      return {
+        error:
+          `Claim of RM ${roundedAmount.toFixed(2)} exceeds this investor's claimable profit of RM ${claimable.toFixed(2)} ` +
+          `(attributable equity profit RM ${attributableProfit.toFixed(2)}, already locked in claims RM ${alreadyLocked.toFixed(2)}).`,
+      };
+    }
+
+    const inserted = await sql`
       INSERT INTO investor_profit_claims (investor_id, locked_amount, brokerage_fee, claim_date, notes)
       VALUES (${investorId}, ${roundedAmount}, ${roundedBrokerage}, ${claimDate}, ${notes})
+      RETURNING id
     `;
+    await writeAuditEvent("profit_claim.add", "investor_profit_claims", inserted.rows[0].id, {
+      investorId,
+      lockedAmount: roundedAmount,
+      brokerageFee: roundedBrokerage,
+      netAmount,
+      claimDate,
+      attributableProfit,
+      alreadyLocked,
+    });
     revalidatePath("/claims");
+    revalidatePath("/admin-logs");
     revalidatePath(`/investors/${investorId}`);
     revalidatePath("/reports");
     return { success: true, brokerageFee: roundedBrokerage, netAmount };
   } catch (error) {
     console.error("DB Error:", error);
-    return { error: "Failed to create profit claim." };
+    return { error: error instanceof Error ? error.message : "Failed to create profit claim." };
   }
 }
 
@@ -133,6 +191,13 @@ export async function settleClaim(formData: FormData) {
   if (isNaN(settledAmount) || settledAmount <= 0) return { error: "Settled amount must be positive" };
 
   try {
+    assertNotFutureDate(settledDate, "Settlement date");
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Invalid settlement date." };
+  }
+
+  try {
+    await ensureAuditColumns();
     // Fetch current claim including investor_id for ledger entries
     const current = await sql`
       SELECT locked_amount, settled_amount, brokerage_fee, investor_id
@@ -170,32 +235,35 @@ export async function settleClaim(formData: FormData) {
     // ── On full settlement: record cash outflow in capital_ledger ───────────
     // "ProfitDistribution" type = profit paid out; excluded from equity calcs
     // The investor receives netPayable; the fund retains brokerageFee as income.
-    if (settlement.isFullySettled) {
-      await sql`
-        INSERT INTO capital_ledger (investor_id, date, type, amount, notes)
-        VALUES (
-          ${investorId},
-          ${settledDate},
-          'ProfitDistribution',
-          ${settlement.ledgerAmount},
-          ${`Profit claim settled — gross RM ${locked.toFixed(2)}, fee RM ${brokerageFee.toFixed(2)}, net RM ${settlement.netPayable.toFixed(2)}`}
-        )
-      `;
-    } else {
-      // Partial: record only the partial cash paid out
-      await sql`
-        INSERT INTO capital_ledger (investor_id, date, type, amount, notes)
-        VALUES (
-          ${investorId},
-          ${settledDate},
-          'ProfitDistribution',
-          ${settlement.ledgerAmount},
-          ${`Partial profit settlement (${notes || "payment"})`}
-        )
-      `;
-    }
+    const ledgerNote = settlement.isFullySettled
+      ? `Profit claim settled — gross RM ${locked.toFixed(2)}, fee RM ${brokerageFee.toFixed(2)}, net RM ${settlement.netPayable.toFixed(2)}`
+      : `Partial profit settlement (${notes || "payment"})`;
+    const ledgerEntry = await sql`
+      INSERT INTO capital_ledger (investor_id, date, type, amount, notes)
+      VALUES (
+        ${investorId},
+        ${settledDate},
+        'ProfitDistribution',
+        ${settlement.ledgerAmount},
+        ${ledgerNote}
+      )
+      RETURNING id
+    `;
+
+    await writeAuditEvent("profit_claim.settle", "investor_profit_claims", id, {
+      investorId,
+      lockedAmount: locked,
+      previousSettledAmount: prevSettled,
+      settledAmount: settlement.finalSettledAmount,
+      paidThisSettlement: settlement.cappedAmount,
+      brokerageFee,
+      status: settlement.status,
+      settledDate,
+      capitalLedgerId: ledgerEntry.rows[0].id,
+    });
 
     revalidatePath("/claims");
+    revalidatePath("/admin-logs");
     revalidatePath("/investors");
     revalidatePath(`/investors/${investorId}`);
     revalidatePath("/reports");

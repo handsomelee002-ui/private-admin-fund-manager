@@ -1,6 +1,6 @@
 # Private Admin Fund Manager
 
-Private Admin Fund Manager is a self-hosted Next.js application for administering a private unit-based investment fund. It supports weekly NAV accounting, investor units and equity performance, capital movements, fixed-savings liabilities, trading platform records, profit claims, profit performance fees, brokerage reconciliation, audit logs, JSON backups, and read-only investor portal links.
+Private Admin Fund Manager is a self-hosted Next.js application for administering a private unit-based investment fund. It supports event-driven NAV accounting, platform valuations, investor units and equity performance, capital movements, fixed-savings liabilities, trading platform records, profit claims, profit performance fees, brokerage reconciliation, audit logs, JSON backups, and read-only investor portal links.
 
 This repository is operational software for private administration. It is not investment advice, tax advice, legal advice, a public fundraising platform, a payment processor, or a regulated custody product.
 
@@ -25,7 +25,9 @@ This repository is operational software for private administration. It is not in
 
 ## Features
 
-- Weekly unit-based NAV accounting with draft and locked NAV weeks.
+- Event-driven unit-based NAV accounting with draft and locked NAV records.
+- Platform valuations recorded independently of the NAV cycle, carried forward with staleness tracking.
+- Per-platform tracking modes: `CASHFLOW` (record money in/out plus periodic value marks) and `POSITION` (value computed from holdings and latest prices).
 - Investor directory with unit balances, ownership, market value, equity P&L, equity return percentage, fixed-savings balance, and statement history.
 - Capital deposits and withdrawals settled against the latest locked NAV per unit.
 - Fixed-savings deposits, withdrawals, interest accrual, base rates, and promotional rate periods outside equity NAV.
@@ -42,9 +44,11 @@ This repository is operational software for private administration. It is not in
 ## Accounting Model
 
 - Equity investors own fund units.
-- Weekly locked NAV is the source of truth for equity unit pricing.
-- Deposits issue units at the latest locked NAV per unit.
-- Withdrawals redeem units at the latest locked NAV per unit.
+- Locked NAV is the source of truth for equity unit pricing.
+- Deposits issue units at the latest locked NAV per unit **on or before the movement date**.
+- Withdrawals redeem units at the latest locked NAV per unit **on or before the movement date**.
+- A withdrawal larger than the investor's redeemable equity is rejected, not silently reduced. Use "withdraw all" to redeem a full balance.
+- Financial records may be backdated but never post-dated.
 - Investor ownership is calculated from current investor units divided by total active fund units.
 - Equity P&L is calculated as current equity market value minus remaining investor equity cost basis.
 - Equity return percentage is calculated from equity P&L divided by remaining investor equity cost basis.
@@ -56,16 +60,38 @@ This repository is operational software for private administration. It is not in
 - Equity-funded platform P&L flows into equity NAV.
 - Fixed-savings-funded and brokerage-funded platform P&L is reported as non-equity investment P&L and reconciled through the brokerage workflow.
 - Profit claims and profit performance fees are tracked separately from investor unit ownership.
-- Locked NAV weeks are immutable by design.
+- Profit claims are capped at the investor's attributable equity profit less profit already locked in existing claims.
+- Locked NAV records are immutable by design.
 
-Default operating cycle:
+### Platform Valuation
 
-1. Create or review platform transactions and balances.
-2. Create a draft weekly NAV using the valuation date.
-3. Review platform snapshots, gross assets, adjustments, and calculated NAV per unit.
-4. Lock the weekly NAV.
-5. Settle deposits, withdrawals, fixed-savings movements, claims, and bonuses.
-6. Review investor statements, equity performance, reports, brokerage reconciliation, and audit logs.
+A platform's value is resolved for a NAV date in this order:
+
+| Tracking mode | Source | Behaviour |
+| --- | --- | --- |
+| `POSITION` | `COMPUTED` | Holdings × latest price × FX, plus cash. Never stale. |
+| `POSITION` | `RECORDED_FALLBACK` | Used when a held asset has no price, so a missing price never silently undervalues the platform. |
+| `CASHFLOW` | `RECORDED` | A valuation dated exactly on the NAV date. |
+| `CASHFLOW` | `CARRIED_FORWARD` | The most recent valuation on or before the NAV date, with its age reported. |
+| Either | `NET_INVESTED_FALLBACK` | No valuation ever recorded; assumed flat rather than inventing a gain. |
+
+Valuations dated after the NAV date are never used, so a historical NAV cannot see a future mark.
+
+A valuation older than **30 days** is flagged stale. A platform that is both stale and **10% or more** of the fund is *material*: NAV can still be created and locked for reporting, but settling any deposit or withdrawal against it is rejected until the valuation is refreshed. Stale-but-immaterial and fresh-but-small platforms never block settlement.
+
+Recording a valuation dated on or before an already-locked NAV is rejected, because that NAV has already priced the period.
+
+### Operating cycle
+
+NAV is event-driven: create one when you need to price something, not on a fixed calendar.
+
+1. Record platform transactions as they happen (money in/out at minimum).
+2. Record platform values whenever convenient — one number per `CASHFLOW` platform, prices per held asset for `POSITION` platforms.
+3. When a deposit, withdrawal, or reporting date arrives, open the NAV review screen and pick the valuation date.
+4. Review resolved values, staleness badges, gross assets, and adjustments. Override individual platforms only where needed.
+5. Save the draft and lock it.
+6. Settle deposits, withdrawals, fixed-savings movements, claims, and bonuses.
+7. Review investor statements, equity performance, reports, brokerage reconciliation, and audit logs.
 
 ## Access Model
 
@@ -77,7 +103,7 @@ Default operating cycle:
 | `/` | Admin session | Dashboard. |
 | `/investors` | Admin session | Investor directory and portal link management. |
 | `/investors/[id]` | Admin session | Investor statement and activity ledger. |
-| `/nav` | Admin session | Weekly NAV register. |
+| `/nav` | Admin session | Platform values and NAV register. |
 | `/capital` | Admin session | Equity cash movement ledger. |
 | `/fixed-savings` | Admin session | Fixed-savings liability ledger. |
 | `/fixed-savings-rates` | Admin session | Fixed-savings base and promotional rates. |
@@ -196,7 +222,10 @@ npm.cmd run dev
 7. Enter the admin password in the protected settings gate.
 8. Run `Initialize Database`.
 9. Optionally run `Import Dummy Data` for local development only.
-10. Review `/nav`, `/capital`, `/investors`, `/trading`, `/claims`, `/fixed-savings`, `/fixed-savings-rates`, `/brokerage`, `/reports`, `/admin-logs`, and `/settings`.
+10. Add each trading platform and choose its tracking mode (`CASHFLOW` unless you want per-asset attribution).
+11. Record a starting value for every `CASHFLOW` platform.
+12. Create and lock an opening NAV before recording any capital movement.
+13. Review `/nav`, `/capital`, `/investors`, `/trading`, `/claims`, `/fixed-savings`, `/fixed-savings-rates`, `/brokerage`, `/reports`, `/admin-logs`, and `/settings`.
 
 The protected data tools can delete records, drop tables, initialize schema, and import dummy data. They are destructive and are blocked in production.
 
@@ -258,6 +287,10 @@ The Settings page provides manual JSON backup tooling:
 
 Backup files contain financial records, investor names, portal identifiers, NAV history, claims, trading records, and audit events. Store them as secrets.
 
+The current backup schema version is **3**. Version 2 files still restore: `platform_valuations` and `platform_transaction_allocations` come back empty, and the never-created `platform_performance` table that v2 exported is ignored.
+
+Schema version 3 added `platform_valuations` and — importantly — `platform_transaction_allocations`, which version 2 omitted. Restoring a v2 backup therefore loses per-transaction funding-source splits, and affected platforms fall back to the legacy single-`funding_source` attribution. Re-enter allocations after restoring a v2 file if you relied on split funding.
+
 ## Investor Portal
 
 Investor portal access is not a password login. It is a private bearer-link workflow:
@@ -284,7 +317,7 @@ public/                   Static assets
 Primary modules:
 
 - Dashboard: fund overview, NAV per unit, units, equity P&L, equity return, fixed-savings liability, and investor summary.
-- Weekly NAV: draft, review, lock, and list weekly NAV snapshots.
+- Valuations & NAV: record platform values, review resolved values with staleness, draft, lock, and list NAV records.
 - Investors: directory, equity P&L, equity return, balances, portal links, and investor statements.
 - Capital: equity deposits and withdrawals.
 - Fixed Savings: liability ledger and interest-bearing savings activity.

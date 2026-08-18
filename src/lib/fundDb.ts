@@ -11,6 +11,13 @@ import {
 } from "@/lib/accounting";
 import { requireAdmin } from "@/lib/auth";
 import { BACKUP_TABLES, assertBackupTableName } from "@/lib/backupTables";
+import {
+  MATERIAL_WEIGHT_PERCENT,
+  STALE_AFTER_DAYS,
+  blockingValuations,
+  resolvePlatformValue,
+} from "@/lib/platformValuation";
+import type { ResolvedValuation } from "@/lib/platformValuation";
 
 export type CashMovementType = "Deposit" | "Withdrawal";
 export type NavStatus = "draft" | "locked";
@@ -18,14 +25,38 @@ export type NavStatus = "draft" | "locked";
 type NavWeekInput = {
   weekEnding: string;
   settlementDate?: string;
-  platformSnapshots: PlatformSnapshotInput[];
+  /**
+   * Optional per-platform overrides. Omit to value every platform from its
+   * recorded valuations (CASHFLOW) or holdings (POSITION).
+   */
+  platformSnapshots?: PlatformSnapshotInput[];
   adjustments: number;
   notes?: string;
 };
 
+/**
+ * A manual override for one platform. Give either the total value (what the
+ * NAV review screen collects) or the unrealized profit relative to net
+ * invested; totalValue wins when both are present.
+ */
 type PlatformSnapshotInput = {
   platformId: string;
-  unrealizedProfit: number;
+  totalValue?: number;
+  unrealizedProfit?: number;
+};
+
+export type PlatformValuationSource = "MANUAL" | "STATEMENT" | "IMPORT";
+
+export type NavPlatformPreview = ResolvedValuation & {
+  platformId: string;
+  platformName: string;
+  trackingMode: string;
+  netInvested: number;
+  equityNetInvested: number;
+  fixedSavingsNetInvested: number;
+  brokerageNetInvested: number;
+  profitLoss: number;
+  weightPercent: number;
 };
 
 type CashMovementInput = {
@@ -207,6 +238,22 @@ function fixedSavingsLedgerRows(rows: any[]) {
 }
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
+
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Financial records may be backdated but never post-dated: a future-dated
+ * movement would issue units against a NAV that does not exist yet.
+ */
+export function assertNotFutureDate(date: string, label = "Date") {
+  if (!ISO_DATE_PATTERN.test(date) || Number.isNaN(new Date(`${date}T00:00:00.000Z`).getTime())) {
+    throw new Error(`${label} must be a valid YYYY-MM-DD date.`);
+  }
+  const today = todayIso();
+  if (date > today) {
+    throw new Error(`${label} cannot be in the future (today is ${today}).`);
+  }
+}
 const DEFAULT_BROKERAGE_FEE_RATE = "2.0";
 const DEFAULT_FIXED_SAVINGS_RATE = "4.0";
 const RESETTABLE_FINANCIAL_TABLES = BACKUP_TABLES;
@@ -884,6 +931,24 @@ export async function ensureFreshFundSchema() {
   `;
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS base_currency TEXT NOT NULL DEFAULT 'MYR'`;
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS default_currency TEXT NOT NULL DEFAULT 'MYR'`;
+  await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS tracking_mode TEXT NOT NULL DEFAULT 'CASHFLOW'`;
+  await sql`ALTER TABLE platforms DROP CONSTRAINT IF EXISTS platforms_tracking_mode_check`;
+  await sql`ALTER TABLE platforms ADD CONSTRAINT platforms_tracking_mode_check CHECK (tracking_mode IN ('CASHFLOW', 'POSITION'))`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS platform_valuations (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      platform_id UUID NOT NULL REFERENCES platforms(id) ON DELETE CASCADE,
+      as_of_date DATE NOT NULL,
+      total_value NUMERIC(15, 4) NOT NULL,
+      source TEXT NOT NULL DEFAULT 'MANUAL',
+      notes TEXT,
+      audit_status TEXT NOT NULL DEFAULT 'active',
+      reversal_of_id UUID,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(platform_id, as_of_date)
+    );
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS platform_valuations_platform_date_idx ON platform_valuations (platform_id, as_of_date DESC)`;
   await sql`
     CREATE TABLE IF NOT EXISTS platform_accounts (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -924,9 +989,17 @@ export async function ensureFreshFundSchema() {
       equity_unrealized_profit NUMERIC(15, 4) NOT NULL DEFAULT 0,
       brokerage_profit_loss NUMERIC(15, 4) NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ DEFAULT NOW(),
+      valuation_date DATE,
+      valuation_source TEXT NOT NULL DEFAULT 'RECORDED',
+      valuation_age_days INTEGER NOT NULL DEFAULT 0,
+      weight_percent NUMERIC(10, 4) NOT NULL DEFAULT 0,
       UNIQUE(nav_week_id, platform_id)
     );
   `;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS valuation_date DATE`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS valuation_source TEXT NOT NULL DEFAULT 'RECORDED'`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS valuation_age_days INTEGER NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS weight_percent NUMERIC(10, 4) NOT NULL DEFAULT 0`;
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS total_value NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS equity_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS fixed_savings_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
@@ -1112,12 +1185,248 @@ export async function getNavWeeks() {
   return res.rows;
 }
 
-export async function createNavWeek(input: NavWeekInput) {
-  const existingWeek = await sql`SELECT status FROM nav_weeks WHERE week_ending = ${input.weekEnding}`;
-  if (existingWeek.rows[0]?.status === "locked") {
-    throw new Error("Locked NAV weeks cannot be modified.");
+/**
+ * Cash and holdings per platform as of a date, for POSITION-mode valuation.
+ * Transactions after asOfDate are excluded so a historical NAV never sees
+ * trades that had not happened yet.
+ */
+async function getPlatformHoldingsAsOf(asOfDate: string) {
+  const [holdingRows, cashRows] = await Promise.all([
+    sql`
+      SELECT
+        pt.platform_id,
+        pa.symbol,
+        pa.latest_price,
+        pa.latest_fx_rate_to_myr,
+        SUM(
+          CASE
+            WHEN pt.type = 'BUY' THEN COALESCE(pt.quantity, 0)
+            WHEN pt.type = 'SELL' THEN -COALESCE(pt.quantity, 0)
+            ELSE 0
+          END
+        ) as quantity
+      FROM platform_transactions pt
+      JOIN platform_assets pa ON pa.id = pt.asset_id
+      WHERE COALESCE(pt.audit_status, 'active') = 'active'
+        AND COALESCE(pt.status, 'SETTLED') = 'SETTLED'
+        AND pt.date <= ${asOfDate}
+        AND pt.asset_id IS NOT NULL
+      GROUP BY pt.platform_id, pa.symbol, pa.latest_price, pa.latest_fx_rate_to_myr
+    `,
+    sql`
+      SELECT
+        pt.platform_id,
+        COALESCE(SUM(
+          CASE
+            WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit', 'TRANSFER') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+            WHEN pt.type IN ('SELL', 'DIVIDEND', 'INTEREST') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+            WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw', 'BUY', 'FEE', 'TAX') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+            ELSE 0
+          END
+        ), 0) as cash_balance
+      FROM platform_transactions pt
+      WHERE COALESCE(pt.audit_status, 'active') = 'active'
+        AND COALESCE(pt.status, 'SETTLED') = 'SETTLED'
+        AND pt.date <= ${asOfDate}
+      GROUP BY pt.platform_id
+    `,
+  ]);
+
+  const holdings = new Map<string, { symbol: string; quantity: number; latestPrice: number; fxRateToBase: number }[]>();
+  for (const row of holdingRows.rows) {
+    const list = holdings.get(row.platform_id) ?? [];
+    list.push({
+      symbol: row.symbol,
+      quantity: parseFloat(row.quantity || "0"),
+      latestPrice: parseFloat(row.latest_price || "0"),
+      fxRateToBase: parseFloat(row.latest_fx_rate_to_myr || "1"),
+    });
+    holdings.set(row.platform_id, list);
   }
-  const totalUnits = await getTotalUnits();
+
+  const cash = new Map<string, number>(
+    cashRows.rows.map((row: any) => [row.platform_id, parseFloat(row.cash_balance || "0")]),
+  );
+
+  return { holdings, cash };
+}
+
+async function getPlatformValuationsAsOf(asOfDate: string) {
+  const res = await sql`
+    SELECT platform_id, TO_CHAR(as_of_date, 'YYYY-MM-DD') as as_of_date, total_value
+    FROM platform_valuations
+    WHERE audit_status = 'active' AND as_of_date <= ${asOfDate}
+    ORDER BY platform_id, as_of_date DESC
+  `;
+  const byPlatform = new Map<string, { asOfDate: string; totalValue: number }[]>();
+  for (const row of res.rows) {
+    const list = byPlatform.get(row.platform_id) ?? [];
+    list.push({ asOfDate: row.as_of_date, totalValue: parseFloat(row.total_value || "0") });
+    byPlatform.set(row.platform_id, list);
+  }
+  return byPlatform;
+}
+
+/**
+ * Every platform valued for a NAV date, with staleness metadata. This is what
+ * the NAV review screen renders and what createNavWeek persists.
+ */
+export async function buildNavPlatformPreview(
+  asOfDate: string,
+  overrides: Map<string, { totalValue?: number; unrealizedProfit?: number }> = new Map(),
+): Promise<NavPlatformPreview[]> {
+  const [positions, valuations, holdingData] = await Promise.all([
+    getPlatformFundingPositions(),
+    getPlatformValuationsAsOf(asOfDate),
+    getPlatformHoldingsAsOf(asOfDate),
+  ]);
+
+  const resolved = positions.map((platform) => {
+    const netInvested = roundMoney(platform.netInvested);
+    const override = overrides.get(platform.id);
+    const overrideValue =
+      override === undefined
+        ? undefined
+        : override.totalValue !== undefined
+          ? roundMoney(override.totalValue)
+          : roundMoney(netInvested + (override.unrealizedProfit ?? 0));
+    const valuation: ResolvedValuation =
+      overrideValue !== undefined
+        ? {
+            totalValue: overrideValue,
+            source: "RECORDED",
+            valuationDate: asOfDate,
+            ageDays: 0,
+            isStale: false,
+            missingPrices: [],
+          }
+        : resolvePlatformValue({
+            trackingMode: platform.trackingMode === "POSITION" ? "POSITION" : "CASHFLOW",
+            netInvested,
+            valuations: valuations.get(platform.id) ?? [],
+            holdings: holdingData.holdings.get(platform.id) ?? null,
+            cashBalance: holdingData.cash.get(platform.id) ?? 0,
+            asOfDate,
+          });
+
+    return {
+      ...valuation,
+      platformId: platform.id,
+      platformName: platform.name,
+      trackingMode: platform.trackingMode,
+      netInvested,
+      equityNetInvested: platform.equityNetInvested,
+      fixedSavingsNetInvested: platform.fixedSavingsNetInvested,
+      brokerageNetInvested: platform.brokerageNetInvested,
+      profitLoss: roundMoney(valuation.totalValue - netInvested),
+      weightPercent: 0,
+    };
+  });
+
+  const grossValue = resolved.reduce((sum, item) => sum + item.totalValue, 0);
+  return resolved.map((item) => ({
+    ...item,
+    weightPercent: grossValue > 0 ? roundMoney((item.totalValue / grossValue) * 100) : 0,
+  }));
+}
+
+/** Stale AND material platforms that must be refreshed before settling capital. */
+export async function getBlockingValuations(asOfDate: string) {
+  const preview = await buildNavPlatformPreview(asOfDate);
+  return blockingValuations(preview);
+}
+
+/**
+ * Log what a platform was worth on a date. Re-recording the same date replaces
+ * the value rather than stacking duplicates, so a correction is one entry.
+ */
+export async function recordPlatformValuation(input: {
+  platformId: string;
+  asOfDate: string;
+  totalValue: number;
+  source?: PlatformValuationSource;
+  notes?: string;
+}) {
+  await requireAdmin();
+  await ensureAuditColumns();
+  assertNotFutureDate(input.asOfDate, "Valuation date");
+
+  if (!Number.isFinite(input.totalValue) || input.totalValue < 0) {
+    throw new Error("Platform value must be zero or a positive number.");
+  }
+
+  const platform = await sql`SELECT id, name FROM platforms WHERE id = ${input.platformId}`;
+  if (platform.rows.length === 0) throw new Error("Platform not found.");
+
+  // A locked NAV already consumed valuations up to its date; changing history
+  // beneath it would silently contradict an immutable record.
+  const blockingLock = await sql`
+    SELECT TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending
+    FROM nav_weeks
+    WHERE status = 'locked' AND week_ending >= ${input.asOfDate}
+    ORDER BY week_ending ASC
+    LIMIT 1
+  `;
+  if (blockingLock.rows.length > 0) {
+    throw new Error(
+      `NAV week ${blockingLock.rows[0].week_ending} is locked and already priced this period. Record the valuation with a later date.`,
+    );
+  }
+
+  const existing = await sql`
+    SELECT total_value FROM platform_valuations
+    WHERE platform_id = ${input.platformId} AND as_of_date = ${input.asOfDate} AND audit_status = 'active'
+  `;
+  const previousValue = existing.rows[0] ? parseFloat(existing.rows[0].total_value) : null;
+  const totalValue = roundMoney(input.totalValue);
+
+  const res = await sql`
+    INSERT INTO platform_valuations (platform_id, as_of_date, total_value, source, notes)
+    VALUES (${input.platformId}, ${input.asOfDate}, ${totalValue}, ${input.source || "MANUAL"}, ${input.notes || ""})
+    ON CONFLICT (platform_id, as_of_date) DO UPDATE SET
+      total_value = EXCLUDED.total_value,
+      source = EXCLUDED.source,
+      notes = EXCLUDED.notes
+    RETURNING id
+  `;
+
+  await writeAuditEvent("platform_valuation.record", "platform_valuations", res.rows[0].id, {
+    platformId: input.platformId,
+    platformName: platform.rows[0].name,
+    asOfDate: input.asOfDate,
+    totalValue,
+    previousValue,
+    source: input.source || "MANUAL",
+  });
+  return { success: true, id: res.rows[0].id as string };
+}
+
+export async function getPlatformValuations(platformId?: string) {
+  await requireAdmin();
+  await ensureAuditColumns();
+  const res = platformId
+    ? await sql`
+        SELECT pv.id, pv.platform_id, p.name as platform_name,
+          TO_CHAR(pv.as_of_date, 'YYYY-MM-DD') as as_of_date,
+          pv.total_value, pv.source, pv.notes, pv.created_at
+        FROM platform_valuations pv
+        JOIN platforms p ON p.id = pv.platform_id
+        WHERE pv.audit_status = 'active' AND pv.platform_id = ${platformId}
+        ORDER BY pv.as_of_date DESC
+      `
+    : await sql`
+        SELECT pv.id, pv.platform_id, p.name as platform_name,
+          TO_CHAR(pv.as_of_date, 'YYYY-MM-DD') as as_of_date,
+          pv.total_value, pv.source, pv.notes, pv.created_at
+        FROM platform_valuations pv
+        JOIN platforms p ON p.id = pv.platform_id
+        WHERE pv.audit_status = 'active'
+        ORDER BY pv.as_of_date DESC, p.name ASC
+      `;
+  return res.rows;
+}
+
+async function getPlatformFundingPositions() {
   const platforms = await sql`
     WITH transaction_flows AS (
       SELECT
@@ -1156,30 +1465,63 @@ export async function createNavWeek(input: NavWeekInput) {
     )
     SELECT
       p.id,
+      p.name,
+      COALESCE(p.tracking_mode, 'CASHFLOW') as tracking_mode,
       COALESCE(SUM(tf.cash_flow), 0) as net_invested,
       COALESCE(SUM(tf.equity_cash_flow), 0) as equity_net_invested,
       COALESCE(SUM(tf.fixed_savings_cash_flow), 0) as fixed_savings_net_invested,
       COALESCE(SUM(tf.brokerage_cash_flow), 0) as brokerage_net_invested
     FROM platforms p
     LEFT JOIN transaction_flows tf ON tf.platform_id = p.id
-    GROUP BY p.id
-    ORDER BY p.id
+    GROUP BY p.id, p.name, p.tracking_mode
+    ORDER BY p.name
   `;
-  const snapshotByPlatform = new Map(input.platformSnapshots.map((snapshot) => [snapshot.platformId, snapshot.unrealizedProfit]));
-  const platformSnapshots = platforms.rows.map((platform: any) => {
-    const totalNetInvested = roundMoney(parseFloat(platform.net_invested || "0"));
-    const totalValue = roundMoney(totalNetInvested + (snapshotByPlatform.get(platform.id) ?? 0));
+
+  return platforms.rows.map((platform: any) => ({
+    id: platform.id as string,
+    name: platform.name as string,
+    trackingMode: platform.tracking_mode as string,
+    netInvested: roundMoney(parseFloat(platform.net_invested || "0")),
+    equityNetInvested: roundMoney(parseFloat(platform.equity_net_invested || "0")),
+    fixedSavingsNetInvested: roundMoney(parseFloat(platform.fixed_savings_net_invested || "0")),
+    brokerageNetInvested: roundMoney(parseFloat(platform.brokerage_net_invested || "0")),
+  }));
+}
+
+export async function createNavWeek(input: NavWeekInput) {
+  const existingWeek = await sql`SELECT status FROM nav_weeks WHERE week_ending = ${input.weekEnding}`;
+  if (existingWeek.rows[0]?.status === "locked") {
+    throw new Error("Locked NAV weeks cannot be modified.");
+  }
+  const totalUnits = await getTotalUnits();
+
+  // Overrides are optional now: an omitted platform is valued from its recorded
+  // valuations or computed holdings rather than requiring fresh input.
+  const overrides = new Map<string, { totalValue?: number; unrealizedProfit?: number }>();
+  for (const snapshot of input.platformSnapshots ?? []) {
+    overrides.set(snapshot.platformId, {
+      totalValue: snapshot.totalValue,
+      unrealizedProfit: snapshot.unrealizedProfit,
+    });
+  }
+
+  const preview = await buildNavPlatformPreview(input.weekEnding, overrides);
+  const platformSnapshots = preview.map((platform) => {
     const allocation = calculateBrokerageFundingAllocation({
-      equityNetInvested: parseFloat(platform.equity_net_invested || "0"),
-      fixedSavingsNetInvested: parseFloat(platform.fixed_savings_net_invested || "0"),
-      brokerageNetInvested: parseFloat(platform.brokerage_net_invested || "0"),
-      totalValue,
+      equityNetInvested: platform.equityNetInvested,
+      fixedSavingsNetInvested: platform.fixedSavingsNetInvested,
+      brokerageNetInvested: platform.brokerageNetInvested,
+      totalValue: platform.totalValue,
     });
     return {
-      platformId: platform.id as string,
+      platformId: platform.platformId,
       netInvested: allocation.equityNetInvested,
       unrealizedProfit: allocation.equityProfitLoss,
-      totalValue,
+      totalValue: platform.totalValue,
+      valuationDate: platform.valuationDate,
+      valuationSource: platform.source,
+      valuationAgeDays: platform.ageDays ?? 0,
+      weightPercent: platform.weightPercent,
       allocation,
     };
   });
@@ -1218,12 +1560,14 @@ export async function createNavWeek(input: NavWeekInput) {
       INSERT INTO nav_week_platform_snapshots (
         nav_week_id, platform_id, net_invested, unrealized_profit, total_value,
         equity_net_invested, fixed_savings_net_invested, brokerage_net_invested,
-        equity_unrealized_profit, brokerage_profit_loss
+        equity_unrealized_profit, brokerage_profit_loss,
+        valuation_date, valuation_source, valuation_age_days, weight_percent
       )
       VALUES (
         ${navWeekId}, ${snapshot.platformId}, ${snapshot.netInvested}, ${snapshot.unrealizedProfit}, ${snapshot.totalValue},
         ${snapshot.allocation.equityNetInvested}, ${snapshot.allocation.fixedSavingsNetInvested}, ${snapshot.allocation.brokerageNetInvested},
-        ${snapshot.allocation.equityProfitLoss}, ${snapshot.allocation.brokerageProfitLoss}
+        ${snapshot.allocation.equityProfitLoss}, ${snapshot.allocation.brokerageProfitLoss},
+        ${snapshot.valuationDate}, ${snapshot.valuationSource}, ${snapshot.valuationAgeDays}, ${snapshot.weightPercent}
       )
     `;
   }
@@ -1231,8 +1575,16 @@ export async function createNavWeek(input: NavWeekInput) {
     weekEnding: input.weekEnding,
     grossAssets,
     platformCount: platformSnapshots.length,
+    // Record where each value came from, so a later reviewer can tell a fresh
+    // mark from a carried-forward one without re-deriving it.
+    valuationSources: platformSnapshots.map((snapshot) => ({
+      platformId: snapshot.platformId,
+      source: snapshot.valuationSource,
+      valuationDate: snapshot.valuationDate,
+    })),
+    staleCount: preview.filter((platform) => platform.isStale).length,
   });
-  return { success: true };
+  return { success: true, preview };
 }
 
 export async function lockNavWeek(id: string) {
@@ -1279,12 +1631,70 @@ export async function deleteDraftNavWeek(id: string) {
   return { success: true };
 }
 
+/**
+ * Latest locked NAV on or before a date. Pricing a backdated movement at
+ * today's NAV would issue or redeem units at the wrong price, so the NAV in
+ * force on the movement date is the correct one.
+ */
+export async function getLockedNavWeekForDate(date: string) {
+  const res = await sql`
+    SELECT id,
+      TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
+      TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
+      gross_assets, liabilities, adjustments, net_asset_value,
+      total_units, nav_per_unit, status, locked_at, notes, created_at
+    FROM nav_weeks
+    WHERE status = 'locked' AND week_ending <= ${date}
+    ORDER BY nav_weeks.week_ending DESC
+    LIMIT 1
+  `;
+  return res.rows[0] ?? null;
+}
+
+/**
+ * Refuse to settle capital against a NAV whose pricing rests on valuations that
+ * are both stale and material. Mispricing here silently moves value between
+ * investors, which is exactly what unit accounting exists to prevent.
+ */
+async function assertNavIsSettlementGrade(navWeekId: string, weekEnding: string) {
+  const res = await sql`
+    SELECT p.name, nwps.valuation_age_days, nwps.weight_percent, TO_CHAR(nwps.valuation_date, 'YYYY-MM-DD') as valuation_date
+    FROM nav_week_platform_snapshots nwps
+    JOIN platforms p ON p.id = nwps.platform_id
+    WHERE nwps.nav_week_id = ${navWeekId}
+      AND nwps.valuation_age_days > ${STALE_AFTER_DAYS}
+      AND nwps.weight_percent >= ${MATERIAL_WEIGHT_PERCENT}
+    ORDER BY nwps.weight_percent DESC
+  `;
+  if (res.rows.length === 0) return;
+
+  const detail = res.rows
+    .map(
+      (row: any) =>
+        `${row.name} (${Number(row.weight_percent).toFixed(1)}% of the fund, valued ${row.valuation_date ?? "never"}, ${row.valuation_age_days} days old)`,
+    )
+    .join("; ");
+  throw new Error(
+    `Cannot settle capital against the NAV of ${weekEnding}: ${detail}. Record a current valuation for these platforms and create a new NAV before settling.`,
+  );
+}
+
 export async function recordCashMovement(input: CashMovementInput) {
+  await requireAdmin();
   await ensureAuditColumns();
-  const navWeek = await getLatestLockedNavWeek();
+  assertNotFutureDate(input.date, "Movement date");
+
+  const navWeek = await getLockedNavWeekForDate(input.date);
   if (!navWeek) {
-    return { error: "Cash movements require at least one locked weekly NAV." };
+    const anyLocked = await getLatestLockedNavWeek();
+    if (!anyLocked) {
+      return { error: "Cash movements require at least one locked NAV." };
+    }
+    return {
+      error: `No locked NAV exists on or before ${input.date}. The earliest locked NAV is ${anyLocked.week_ending}. Create and lock a NAV dated on or before the movement, or use a later movement date.`,
+    };
   }
+  await assertNavIsSettlementGrade(navWeek.id, navWeek.week_ending);
 
   const navPerUnit = parseFloat(navWeek.nav_per_unit);
   let ledgerType = "UnitIssue";
@@ -1391,7 +1801,9 @@ export async function recordCashMovement(input: CashMovementInput) {
 }
 
 export async function recordFixedSavings(input: FixedSavingsInput) {
+  await requireAdmin();
   await ensureAuditColumns();
+  assertNotFutureDate(input.date, "Fixed savings date");
   const ledgerIds: string[] = [];
 
   if (input.type === "Withdrawal") {

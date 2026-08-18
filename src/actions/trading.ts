@@ -10,6 +10,7 @@ import {
   percentage,
 } from "@/lib/investmentAccounting";
 import { roundMoney } from "@/lib/accounting";
+import { STALE_AFTER_DAYS, daysBetween, isTrackingMode } from "@/lib/platformValuation";
 import { calculatePlatformPerformance } from "@/lib/platformPerformance";
 
 const ACCOUNT_TYPES = ["BANK", "WALLET", "BROKER_CASH", "BROKER_PORTFOLIO", "OTHER"] as const;
@@ -235,7 +236,10 @@ export async function getPlatforms() {
       p.name,
       p.base_currency,
       p.default_currency,
+      COALESCE(p.tracking_mode, 'CASHFLOW') as tracking_mode,
       TO_CHAR(p.created_at, 'YYYY-MM-DD') as created_at,
+      TO_CHAR(lv.as_of_date, 'YYYY-MM-DD') as latest_valuation_date,
+      lv.total_value as latest_valuation_value,
       COALESCE(lps.unrealized_profit, 0) as unrealized_profit,
       COALESCE(lps.total_value, 0) as latest_total_value,
       COALESCE(lps.brokerage_profit_loss, 0) as brokerage_profit_loss,
@@ -253,9 +257,19 @@ export async function getPlatforms() {
     FROM platforms p
     LEFT JOIN transaction_flows tf ON p.id = tf.platform_id
     LEFT JOIN latest_platform_snapshot lps ON lps.platform_id = p.id
-    GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.created_at, lps.unrealized_profit, lps.total_value, lps.brokerage_profit_loss
+    LEFT JOIN LATERAL (
+      SELECT as_of_date, total_value
+      FROM platform_valuations
+      WHERE platform_id = p.id AND audit_status = 'active'
+      ORDER BY as_of_date DESC
+      LIMIT 1
+    ) lv ON TRUE
+    GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.tracking_mode, p.created_at,
+      lv.as_of_date, lv.total_value, lps.unrealized_profit, lps.total_value, lps.brokerage_profit_loss
     ORDER BY p.created_at DESC, p.name ASC
   `;
+
+  const today = new Date().toISOString().slice(0, 10);
 
   return data.rows.map((row: any) => {
     const netInvested = parseFloat(row.net_invested || "0");
@@ -265,14 +279,33 @@ export async function getPlatforms() {
     const realizedProfit = parseFloat(row.realized_profit || "0");
     const unrealizedProfit = parseFloat(row.unrealized_profit || "0");
     const latestTotalValue = parseFloat(row.latest_total_value || "0");
-    const totalValue = latestTotalValue > 0 ? latestTotalValue : netInvested + unrealizedProfit;
+    const latestValuationValue = row.latest_valuation_value === null || row.latest_valuation_value === undefined
+      ? null
+      : parseFloat(row.latest_valuation_value);
+    // A recorded valuation is more current than the last locked NAV snapshot.
+    const totalValue = latestValuationValue !== null
+      ? latestValuationValue
+      : latestTotalValue > 0
+        ? latestTotalValue
+        : netInvested + unrealizedProfit;
     const simpleRoi = percentage(totalValue - Math.max(netInvested, 0), Math.max(netInvested, 0));
     return {
       id: row.id,
       name: row.name,
       baseCurrency: row.base_currency,
       defaultCurrency: row.default_currency,
+      trackingMode: row.tracking_mode as "CASHFLOW" | "POSITION",
       createdAt: row.created_at,
+      latestValuationDate: row.latest_valuation_date as string | null,
+      latestValuationValue,
+      valuationAgeDays: row.latest_valuation_date
+        ? daysBetween(row.latest_valuation_date, today)
+        : null,
+      // POSITION platforms price from live holdings, so they never go stale.
+      isValuationStale:
+        row.tracking_mode === "POSITION"
+          ? false
+          : !row.latest_valuation_date || daysBetween(row.latest_valuation_date, today) > STALE_AFTER_DAYS,
       netInvested,
       equityNetInvested,
       fixedSavingsNetInvested,
@@ -454,9 +487,14 @@ export async function addPlatform(formData: FormData) {
     const existing = await sql`SELECT id FROM platforms WHERE name = ${name}`;
     if (existing.rows.length > 0) return { error: "A platform with this name already exists." };
 
+    const requestedMode = formData.get("tracking_mode")?.toString() || "CASHFLOW";
+    if (!isTrackingMode(requestedMode)) {
+      return { error: "Tracking mode must be CASHFLOW or POSITION." };
+    }
+
     const created = await sql`
-      INSERT INTO platforms (name, base_currency, default_currency)
-      VALUES (${name}, ${BASE_CURRENCY}, ${defaultCurrency})
+      INSERT INTO platforms (name, base_currency, default_currency, tracking_mode)
+      VALUES (${name}, ${BASE_CURRENCY}, ${defaultCurrency}, ${requestedMode})
       RETURNING id
     `;
     await sql`
@@ -464,7 +502,11 @@ export async function addPlatform(formData: FormData) {
       VALUES (${created.rows[0].id}, ${`${name} ${defaultCurrency} Cash`}, 'BROKER_CASH', ${defaultCurrency})
       ON CONFLICT DO NOTHING
     `;
-    await writeAuditEvent("platform.add", "platforms", created.rows[0].id, { name, defaultCurrency });
+    await writeAuditEvent("platform.add", "platforms", created.rows[0].id, {
+      name,
+      defaultCurrency,
+      trackingMode: requestedMode,
+    });
     revalidateTrading(created.rows[0].id);
     return { success: true, id: created.rows[0].id };
   } catch (error) {

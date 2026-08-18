@@ -36,15 +36,38 @@ test("redeems units for a withdrawal at the locked weekly NAV", () => {
   );
 });
 
-test("caps a full exit redemption at available units", () => {
+test("rejects a withdrawal larger than the investor's redeemable equity", () => {
+  // Silently capping would report success for a withdrawal that only partly
+  // happened; the caller must use withdrawAll to redeem the full balance.
+  assert.throws(
+    () =>
+      redeemUnitsForWithdrawal({
+        requestedAmount: 999999,
+        navPerUnit: 1.25,
+        availableUnits: 4000,
+      }),
+    /exceeds the investor's redeemable equity of RM 5000\.00/,
+  );
+});
+
+test("allows redeeming the exact available balance", () => {
   assert.deepEqual(
     redeemUnitsForWithdrawal({
-      requestedAmount: 999999,
+      requestedAmount: 5000,
       navPerUnit: 1.25,
       availableUnits: 4000,
     }),
     { unitsRedeemed: 4000, grossAmount: 5000 },
   );
+});
+
+test("tolerates float dust at the exact balance boundary", () => {
+  const result = redeemUnitsForWithdrawal({
+    requestedAmount: 3333.33,
+    navPerUnit: 3,
+    availableUnits: 1111.11,
+  });
+  assert.equal(result.unitsRedeemed, 1111.11);
 });
 
 test("keeps late investors from receiving prior-period gains", () => {

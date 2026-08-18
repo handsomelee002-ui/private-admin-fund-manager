@@ -1,150 +1,252 @@
 "use client";
 
-import { useState } from "react";
-import { createNavWeekAction } from "@/actions/fund";
+import { useCallback, useEffect, useState } from "react";
+import { createNavWeekAction, getNavPreviewAction } from "@/actions/fund";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Info, Plus } from "lucide-react";
+import { AlertTriangle, Plus } from "lucide-react";
 
-type PlatformSummary = {
-  id: string;
-  name: string;
-  unrealizedProfit: number;
+type PreviewRow = {
+  platformId: string;
+  platformName: string;
+  trackingMode: string;
   netInvested: number;
-  equityNetInvested?: number;
-  fixedSavingsNetInvested?: number;
-  brokerageNetInvested?: number;
-  totalValue?: number;
+  totalValue: number;
+  profitLoss: number;
+  source: string;
+  valuationDate: string | null;
+  ageDays: number | null;
+  isStale: boolean;
+  weightPercent: number;
+  missingPrices: string[];
 };
 
-function getFundingBreakdown(platform: PlatformSummary) {
-  const equity = platform.equityNetInvested ?? platform.netInvested;
-  const fixedSavings = platform.fixedSavingsNetInvested ?? 0;
-  const brokerage = platform.brokerageNetInvested ?? 0;
-  const total = equity + fixedSavings + brokerage;
-  const percentage = (value: number) => (total > 0 ? (value / total) * 100 : 0);
+const SOURCE_LABELS: Record<string, string> = {
+  COMPUTED: "computed from holdings",
+  RECORDED: "recorded",
+  CARRIED_FORWARD: "carried forward",
+  RECORDED_FALLBACK: "recorded (prices missing)",
+  NET_INVESTED_FALLBACK: "never valued",
+};
 
-  return [
-    { label: "Equity", value: equity, percent: percentage(equity) },
-    { label: "Fixed Savings", value: fixedSavings, percent: percentage(fixedSavings) },
-    { label: "Brokerage", value: brokerage, percent: percentage(brokerage) },
-  ];
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
 }
 
-function formatPercent(value: number) {
-  return `${value.toFixed(value > 0 && value < 0.1 ? 2 : 1)}%`;
+function formatMoney(value: number) {
+  return `RM ${value.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-export function CreateNavWeekForm({ platforms }: { platforms: PlatformSummary[] }) {
+function ageLabel(row: PreviewRow) {
+  if (row.source === "COMPUTED") return "live";
+  if (row.ageDays === null) return "never";
+  if (row.ageDays === 0) return "today";
+  return `${row.ageDays}d old`;
+}
+
+export function CreateNavWeekForm() {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [activePlatformInfo, setActivePlatformInfo] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [asOfDate, setAsOfDate] = useState(todayIso());
+  const [rows, setRows] = useState<PreviewRow[]>([]);
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+
+  const loadPreview = useCallback(async (date: string) => {
+    setPreviewLoading(true);
+    setError(null);
+    const result = await getNavPreviewAction(date);
+    setPreviewLoading(false);
+    if ("preview" in result && result.preview) {
+      setRows(result.preview as PreviewRow[]);
+    } else {
+      setRows([]);
+      setError(result.error || "Failed to load platform values.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    void loadPreview(asOfDate);
+  }, [open, asOfDate, loadPreview]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setLoading(true);
-    const result = await createNavWeekAction(new FormData(event.currentTarget));
+    setError(null);
+    const formData = new FormData(event.currentTarget);
+    const result = await createNavWeekAction(formData);
     setLoading(false);
-    if (result?.success) setOpen(false);
-    else alert(result?.error || "Failed to save NAV week.");
+    if (result?.success) {
+      setOpen(false);
+      setOverrides({});
+    } else {
+      setError(result?.error || "Failed to save NAV.");
+    }
   }
+
+  const effectiveValue = (row: PreviewRow) => {
+    const override = overrides[row.platformId];
+    if (override !== undefined && override.trim() !== "") {
+      const parsed = Number(override);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return row.totalValue;
+  };
+
+  const grossAssets = rows.reduce((sum, row) => sum + effectiveValue(row), 0);
+  const staleRows = rows.filter((row) => row.isStale);
+  const blockingRows = staleRows.filter((row) => row.weightPercent >= 10);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger className="inline-flex h-9 px-4 py-2 items-center justify-center rounded-md text-sm font-medium bg-primary text-primary-foreground shadow hover:bg-primary/90 gap-2">
+      <DialogTrigger className="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex h-9 items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium shadow">
         <Plus className="h-4 w-4" />
-        New NAV Week
+        New NAV
       </DialogTrigger>
       <DialogContent
         className="sm:max-w-none"
-        style={{
-          width: "min(calc(100vw - 2rem), 31rem)",
-          maxWidth: "none",
-        }}
+        style={{ width: "min(calc(100vw - 2rem), 52rem)", maxWidth: "none" }}
       >
         <DialogHeader>
-          <DialogTitle>Create Weekly NAV</DialogTitle>
+          <DialogTitle>Review &amp; create NAV</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4 pt-2">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="week_ending">Friday Close</Label>
-              <Input id="week_ending" name="week_ending" type="date" required />
+              <Label htmlFor="week_ending">Valuation date</Label>
+              <Input
+                id="week_ending"
+                name="week_ending"
+                type="date"
+                required
+                max={todayIso()}
+                value={asOfDate}
+                onChange={(event) => setAsOfDate(event.target.value)}
+              />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="adjustments">Manual Adjustments</Label>
+              <Label htmlFor="adjustments">Manual adjustments</Label>
               <Input id="adjustments" name="adjustments" type="number" step="0.01" defaultValue="0" required />
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="notes">Notes (optional)</Label>
+              <Input id="notes" name="notes" placeholder="e.g., month-end lock" />
+            </div>
           </div>
-          <div className="space-y-3">
-            <Label>Platform Final Value (RM)</Label>
-            {platforms.map((platform) => {
-              const fundingBreakdown = getFundingBreakdown(platform);
 
-              return (
-                <div key={platform.id} className="flex items-center gap-4 rounded-md py-0.5">
-                  <Label
-                    htmlFor={`platform_value_${platform.id}`}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium"
-                  >
-                    <span className="truncate">{platform.name}</span>
-                    <span
-                      className="relative inline-flex"
-                      onMouseEnter={() => setActivePlatformInfo(platform.id)}
-                      onMouseLeave={() => setActivePlatformInfo((current) => (current === platform.id ? null : current))}
-                    >
-                      <button
-                        type="button"
-                        aria-label={`${platform.name} allocation details`}
-                        aria-expanded={activePlatformInfo === platform.id}
-                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onFocus={() => setActivePlatformInfo(platform.id)}
-                        onBlur={() => setActivePlatformInfo((current) => (current === platform.id ? null : current))}
-                      >
-                        <Info className="h-3.5 w-3.5" />
-                      </button>
-                      {activePlatformInfo === platform.id && (
-                        <span
-                          className="absolute left-7 top-1/2 z-[70] -translate-y-1/2 rounded-md border border-border/70 bg-popover p-3 text-xs font-normal text-popover-foreground shadow-xl ring-1 ring-foreground/5"
-                          style={{ width: "20rem" }}
-                        >
-                          <span className="absolute -left-1.5 top-1/2 h-3 w-3 -translate-y-1/2 rotate-45 border-b border-l border-border/70 bg-popover" />
-                          <span className="relative block space-y-1.5">
-                            {fundingBreakdown.map((item) => (
-                              <span key={item.label} className="flex min-w-0 items-center gap-3 whitespace-nowrap">
-                                <span className="w-[6.75rem] shrink-0 text-muted-foreground">{item.label}</span>
-                                <span className="min-w-0 flex-1 text-right font-medium tabular-nums">RM {item.value.toLocaleString()}</span>
-                                <span className="rounded-sm bg-muted px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground">
-                                  {formatPercent(item.percent)}
-                                </span>
-                              </span>
-                            ))}
-                          </span>
-                        </span>
-                      )}
-                    </span>
-                  </Label>
-                  <Input
-                    id={`platform_value_${platform.id}`}
-                    className="w-40 shrink-0"
-                    name={`platform_value_${platform.id}`}
-                    type="number"
-                    step="0.01"
-                    defaultValue={platform.totalValue ?? platform.netInvested + platform.unrealizedProfit}
-                    required
-                  />
-                </div>
-              );
-            })}
-            {platforms.length === 0 && (
-              <p className="text-sm text-muted-foreground">Add a trading platform before creating NAV.</p>
-            )}
+          <div className="border-border/60 overflow-hidden rounded-md border">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40 text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-medium">Platform</th>
+                    <th className="px-3 py-2 text-right font-medium">Net invested</th>
+                    <th className="px-3 py-2 text-right font-medium">Value</th>
+                    <th className="px-3 py-2 text-right font-medium">P&amp;L</th>
+                    <th className="px-3 py-2 text-left font-medium">Valued</th>
+                    <th className="px-3 py-2 text-right font-medium">Override</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewLoading && (
+                    <tr>
+                      <td colSpan={6} className="text-muted-foreground px-3 py-8 text-center">
+                        Loading platform values...
+                      </td>
+                    </tr>
+                  )}
+                  {!previewLoading && rows.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="text-muted-foreground px-3 py-8 text-center">
+                        No platforms yet. Add a platform before creating a NAV.
+                      </td>
+                    </tr>
+                  )}
+                  {!previewLoading &&
+                    rows.map((row) => {
+                      const value = effectiveValue(row);
+                      const profitLoss = value - row.netInvested;
+                      return (
+                        <tr key={row.platformId} className="border-border/40 border-t">
+                          <td className="px-3 py-2">
+                            <div className="font-medium">{row.platformName}</div>
+                            <div className="text-muted-foreground text-xs">
+                              {row.trackingMode === "POSITION" ? "positions" : "cash flow"} · {row.weightPercent.toFixed(1)}% of fund
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">{formatMoney(row.netInvested)}</td>
+                          <td className="px-3 py-2 text-right font-medium tabular-nums">{formatMoney(value)}</td>
+                          <td
+                            className={`px-3 py-2 text-right tabular-nums ${profitLoss < 0 ? "text-destructive" : "text-emerald-600 dark:text-emerald-400"}`}
+                          >
+                            {formatMoney(profitLoss)}
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <Badge variant={row.isStale ? "destructive" : "outline"}>{ageLabel(row)}</Badge>
+                            </div>
+                            <div className="text-muted-foreground mt-0.5 text-xs">
+                              {SOURCE_LABELS[row.source] ?? row.source}
+                              {row.missingPrices.length > 0 && ` · no price: ${row.missingPrices.join(", ")}`}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-right">
+                            <Input
+                              className="ml-auto h-8 w-32"
+                              name={`platform_value_${row.platformId}`}
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              placeholder="—"
+                              value={overrides[row.platformId] ?? ""}
+                              onChange={(event) =>
+                                setOverrides((current) => ({ ...current, [row.platformId]: event.target.value }))
+                              }
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
           </div>
-          <div className="flex justify-end">
-            <Button type="submit" disabled={loading || platforms.length === 0}>{loading ? "Saving..." : "Save Draft"}</Button>
+
+          {blockingRows.length > 0 && (
+            <div className="border-destructive/40 bg-destructive/10 text-destructive flex gap-2 rounded-md border p-3 text-sm">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-medium">Stale values on material platforms</p>
+                <p className="mt-0.5">
+                  {blockingRows.map((row) => row.platformName).join(", ")} —{" "}
+                  {blockingRows.length === 1 ? "this platform is" : "these platforms are"} over 30 days old and 10%+ of the
+                  fund. You can still lock this NAV for reporting, but it will refuse to settle deposits or withdrawals
+                  until refreshed.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between">
+            <div className="text-sm">
+              <span className="text-muted-foreground">Gross assets </span>
+              <span className="font-semibold tabular-nums">{formatMoney(grossAssets)}</span>
+              {staleRows.length > 0 && (
+                <span className="text-muted-foreground ml-2 text-xs">
+                  ({staleRows.length} carried forward)
+                </span>
+              )}
+            </div>
+            <Button type="submit" disabled={loading || rows.length === 0}>
+              {loading ? "Saving..." : "Save draft"}
+            </Button>
           </div>
+          {error && <p className="text-destructive text-sm">{error}</p>}
         </form>
       </DialogContent>
     </Dialog>

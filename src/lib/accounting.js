@@ -48,7 +48,16 @@ function redeemUnitsForWithdrawal({ requestedAmount, navPerUnit, availableUnits 
   }
 
   const requestedUnits = roundUnits(amount / nav);
-  const unitsRedeemed = Math.min(requestedUnits, roundUnits(units));
+  const availableRounded = roundUnits(units);
+  // Silently capping the redemption would report success for a withdrawal that
+  // only partly happened. Reject instead, matching the fixed-savings guard.
+  if (requestedUnits > availableRounded + 1e-6) {
+    const maximum = roundMoney(availableRounded * nav);
+    throw new Error(
+      `Withdrawal of RM ${roundMoney(amount).toFixed(2)} exceeds the investor's redeemable equity of RM ${maximum.toFixed(2)}. Use "withdraw all" to redeem the full balance.`,
+    );
+  }
+  const unitsRedeemed = Math.min(requestedUnits, availableRounded);
   return {
     unitsRedeemed,
     grossAmount: roundMoney(unitsRedeemed * nav),

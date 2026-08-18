@@ -18,7 +18,6 @@ const trading = require("../src/actions/trading.ts");
 const investors = require("../src/actions/investors.ts");
 const claims = require("../src/actions/profitClaims.ts");
 const settings = require("../src/actions/settings.ts");
-const capital = require("../src/actions/capital.ts");
 const adminLogs = require("../src/actions/adminLogs.ts");
 const backups = require("../src/actions/backups.ts");
 const backupValidation = require("../src/lib/backupValidation.ts");
@@ -234,31 +233,127 @@ async function firstInvestor(name) {
     assert.equal(full.brokerageFee, 35);
   });
 
-  await check("capital withdrawal blocks overdraw and auto-locks positive unrealized claim", async () => {
+  await check("equity withdrawal rejects an overdraw instead of silently under-filling", async () => {
+    // Alice holds units; an investor with none hits the earlier "no units" guard.
+    const alice = await firstInvestor("Alice Tan");
+    await assert.rejects(
+      () =>
+        fundDb.recordCashMovement({
+          investorId: alice.id,
+          date: "2026-06-20",
+          type: "Withdrawal",
+          amount: 9_999_999,
+          notes: "overdraw",
+        }),
+      /exceeds the investor's redeemable equity/i,
+    );
+  });
+
+  await check("withdrawal with no units at all is rejected", async () => {
     const dina = await firstInvestor("Dina Wong");
-    assert.equal((await capital.addCapitalRecord(formData({
+    await assert.rejects(
+      () =>
+        fundDb.recordCashMovement({
+          investorId: dina.id,
+          date: "2026-06-20",
+          type: "Withdrawal",
+          amount: 100,
+          notes: "no units",
+        }),
+      /No units available to redeem/i,
+    );
+  });
+
+  await check("cash movements reject future dates", async () => {
+    const dina = await firstInvestor("Dina Wong");
+    await assert.rejects(
+      () =>
+        fundDb.recordCashMovement({
+          investorId: dina.id,
+          date: "2099-01-01",
+          type: "Deposit",
+          amount: 1000,
+          notes: "future",
+        }),
+      /cannot be in the future/i,
+    );
+  });
+
+  await check("platform valuations are recorded, audited, and reused by NAV", async () => {
+    const platform = await one(await sql`SELECT id, name FROM platforms ORDER BY name ASC LIMIT 1`);
+    // Must be after the latest locked NAV (2026-06-12), which already priced
+    // every earlier period.
+    const asOf = "2026-07-01";
+    assert.equal(
+      (await fundDb.recordPlatformValuation({
+        platformId: platform.id,
+        asOfDate: asOf,
+        totalValue: 123_456.78,
+        source: "MANUAL",
+        notes: "feature test",
+      })).success,
+      true,
+    );
+
+    const stored = await one(await sql`
+      SELECT total_value FROM platform_valuations
+      WHERE platform_id = ${platform.id} AND as_of_date = ${asOf}
+    `);
+    assert.equal(Number(stored.total_value), 123_456.78);
+
+    const audit = await one(await sql`
+      SELECT id FROM audit_events
+      WHERE action = 'platform_valuation.record' AND entity_type = 'platform_valuations'
+      ORDER BY created_at DESC LIMIT 1
+    `);
+    assert.ok(audit.id, "valuation must write an audit event");
+
+    // Re-recording the same date corrects rather than duplicating.
+    await fundDb.recordPlatformValuation({
+      platformId: platform.id,
+      asOfDate: asOf,
+      totalValue: 200_000,
+    });
+    const rows = await sql`
+      SELECT COUNT(*)::int as count FROM platform_valuations
+      WHERE platform_id = ${platform.id} AND as_of_date = ${asOf}
+    `;
+    assert.equal(rows.rows[0].count, 1);
+
+    const preview = await fundDb.buildNavPlatformPreview(asOf);
+    const row = preview.find((item) => item.platformId === platform.id);
+    assert.ok(row, "preview must include the platform");
+    assert.equal(row.totalValue, 200_000);
+    assert.equal(row.source, "RECORDED");
+
+    // A valuation cannot rewrite a period a locked NAV already priced.
+    await assert.rejects(
+      () =>
+        fundDb.recordPlatformValuation({
+          platformId: platform.id,
+          asOfDate: "2026-06-01",
+          totalValue: 1,
+        }),
+      /is locked and already priced this period/i,
+    );
+
+    // A later NAV carries the value forward and reports its age.
+    const carried = await fundDb.buildNavPlatformPreview("2026-07-15");
+    const carriedRow = carried.find((item) => item.platformId === platform.id);
+    assert.equal(carriedRow.totalValue, 200_000);
+    assert.equal(carriedRow.source, "CARRIED_FORWARD");
+    assert.equal(carriedRow.ageDays, 14);
+  });
+
+  await check("profit claims write audit events and cannot exceed attributable profit", async () => {
+    const dina = await firstInvestor("Dina Wong");
+    const rejected = await claims.addProfitClaim(formData({
       investor_id: dina.id,
-      date: "2026-05-20",
-      type: "Deposit",
-      amount: "10000",
-      notes: "capital test",
-    }))).success, true);
-    assert.match((await capital.addCapitalRecord(formData({
-      investor_id: dina.id,
-      date: "2026-05-21",
-      type: "Withdrawal",
-      amount: "999999",
-      notes: "blocked",
-    }))).error, /exceeds/i);
-    const withdrawal = await capital.addCapitalRecord(formData({
-      investor_id: dina.id,
-      date: "2026-05-22",
-      type: "Withdrawal",
-      amount: "1000",
-      notes: "allowed",
+      locked_amount: "99999999",
+      claim_date: "2026-05-20",
+      notes: "over-claim",
     }));
-    assert.equal(withdrawal.success, true);
-    assert.equal(withdrawal.autoClaimedAmount > 0, true);
+    assert.match(rejected.error, /exceeds this investor's claimable profit/i);
   });
 
   await check("audit reversal rejects non-latest and locked-history reversals, then reverts current latest", async () => {
@@ -348,6 +443,43 @@ async function firstInvestor(name) {
       amount: 1,
     });
     assert.throws(() => backupValidation.validateBackupReferences(minimal), /missing investor/i);
+
+    // A v2 file must still restore: tables added in v3 come back empty and the
+    // never-created platform_performance table v2 exported is ignored.
+    const v2Order = backupTables.BACKUP_TABLE_ORDER_BY_VERSION[2];
+    const v2RowCounts = Object.fromEntries(v2Order.map((table) => [table, table === "investors" ? 1 : 0]));
+    const v2Tables = Object.fromEntries(v2Order.map((table) => [table, []]));
+    v2Tables.investors = [{ id: crypto.randomUUID(), name: "Legacy V2 Investor", created_at: exportedAt }];
+    const legacy = backupValidation.parseBackupJson(JSON.stringify({
+      metadata: {
+        app: backupTables.BACKUP_APP_NAME,
+        schemaVersion: 2,
+        exportedAt,
+        baseCurrency: backupTables.BACKUP_BASE_CURRENCY,
+        tableOrder: v2Order,
+        rowCounts: v2RowCounts,
+      },
+      tables: v2Tables,
+    }));
+    assert.equal(backupValidation.createBackupPreview(legacy).totalRows, 1);
+    assert.deepEqual(legacy.tables.platform_valuations, []);
+    assert.deepEqual(legacy.tables.platform_transaction_allocations, []);
+    assert.equal(legacy.metadata.schemaVersion, backupTables.BACKUP_SCHEMA_VERSION);
+
+    assert.throws(
+      () => backupValidation.parseBackupJson(JSON.stringify({
+        metadata: {
+          app: backupTables.BACKUP_APP_NAME,
+          schemaVersion: 1,
+          exportedAt,
+          baseCurrency: backupTables.BACKUP_BASE_CURRENCY,
+          tableOrder: v2Order,
+          rowCounts: v2RowCounts,
+        },
+        tables: v2Tables,
+      })),
+      /schema version is not supported/i,
+    );
   });
 
   await check("pure investment accounting and table sorting edge cases", async () => {
