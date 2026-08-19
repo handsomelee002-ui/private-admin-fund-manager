@@ -55,6 +55,9 @@ export type NavPlatformPreview = ResolvedValuation & {
   equityNetInvested: number;
   fixedSavingsNetInvested: number;
   brokerageNetInvested: number;
+  equityContributed: number;
+  fixedSavingsContributed: number;
+  brokerageContributed: number;
   profitLoss: number;
   weightPercent: number;
 };
@@ -1318,6 +1321,9 @@ export async function buildNavPlatformPreview(
       equityNetInvested: platform.equityNetInvested,
       fixedSavingsNetInvested: platform.fixedSavingsNetInvested,
       brokerageNetInvested: platform.brokerageNetInvested,
+      equityContributed: platform.equityContributed,
+      fixedSavingsContributed: platform.fixedSavingsContributed,
+      brokerageContributed: platform.brokerageContributed,
       profitLoss: roundMoney(valuation.totalValue - netInvested),
       weightPercent: 0,
     };
@@ -1458,7 +1464,28 @@ async function getPlatformFundingPositions() {
           WHEN COALESCE(pt.funding_source, 'equity') = 'brokerage' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
           WHEN COALESCE(pt.funding_source, 'equity') = 'brokerage' AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
           ELSE 0
-        END as brokerage_cash_flow
+        END as brokerage_cash_flow,
+        -- Gross contributions ignore withdrawals, so the profit split survives
+        -- principal being taken back out. Allocation rows are signed, so
+        -- inflows are the positive ones.
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COUNT(pta.id) > 0 THEN COALESCE(SUM(CASE WHEN pta.funding_source = 'equity' AND pta.base_amount > 0 THEN pta.base_amount ELSE 0 END), 0)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'equity' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as equity_contributed,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COUNT(pta.id) > 0 THEN COALESCE(SUM(CASE WHEN pta.funding_source = 'fixed_savings' AND pta.base_amount > 0 THEN pta.base_amount ELSE 0 END), 0)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'fixed_savings' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as fixed_savings_contributed,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COUNT(pta.id) > 0 THEN COALESCE(SUM(CASE WHEN pta.funding_source = 'brokerage' AND pta.base_amount > 0 THEN pta.base_amount ELSE 0 END), 0)
+          WHEN COALESCE(pt.funding_source, 'equity') = 'brokerage' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as brokerage_contributed
       FROM platform_transactions pt
       LEFT JOIN platform_transaction_allocations pta ON pta.transaction_id = pt.id
       GROUP BY pt.id
@@ -1470,7 +1497,10 @@ async function getPlatformFundingPositions() {
       COALESCE(SUM(tf.cash_flow), 0) as net_invested,
       COALESCE(SUM(tf.equity_cash_flow), 0) as equity_net_invested,
       COALESCE(SUM(tf.fixed_savings_cash_flow), 0) as fixed_savings_net_invested,
-      COALESCE(SUM(tf.brokerage_cash_flow), 0) as brokerage_net_invested
+      COALESCE(SUM(tf.brokerage_cash_flow), 0) as brokerage_net_invested,
+      COALESCE(SUM(tf.equity_contributed), 0) as equity_contributed,
+      COALESCE(SUM(tf.fixed_savings_contributed), 0) as fixed_savings_contributed,
+      COALESCE(SUM(tf.brokerage_contributed), 0) as brokerage_contributed
     FROM platforms p
     LEFT JOIN transaction_flows tf ON tf.platform_id = p.id
     GROUP BY p.id, p.name, p.tracking_mode
@@ -1485,6 +1515,9 @@ async function getPlatformFundingPositions() {
     equityNetInvested: roundMoney(parseFloat(platform.equity_net_invested || "0")),
     fixedSavingsNetInvested: roundMoney(parseFloat(platform.fixed_savings_net_invested || "0")),
     brokerageNetInvested: roundMoney(parseFloat(platform.brokerage_net_invested || "0")),
+    equityContributed: roundMoney(parseFloat(platform.equity_contributed || "0")),
+    fixedSavingsContributed: roundMoney(parseFloat(platform.fixed_savings_contributed || "0")),
+    brokerageContributed: roundMoney(parseFloat(platform.brokerage_contributed || "0")),
   }));
 }
 
@@ -1511,6 +1544,9 @@ export async function createNavWeek(input: NavWeekInput) {
       equityNetInvested: platform.equityNetInvested,
       fixedSavingsNetInvested: platform.fixedSavingsNetInvested,
       brokerageNetInvested: platform.brokerageNetInvested,
+      equityContributed: platform.equityContributed,
+      fixedSavingsContributed: platform.fixedSavingsContributed,
+      brokerageContributed: platform.brokerageContributed,
       totalValue: platform.totalValue,
     });
     return {

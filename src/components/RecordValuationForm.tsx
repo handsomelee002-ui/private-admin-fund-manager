@@ -52,8 +52,8 @@ export function RecordValuationForm({
       <DialogTrigger
         className={
           compact
-            ? "text-muted-foreground hover:text-foreground inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors hover:bg-muted"
-            : "border-input bg-background hover:bg-accent inline-flex h-9 items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium shadow-sm transition-colors"
+            ? "text-muted-foreground hover:text-foreground inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium whitespace-nowrap transition-colors hover:bg-muted"
+            : "border-input bg-background hover:bg-accent inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border px-4 py-2 text-sm font-medium whitespace-nowrap shadow-sm transition-colors"
         }
       >
         <LineChart className="h-4 w-4" />

@@ -13,6 +13,13 @@ export function calculateBrokerageFundingAllocation(input: {
   fixedSavingsNetInvested: number;
   brokerageNetInvested?: number;
   totalValue: number;
+  /**
+   * Gross amounts contributed per funding source, ignoring withdrawals. Used as
+   * the profit-split basis when net invested is no longer positive.
+   */
+  equityContributed?: number;
+  fixedSavingsContributed?: number;
+  brokerageContributed?: number;
 }): {
   totalNetInvested: number;
   profitLoss: number;

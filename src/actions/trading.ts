@@ -529,6 +529,56 @@ export async function updatePlatformName(formData: FormData) {
   }
 }
 
+/**
+ * Switch a platform between cash-flow and position tracking. Existing
+ * transactions and valuations are untouched; only how the platform is valued
+ * for future NAV records changes.
+ */
+export async function updatePlatformTrackingMode(formData: FormData) {
+  await requireAdmin();
+  await ensureTradingSchema();
+  const id = formData.get("id")?.toString();
+  const trackingMode = formData.get("tracking_mode")?.toString();
+  if (!id || !trackingMode) return { error: "Platform and tracking mode are required." };
+  if (!isTrackingMode(trackingMode)) return { error: "Tracking mode must be CASHFLOW or POSITION." };
+
+  try {
+    const existing = await sql`SELECT name, COALESCE(tracking_mode, 'CASHFLOW') as tracking_mode FROM platforms WHERE id = ${id}`;
+    if (existing.rows.length === 0) return { error: "Platform not found." };
+    const previousMode = existing.rows[0].tracking_mode;
+    if (previousMode === trackingMode) return { success: true };
+
+    // POSITION valuation needs priced assets; without them every NAV would
+    // fall back and the switch would look broken rather than warn.
+    if (trackingMode === "POSITION") {
+      const priced = await sql`
+        SELECT COUNT(*)::int as count
+        FROM platform_assets
+        WHERE platform_id = ${id} AND latest_price > 0
+      `;
+      if (priced.rows[0].count === 0) {
+        return {
+          error:
+            "This platform has no assets with a price yet. Add assets with a latest price and record BUY transactions before switching to position tracking.",
+        };
+      }
+    }
+
+    await sql`UPDATE platforms SET tracking_mode = ${trackingMode} WHERE id = ${id}`;
+    await writeAuditEvent("platform.update_tracking_mode", "platforms", id, {
+      platformId: id,
+      name: existing.rows[0].name,
+      previousMode,
+      trackingMode,
+    });
+    revalidateTrading(id);
+    revalidatePath("/nav");
+    return { success: true };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Failed to update tracking mode." };
+  }
+}
+
 export async function deletePlatform(id: string) {
   await requireAdmin();
   await ensureTradingSchema();

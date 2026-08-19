@@ -76,6 +76,9 @@ function calculateBrokerageFundingAllocation({
   fixedSavingsNetInvested,
   brokerageNetInvested = 0,
   totalValue,
+  equityContributed,
+  fixedSavingsContributed,
+  brokerageContributed,
 }) {
   const equity = roundMoney(Number(equityNetInvested) || 0);
   const fixedSavings = roundMoney(Number(fixedSavingsNetInvested) || 0);
@@ -83,9 +86,33 @@ function calculateBrokerageFundingAllocation({
   const value = roundMoney(Number(totalValue) || 0);
   const totalNetInvested = roundMoney(equity + fixedSavings + brokerage);
   const profitLoss = roundMoney(value - totalNetInvested);
-  const equityRatio = totalNetInvested > 0 ? roundMoney((equity / totalNetInvested) * 100) : 0;
-  const fixedSavingsRatio = totalNetInvested > 0 ? roundMoney((fixedSavings / totalNetInvested) * 100) : 0;
-  const brokerageRatio = totalNetInvested > 0 ? roundMoney((brokerage / totalNetInvested) * 100) : 0;
+
+  // Profit is split by who funded the platform. Net invested is the basis while
+  // it is positive. Once principal has been withdrawn it can reach zero or go
+  // negative, leaving no basis - then fall back to gross contributions, because
+  // ownership of the remaining gain is decided by who put money in, not by what
+  // is left after withdrawals. Zeroing the ratios instead would drop the
+  // platform's value out of NAV entirely.
+  const contributed = {
+    equity: roundMoney(Number(equityContributed) || 0),
+    fixedSavings: roundMoney(Number(fixedSavingsContributed) || 0),
+    brokerage: roundMoney(Number(brokerageContributed) || 0),
+  };
+  const contributedTotal = roundMoney(contributed.equity + contributed.fixedSavings + contributed.brokerage);
+
+  let basis;
+  if (totalNetInvested > 0) {
+    basis = { equity, fixedSavings, brokerage, total: totalNetInvested };
+  } else if (contributedTotal > 0) {
+    basis = { ...contributed, total: contributedTotal };
+  } else {
+    // Nothing recorded either way: attribute to equity rather than discarding.
+    basis = { equity: 1, fixedSavings: 0, brokerage: 0, total: 1 };
+  }
+
+  const equityRatio = roundMoney((basis.equity / basis.total) * 100);
+  const fixedSavingsRatio = roundMoney((basis.fixedSavings / basis.total) * 100);
+  const brokerageRatio = roundMoney((basis.brokerage / basis.total) * 100);
   const equityProfitLoss = roundMoney(profitLoss * (equityRatio / 100));
   const fixedSavingsProfitLoss = roundMoney(profitLoss * (fixedSavingsRatio / 100));
   const businessProfitLoss = roundMoney(profitLoss - equityProfitLoss);

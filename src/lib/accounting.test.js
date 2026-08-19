@@ -132,6 +132,106 @@ test("non-equity investment P&L includes fixed savings and brokerage funded shar
   assert.equal(allocation.brokerageProfitLoss, 4000);
 });
 
+// Withdrawing principal out of a profitable platform drives net invested to
+// zero or below. The profit split then has no basis in net terms, and zeroing
+// the ratios would drop the platform's value out of NAV entirely.
+
+test("keeps platform value in NAV after all principal is withdrawn", () => {
+  const allocation = calculateBrokerageFundingAllocation({
+    equityNetInvested: 0,
+    fixedSavingsNetInvested: 0,
+    brokerageNetInvested: 0,
+    equityContributed: 10000,
+    fixedSavingsContributed: 0,
+    brokerageContributed: 0,
+    totalValue: 10000,
+  });
+
+  assert.equal(allocation.profitLoss, 10000);
+  assert.equal(allocation.equityRatio, 100);
+  assert.equal(allocation.equityNavValue, 10000);
+});
+
+test("handles negative net invested when withdrawals exceed contributions", () => {
+  const allocation = calculateBrokerageFundingAllocation({
+    equityNetInvested: -10000,
+    fixedSavingsNetInvested: 0,
+    brokerageNetInvested: 0,
+    equityContributed: 10000,
+    fixedSavingsContributed: 0,
+    brokerageContributed: 0,
+    totalValue: 0,
+  });
+
+  assert.equal(allocation.profitLoss, 10000);
+  assert.equal(allocation.equityNavValue, 0);
+});
+
+test("preserves the funding split from contributions when principal is fully withdrawn", () => {
+  const allocation = calculateBrokerageFundingAllocation({
+    equityNetInvested: 0,
+    fixedSavingsNetInvested: 0,
+    brokerageNetInvested: 0,
+    equityContributed: 6000,
+    fixedSavingsContributed: 4000,
+    brokerageContributed: 0,
+    totalValue: 10000,
+  });
+
+  // Equity funded 60% of the platform, so it keeps 60% of the remaining gain
+  // rather than absorbing the fixed-savings share.
+  assert.equal(allocation.equityRatio, 60);
+  assert.equal(allocation.fixedSavingsRatio, 40);
+  assert.equal(allocation.equityNavValue, 6000);
+  assert.equal(allocation.fixedSavingsProfitLoss, 4000);
+});
+
+test("net invested remains the basis while it is positive", () => {
+  // Contributions differ from net invested after a partial withdrawal; the
+  // ongoing split must still follow capital actually left in the platform.
+  const allocation = calculateBrokerageFundingAllocation({
+    equityNetInvested: 5000,
+    fixedSavingsNetInvested: 5000,
+    brokerageNetInvested: 0,
+    equityContributed: 20000,
+    fixedSavingsContributed: 5000,
+    brokerageContributed: 0,
+    totalValue: 12000,
+  });
+
+  assert.equal(allocation.equityRatio, 50);
+  assert.equal(allocation.fixedSavingsRatio, 50);
+  assert.equal(allocation.equityNavValue, 6000);
+});
+
+test("falls back to equity when neither net invested nor contributions are known", () => {
+  const allocation = calculateBrokerageFundingAllocation({
+    equityNetInvested: 0,
+    fixedSavingsNetInvested: 0,
+    brokerageNetInvested: 0,
+    totalValue: 7500,
+  });
+
+  assert.equal(allocation.equityRatio, 100);
+  assert.equal(allocation.equityNavValue, 7500);
+});
+
+test("a loss with partial cash out keeps net invested positive and reports the loss", () => {
+  // 10k invested, value fell to 5k, then the remaining 5k was withdrawn.
+  const allocation = calculateBrokerageFundingAllocation({
+    equityNetInvested: 5000,
+    fixedSavingsNetInvested: 0,
+    brokerageNetInvested: 0,
+    equityContributed: 10000,
+    fixedSavingsContributed: 0,
+    brokerageContributed: 0,
+    totalValue: 0,
+  });
+
+  assert.equal(allocation.profitLoss, -5000);
+  assert.equal(allocation.equityNavValue, 0);
+});
+
 test("fixed savings withdrawal is allocated across active accounts", () => {
   assert.deepEqual(
     allocateFixedSavingsWithdrawal({

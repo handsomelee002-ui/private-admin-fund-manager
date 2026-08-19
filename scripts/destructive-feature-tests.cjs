@@ -345,6 +345,115 @@ async function firstInvestor(name) {
     assert.equal(carriedRow.ageDays, 14);
   });
 
+  await check("platform tracking mode switches to POSITION and values from holdings", async () => {
+    const platform = await one(await sql`SELECT id FROM platforms WHERE name = 'Codex Broker'`);
+
+    // A platform with no priced assets cannot switch.
+    const bare = await trading.addPlatform(formData({ name: "Bare Platform", default_currency: "MYR" }));
+    assert.match(
+      (await trading.updatePlatformTrackingMode(formData({ id: bare.id, tracking_mode: "POSITION" }))).error,
+      /no assets with a price/i,
+    );
+
+    // Codex Broker has AAPL priced at 190 with a BUY of 50 units.
+    assert.equal(
+      (await trading.updatePlatformTrackingMode(formData({ id: platform.id, tracking_mode: "POSITION" }))).success,
+      true,
+    );
+    const stored = await one(await sql`SELECT tracking_mode FROM platforms WHERE id = ${platform.id}`);
+    assert.equal(stored.tracking_mode, "POSITION");
+
+    const audit = await one(await sql`
+      SELECT id FROM audit_events
+      WHERE action = 'platform.update_tracking_mode' AND entity_id = ${platform.id}
+      ORDER BY created_at DESC LIMIT 1
+    `);
+    assert.ok(audit.id, "tracking mode change must be audited");
+
+    // Value is now computed from holdings x price x FX plus cash, not from a
+    // recorded valuation.
+    const preview = await fundDb.buildNavPlatformPreview("2026-07-20");
+    const row = preview.find((item) => item.platformId === platform.id);
+    assert.equal(row.source, "COMPUTED");
+    assert.equal(row.isStale, false);
+    assert.equal(row.ageDays, 0);
+    // 50 AAPL @ 190 x 4.70 FX = 44,650, plus cash from the deposit and buy.
+    assert.equal(row.totalValue > 0, true);
+  });
+
+  await check("withdrawing all principal keeps platform value in gross assets", async () => {
+    const created = await trading.addPlatform(formData({ name: "Cashout Broker", default_currency: "MYR" }));
+    const platformId = created.id;
+    const account = await one(await sql`SELECT id FROM platform_accounts WHERE platform_id = ${platformId} LIMIT 1`);
+
+    assert.equal((await trading.addPlatformTransaction(formData({
+      platform_id: platformId,
+      account_id: account.id,
+      date: "2026-07-02",
+      type: "BROKER_DEPOSIT",
+      amount: "10000",
+      currency: "MYR",
+      base_amount: "10000",
+      status: "SETTLED",
+    }))).success, true);
+
+    // Platform grows to 20k, then the original 10k principal is taken back out.
+    await fundDb.recordPlatformValuation({ platformId, asOfDate: "2026-07-03", totalValue: 20_000 });
+    assert.equal((await trading.addPlatformTransaction(formData({
+      platform_id: platformId,
+      account_id: account.id,
+      date: "2026-07-04",
+      type: "BROKER_WITHDRAWAL",
+      amount: "10000",
+      currency: "MYR",
+      base_amount: "10000",
+      status: "SETTLED",
+    }))).success, true);
+    await fundDb.recordPlatformValuation({ platformId, asOfDate: "2026-07-05", totalValue: 10_000 });
+
+    const preview = await fundDb.buildNavPlatformPreview("2026-07-05");
+    const row = preview.find((item) => item.platformId === platformId);
+    assert.equal(row.netInvested, 0, "principal fully withdrawn");
+    assert.equal(row.totalValue, 10_000);
+
+    // Deposits are auto-allocated across funding sources, so equity owns only
+    // its contributed share of the remaining gain - but that share must survive
+    // net invested reaching zero rather than collapsing to nothing.
+    const contributedTotal = row.equityContributed + row.fixedSavingsContributed + row.brokerageContributed;
+    assert.equal(contributedTotal > 0, true, "contributions must be recorded");
+    const expectedEquityNav = Math.round((row.totalValue * (row.equityContributed / contributedTotal)) * 100) / 100;
+    assert.equal(expectedEquityNav > 0, true, "equity funded part of this platform");
+
+    await fundDb.createNavWeek({
+      weekEnding: "2026-07-05",
+      settlementDate: "2026-07-05",
+      adjustments: 0,
+      notes: "cash-out boundary",
+    });
+    const snapshot = await one(await sql`
+      SELECT nwps.equity_net_invested, nwps.equity_unrealized_profit, nwps.total_value, nwps.brokerage_profit_loss
+      FROM nav_week_platform_snapshots nwps
+      JOIN nav_weeks nw ON nw.id = nwps.nav_week_id
+      WHERE nw.week_ending = '2026-07-05' AND nwps.platform_id = ${platformId}
+    `);
+    assert.equal(Number(snapshot.total_value), 10_000);
+
+    const equityNav = Number(snapshot.equity_net_invested) + Number(snapshot.equity_unrealized_profit);
+    assert.equal(equityNav > 0, true, "equity NAV contribution must not collapse to zero");
+    assert.equal(
+      Math.abs(equityNav - expectedEquityNav) < 0.05,
+      true,
+      `equity NAV ${equityNav} should match contributed share ${expectedEquityNav}`,
+    );
+
+    // Nothing is lost: equity plus non-equity shares account for the full value.
+    assert.equal(
+      Math.abs(equityNav + Number(snapshot.brokerage_profit_loss) - 10_000) < 0.05,
+      true,
+      "equity and non-equity shares must sum to the platform value",
+    );
+  });
+
   await check("profit claims write audit events and cannot exceed attributable profit", async () => {
     const dina = await firstInvestor("Dina Wong");
     const rejected = await claims.addProfitClaim(formData({
