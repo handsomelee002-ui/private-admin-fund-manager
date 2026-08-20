@@ -7,7 +7,6 @@ import { EditNameDialog } from "@/components/EditNameDialog";
 import { PaginationControls } from "@/components/PaginationControls";
 import { RecordValuationForm } from "@/components/RecordValuationForm";
 import { SortableTableHead } from "@/components/SortableTableHead";
-import { TrackingModeDialog } from "@/components/TrackingModeDialog";
 import { formatMoney } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
@@ -168,8 +167,10 @@ export default async function TradingLedgerPage({
                             <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
                           </span>
                           <span className="text-[10px] text-muted-foreground">
-                            {platform.trackingMode === "POSITION" ? "Positions" : "Cash flow"}
-                            {platform.trackingMode !== "POSITION" && platform.isValuationStale && " · stale value"}
+                            {platform.latestValuationDate
+                              ? `Valued ${platform.latestValuationDate}`
+                              : "Never valued"}
+                            {platform.isValuationStale && " · stale"}
                           </span>
                         </div>
                       </NoPrefetchLink>
@@ -202,7 +203,6 @@ export default async function TradingLedgerPage({
                     </TableCell>
                     <TableCell className="text-right pr-6">
                       <div className="flex justify-end gap-2">
-                        <TrackingModeDialog id={platform.id} platformName={platform.name} currentMode={platform.trackingMode} />
                         <RecordValuationForm
                           compact
                           platformId={platform.id}

@@ -49,22 +49,6 @@ export function AddPlatformForm({ redirectToDetail = false }: { redirectToDetail
             <Label htmlFor="default_currency">Default Currency</Label>
             <Input id="default_currency" name="default_currency" required defaultValue="MYR" maxLength={10} />
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="tracking_mode">Tracking Mode</Label>
-            <select
-              id="tracking_mode"
-              name="tracking_mode"
-              defaultValue="CASHFLOW"
-              className="border-input bg-background ring-offset-background focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-sm focus-visible:ring-1 focus-visible:outline-none"
-            >
-              <option value="CASHFLOW">Cash flow — record money in/out, value it periodically</option>
-              <option value="POSITION">Positions — record trades, value computed from holdings</option>
-            </select>
-            <p className="text-muted-foreground text-xs">
-              Choose cash flow unless you want per-asset attribution. You can enter one total value per period instead of
-              itemising every trade.
-            </p>
-          </div>
           <div className="flex justify-end pt-4">
             <Button type="submit" disabled={loading}>
               {loading ? "Saving..." : "Save Platform"}

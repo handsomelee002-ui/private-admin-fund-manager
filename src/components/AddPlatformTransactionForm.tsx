@@ -11,7 +11,6 @@ import { addPlatformTransaction } from "@/actions/trading";
 const transactionTypes = [
   { value: "BROKER_DEPOSIT", label: "Money In" },
   { value: "BROKER_WITHDRAWAL", label: "Money Out" },
-  { value: "ADJUSTMENT", label: "Adjustment" },
 ];
 
 type FundingSource = "equity" | "fixed_savings" | "brokerage";
@@ -57,7 +56,6 @@ export function AddPlatformTransactionForm({
   const [baseAmount, setBaseAmount] = useState("");
   const [manualAllocation, setManualAllocation] = useState(false);
   const [manualRatios, setManualRatios] = useState<SourceBalances>({ equity: 100, fixed_savings: 0, brokerage: 0 });
-  const hasCapitalAllocation = transactionType === "BROKER_DEPOSIT" || transactionType === "BROKER_WITHDRAWAL";
   const automaticRatios = useMemo(
     () => ratiosFromBalances(transactionType === "BROKER_WITHDRAWAL" ? platformAllocationBalances : automaticAllocationBasis),
     [automaticAllocationBasis, platformAllocationBalances, transactionType],
@@ -139,23 +137,21 @@ export function AddPlatformTransactionForm({
               <div>
                 <p className="text-sm font-medium">Allocation Preview</p>
                 <p className="text-xs text-muted-foreground">
-                  {!hasCapitalAllocation ? "Adjustments do not change capital source allocation." : manualAllocation ? "Manual override for this transaction." : "Automatic proportional allocation."}
+                  {manualAllocation ? "Manual override for this transaction." : "Automatic proportional allocation."}
                 </p>
               </div>
-              <label className={`flex items-center gap-2 text-xs text-muted-foreground ${hasCapitalAllocation ? "" : "opacity-50"}`}>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
                 <input
                   type="checkbox"
                   checked={manualAllocation}
                   onChange={(event) => setManualAllocation(event.target.checked)}
-                  disabled={!hasCapitalAllocation}
                   className="h-4 w-4"
                 />
                 Advanced override
               </label>
             </div>
 
-            {hasCapitalAllocation ? (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {sourceMeta.map((item) => {
                 const ratio = Number(previewRatios[item.source]) || 0;
                 return (
@@ -168,14 +164,10 @@ export function AddPlatformTransactionForm({
                   </div>
                 );
               })}
-              </div>
-            ) : (
-              <div className="rounded-md border border-border/50 bg-background/40 p-3 text-sm text-muted-foreground">
-                No ownership allocation will be recorded for this transaction type.
-              </div>
-            )}
+            </div>
 
-            {hasCapitalAllocation && manualAllocation && (
+            {manualAllocation && (
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 {sourceMeta.map((item) => (
                   <div key={item.source} className="space-y-1">

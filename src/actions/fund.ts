@@ -6,10 +6,12 @@ import {
   assertNotFutureDate,
   buildNavPlatformPreview,
   createNavWeek,
+  getFundCashAsOf,
   deleteDraftNavWeek,
   lockNavWeek,
   recordCashMovement,
   recordFixedSavings,
+  recordFundCash,
   recordPlatformValuation,
 } from "@/lib/fundDb";
 
@@ -51,7 +53,7 @@ export async function createNavWeekAction(formData: FormData) {
     assertNotFutureDate(weekEnding, "Valuation date");
 
     // Only platforms the operator explicitly overrode are sent. Everything else
-    // is valued from its recorded valuations or computed holdings.
+    // is valued from its recorded value marks, carried forward.
     const platformSnapshots = [...formData.entries()]
       .filter(([key, value]) => key.startsWith("platform_value_") && value.toString().trim() !== "")
       .map(([key, value]) => ({
@@ -59,9 +61,16 @@ export async function createNavWeekAction(formData: FormData) {
         totalValue: parseMoney(value, "Platform value"),
       }));
 
+    const fundCashRaw = formData.get("fund_cash");
+    const fundCash =
+      fundCashRaw !== null && fundCashRaw.toString().trim() !== ""
+        ? parseMoney(fundCashRaw, "Fund cash")
+        : undefined;
+
     await createNavWeek({
       weekEnding,
       platformSnapshots,
+      fundCash,
       adjustments: parseMoney(formData.get("adjustments"), "Adjustments"),
       notes: formData.get("notes")?.toString() || "",
     });
@@ -77,10 +86,35 @@ export async function getNavPreviewAction(asOfDate: string) {
   try {
     await requireAdmin();
     assertNotFutureDate(asOfDate, "Valuation date");
-    const preview = await buildNavPlatformPreview(asOfDate);
-    return { success: true as const, preview };
+    const [preview, fundCash] = await Promise.all([
+      buildNavPlatformPreview(asOfDate),
+      getFundCashAsOf(asOfDate),
+    ]);
+    return { success: true as const, preview, fundCash };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Failed to build NAV preview." };
+  }
+}
+
+/** Record the fund's own cash balance, outside the NAV cycle. */
+export async function recordFundCashAction(formData: FormData) {
+  try {
+    await requireAdmin();
+    const asOfDate = formData.get("as_of_date")?.toString();
+    if (!asOfDate) return { error: "As-of date is required." };
+    assertNotFutureDate(asOfDate, "Fund cash date");
+
+    const balance = Number(formData.get("balance"));
+    if (!Number.isFinite(balance) || balance < 0) {
+      return { error: "Fund cash balance must be zero or a positive number." };
+    }
+
+    await recordFundCash({ asOfDate, balance, notes: formData.get("notes")?.toString() || "" });
+    revalidateFundViews();
+    revalidatePath("/trading");
+    return { success: true };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Failed to record fund cash." };
   }
 }
 

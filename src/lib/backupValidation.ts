@@ -36,10 +36,10 @@ export type BackupPreview = {
 const BACKUP_TABLE_COLUMN_ALLOWLIST: Record<BackupTableName, readonly string[]> = {
   investors: ["id", "name", "portal_access_id", "portal_access_rotated_at", "created_at"],
   fund_config: ["key", "value", "updated_at"],
-  platforms: ["id", "name", "base_currency", "default_currency", "tracking_mode", "created_at"],
+  platforms: ["id", "name", "base_currency", "default_currency", "created_at"],
   platform_accounts: ["id", "platform_id", "name", "account_type", "currency", "created_at"],
   platform_assets: ["id", "platform_id", "symbol", "name", "asset_type", "currency", "latest_price", "latest_fx_rate_to_myr", "updated_at", "created_at"],
-  nav_weeks: ["id", "week_ending", "settlement_date", "gross_assets", "liabilities", "adjustments", "net_asset_value", "total_units", "nav_per_unit", "status", "locked_at", "notes", "created_at"],
+  nav_weeks: ["id", "week_ending", "settlement_date", "gross_assets", "fund_cash", "liabilities", "adjustments", "net_asset_value", "total_units", "nav_per_unit", "status", "locked_at", "notes", "created_at"],
   nav_week_platform_snapshots: [
     "id", "nav_week_id", "platform_id", "net_invested", "unrealized_profit", "total_value", "equity_net_invested",
     "fixed_savings_net_invested", "brokerage_net_invested", "equity_unrealized_profit", "brokerage_profit_loss", "created_at",
@@ -63,8 +63,8 @@ const BACKUP_TABLE_COLUMN_ALLOWLIST: Record<BackupTableName, readonly string[]> 
   ],
   platform_transaction_allocations: ["id", "transaction_id", "funding_source", "ratio_percent", "base_amount", "created_at"],
   platform_valuations: ["id", "platform_id", "as_of_date", "total_value", "source", "notes", "audit_status", "reversal_of_id", "created_at"],
+  fund_cash_valuations: ["id", "as_of_date", "balance", "notes", "audit_status", "reversal_of_id", "created_at"],
   trading_ledger: ["id", "date", "platform", "ticker", "type", "currency", "price", "quantity", "amount_rm", "profit_loss", "date_closed", "receipt_url", "created_at"],
-  cash_balances: ["id", "account_name", "current_balance", "updated_at"],
   audit_events: ["id", "actor_id", "action", "entity_type", "entity_id", "details", "created_at", "reason"],
 };
 
@@ -78,13 +78,15 @@ const BACKUP_ENUMS: Partial<Record<BackupTableName, Record<string, readonly stri
   bonus_payments: { ledger_type: ["equity", "fixed_savings"], audit_status: ["active", "reverted", "reversal"] },
   investor_profit_claims: { status: ["pending", "partial", "settled"] },
   platform_accounts: { account_type: ["BANK", "WALLET", "BROKER_CASH", "BROKER_PORTFOLIO", "OTHER"] },
-  platforms: { tracking_mode: ["CASHFLOW", "POSITION"] },
   platform_valuations: {
     source: ["MANUAL", "STATEMENT", "IMPORT"],
     audit_status: ["active", "reverted", "reversal"],
   },
+  fund_cash_valuations: { audit_status: ["active", "reverted", "reversal"] },
   platform_transaction_allocations: { funding_source: ["equity", "fixed_savings", "brokerage"] },
   platform_transactions: {
+    // Only BROKER_DEPOSIT/BROKER_WITHDRAWAL are recordable now, but historical
+    // rows carrying the older per-trade types must still restore.
     type: ["TRANSFER", "FX_CONVERSION", "BROKER_DEPOSIT", "BROKER_WITHDRAWAL", "BUY", "SELL", "DIVIDEND", "INTEREST", "FEE", "TAX", "CORPORATE_ACTION", "ADJUSTMENT", "Deposit", "Withdraw"],
     status: ["PENDING", "SETTLED", "CANCELLED"],
     funding_source: ["equity", "fixed_savings", "brokerage"],
@@ -213,7 +215,8 @@ export function parseBackupJson(raw: string): FundBackupFile {
     rowCounts[tableName] = count;
   }
 
-  // v2 exported platform_performance, a table no migration ever created.
+  // Older exports carried platform_performance (never created by any
+  // migration) and cash_balances (written but never read). Both are dropped.
   void IGNORED_LEGACY_TABLES;
 
   return {

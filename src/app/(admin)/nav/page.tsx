@@ -5,10 +5,11 @@ import { AddPlatformForm } from "@/components/AddPlatformForm";
 import { CreateNavWeekForm } from "@/components/CreateNavWeekForm";
 import { LockNavButton } from "@/components/LockNavButton";
 import { PaginationControls } from "@/components/PaginationControls";
+import { RecordFundCashForm } from "@/components/RecordFundCashForm";
 import { RecordValuationForm } from "@/components/RecordValuationForm";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getPlatforms } from "@/actions/trading";
-import { getNavWeeks } from "@/lib/fundDb";
+import { getFundCashAsOf, getNavWeeks } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
@@ -26,10 +27,20 @@ export default async function NavPage({
 }) {
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, navSorts, { sort: "week", dir: "desc" });
-  const [navWeeks, platforms] = await Promise.all([
+  const today = new Date().toISOString().slice(0, 10);
+  const [navWeeks, platforms, fundCash] = await Promise.all([
     timeAsync("route.nav.getNavWeeks", () => getNavWeeks(), { route: "/nav" }),
     timeAsync("route.nav.getPlatforms", () => getPlatforms(), { route: "/nav" }),
+    timeAsync("route.nav.getFundCash", () => getFundCashAsOf(today), { route: "/nav" }),
   ]);
+  const lastNav = navWeeks.find((week: any) => week.status === "locked") ?? navWeeks[0] ?? null;
+  const lastNavDate: string | null = lastNav ? lastNav.week_ending : null;
+  // A value recorded after the last NAV has not reached anyone's unit price
+  // yet. Saying so is the difference between "nothing happened" and "a NAV is
+  // due".
+  const updatedSinceNav = platforms.filter(
+    (platform: any) => platform.latestValuationDate && (!lastNavDate || platform.latestValuationDate > lastNavDate),
+  ).length;
   const sortedNavWeeks = sortRows(navWeeks, sortState, {
     week: (week: any) => week.week_ending,
     grossAssets: (week: any) => week.gross_assets,
@@ -46,8 +57,8 @@ export default async function NavPage({
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Valuations &amp; NAV</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Create a NAV when you need to price something — a deposit, a withdrawal, or a reporting date. Locked NAV is
-            the source of truth for unit pricing.
+            Record what each platform is worth as statements arrive. Those values only reach unit prices, the dashboard
+            and investor reports once you create and lock a NAV from them.
           </p>
         </div>
         <div className="flex gap-2">
@@ -58,9 +69,22 @@ export default async function NavPage({
 
       <Card className="bg-card/50 border-border/50">
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <LineChart className="h-4 w-4 text-primary" />
-            <CardTitle className="text-base">Platform Values</CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <LineChart className="h-4 w-4 text-primary" />
+              <CardTitle className="text-base">Platform Values</CardTitle>
+              <span className="text-muted-foreground text-xs font-normal">input for the next NAV</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">
+                {lastNavDate ? `Last NAV ${lastNavDate}` : "No NAV yet"}
+              </span>
+              {updatedSinceNav > 0 && (
+                <Badge variant="default" className="text-[10px]">
+                  {updatedSinceNav} updated since — NAV due
+                </Badge>
+              )}
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -80,11 +104,7 @@ export default async function NavPage({
                       <p className="text-muted-foreground text-xs">
                         {formatMoney(platform.totalValue)}
                         {" · "}
-                        {platform.trackingMode === "POSITION"
-                          ? "from positions"
-                          : platform.latestValuationDate
-                            ? `valued ${platform.latestValuationDate}`
-                            : "never valued"}
+                        {platform.latestValuationDate ? `valued ${platform.latestValuationDate}` : "never valued"}
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
@@ -100,6 +120,28 @@ export default async function NavPage({
                   </div>
                 );
               })}
+              <div className="border-border/50 bg-muted/20 flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">Fund cash</p>
+                  <p className="text-muted-foreground text-xs">
+                    {formatMoney(fundCash.balance)}
+                    {" · "}
+                    {fundCash.asOfDate ? `recorded ${fundCash.asOfDate}` : "never recorded"}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  {Math.abs(fundCash.balance - fundCash.expectedBalance) > 0.009 && (
+                    <Badge variant="destructive" className="text-[10px]">
+                      off by {formatMoney(Math.abs(fundCash.balance - fundCash.expectedBalance))}
+                    </Badge>
+                  )}
+                  <RecordFundCashForm
+                    currentBalance={fundCash.balance}
+                    expectedBalance={fundCash.expectedBalance}
+                    latestDate={fundCash.asOfDate}
+                  />
+                </div>
+              </div>
             </div>
           )}
         </CardContent>
@@ -118,6 +160,7 @@ export default async function NavPage({
               <TableRow>
                 <SortableTableHead className="pl-6" sortKey="week" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Week Ending</SortableTableHead>
                 <SortableTableHead className="text-right" sortKey="grossAssets" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Gross Assets</SortableTableHead>
+                <TableHead className="text-right">Fund Cash</TableHead>
                 <SortableTableHead className="text-right" sortKey="nav" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Net Asset Value</SortableTableHead>
                 <SortableTableHead className="text-right" sortKey="units" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>Total Units</SortableTableHead>
                 <SortableTableHead className="text-right" sortKey="navPerUnit" activeSort={sortState.sort} activeDir={sortState.dir} searchParams={resolvedSearchParams}>NAV / Unit</SortableTableHead>
@@ -130,6 +173,7 @@ export default async function NavPage({
                 <TableRow key={week.id}>
                   <TableCell className="pl-6 font-medium">{week.week_ending}</TableCell>
                   <TableCell className="text-right">{formatMoney(week.gross_assets)}</TableCell>
+                  <TableCell className="text-muted-foreground text-right">{formatMoney(week.fund_cash ?? 0)}</TableCell>
                   <TableCell className="text-right font-semibold">{formatMoney(week.net_asset_value)}</TableCell>
                   <TableCell className="text-right">{formatUnits(week.total_units)}</TableCell>
                   <TableCell className="text-right font-semibold text-primary">{Number(week.nav_per_unit).toFixed(6)}</TableCell>
@@ -143,7 +187,7 @@ export default async function NavPage({
               ))}
               {sortedNavWeeks.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground py-12">
+                  <TableCell colSpan={8} className="text-center text-muted-foreground py-12">
                     No NAV weeks recorded. Add a platform, create a draft NAV, then lock it before recording capital movements.
                   </TableCell>
                 </TableRow>

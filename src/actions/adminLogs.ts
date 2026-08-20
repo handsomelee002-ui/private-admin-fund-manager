@@ -235,6 +235,12 @@ async function enrichAuditLogs(rows: any[], { includeReadableDetails = true, inc
     LEFT JOIN platforms p ON p.id = pv.platform_id
     WHERE pv.id = ANY($1::uuid[])
   `, collectEntityIds(rows, "platform_valuations"));
+  const fundCashValuations = await lookupById(`
+    SELECT fcv.id, TO_CHAR(fcv.as_of_date, 'YYYY-MM-DD') as as_of_date,
+      fcv.balance, fcv.audit_status
+    FROM fund_cash_valuations fcv
+    WHERE fcv.id = ANY($1::uuid[])
+  `, collectEntityIds(rows, "fund_cash_valuations"));
 
   const detailInvestorIds = uniqueIds(rows.map((row) => row.details?.investorId));
   const detailPlatformIds = uniqueIds(rows.map((row) => row.details?.platformId));
@@ -296,6 +302,7 @@ async function enrichAuditLogs(rows: any[], { includeReadableDetails = true, inc
       platform_assets: platformAssets,
       investor_profit_claims: profitClaims,
       platform_valuations: platformValuations,
+      fund_cash_valuations: fundCashValuations,
     }[row.entity_type as string];
     const entity = entityLookup?.get(row.entity_id);
     if (includeReadableDetails) {

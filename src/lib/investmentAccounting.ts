@@ -2,6 +2,20 @@ import { roundMoney } from "@/lib/accounting";
 
 export const BASE_CURRENCY = "MYR";
 
+/**
+ * ADJUSTMENT is excluded from every balance and valuation query, so recording
+ * one changes no number anywhere. It looked like a correction tool and was not,
+ * so it is no longer accepted.
+ */
+export const RETIRED_TRANSACTION_TYPES = ["ADJUSTMENT"] as const;
+
+export function isRecordableTransactionType(value: string) {
+  return (
+    INVESTMENT_TRANSACTION_TYPES.includes(value as InvestmentTransactionType) &&
+    !(RETIRED_TRANSACTION_TYPES as readonly string[]).includes(value)
+  );
+}
+
 export const INVESTMENT_TRANSACTION_TYPES = [
   "TRANSFER",
   "FX_CONVERSION",

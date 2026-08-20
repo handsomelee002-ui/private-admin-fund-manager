@@ -107,14 +107,14 @@ async function firstInvestor(name) {
 
     assert.match((await trading.addPlatformTransaction(formData({
       platform_id: platformId,
-      date: "2026-05-20",
+      date: "2026-06-08",
       type: "BUY",
       amount: "1000",
       currency: "MYR",
     }))).error, /Trades require asset/i);
     assert.match((await trading.addPlatformTransaction(formData({
       platform_id: platformId,
-      date: "2026-05-20",
+      date: "2026-06-08",
       type: "FX_CONVERSION",
       amount: "1000",
       currency: "USD",
@@ -124,7 +124,7 @@ async function firstInvestor(name) {
     assert.equal((await trading.addPlatformTransaction(formData({
       platform_id: platformId,
       account_id: account.id,
-      date: "2026-05-20",
+      date: "2026-06-08",
       type: "BROKER_DEPOSIT",
       amount: "5000",
       currency: "USD",
@@ -135,7 +135,7 @@ async function firstInvestor(name) {
       platform_id: platformId,
       account_id: account.id,
       asset_id: asset.id,
-      date: "2026-05-21",
+      date: "2026-06-09",
       type: "BUY",
       amount: "9500",
       currency: "MYR",
@@ -345,40 +345,174 @@ async function firstInvestor(name) {
     assert.equal(carriedRow.ageDays, 14);
   });
 
-  await check("platform tracking mode switches to POSITION and values from holdings", async () => {
-    const platform = await one(await sql`SELECT id FROM platforms WHERE name = 'Codex Broker'`);
+  await check("money out is capped by platform value, not by principal", async () => {
+    const created = await trading.addPlatform(formData({ name: "Dividend Broker", default_currency: "MYR" }));
+    const platformId = created.id;
+    const account = await one(await sql`SELECT id FROM platform_accounts WHERE platform_id = ${platformId} LIMIT 1`);
+    const moneyOut = (amount, date) => trading.addPlatformTransaction(formData({
+      platform_id: platformId,
+      account_id: account.id,
+      date,
+      type: "BROKER_WITHDRAWAL",
+      amount: String(amount),
+      currency: "MYR",
+      base_amount: String(amount),
+      status: "SETTLED",
+    }));
 
-    // A platform with no priced assets cannot switch.
-    const bare = await trading.addPlatform(formData({ name: "Bare Platform", default_currency: "MYR" }));
-    assert.match(
-      (await trading.updatePlatformTrackingMode(formData({ id: bare.id, tracking_mode: "POSITION" }))).error,
-      /no assets with a price/i,
-    );
+    assert.equal((await trading.addPlatformTransaction(formData({
+      platform_id: platformId,
+      account_id: account.id,
+      date: "2026-07-02",
+      type: "BROKER_DEPOSIT",
+      amount: "10000",
+      currency: "MYR",
+      base_amount: "10000",
+      status: "SETTLED",
+    }))).success, true);
 
-    // Codex Broker has AAPL priced at 190 with a BUY of 50 units.
-    assert.equal(
-      (await trading.updatePlatformTrackingMode(formData({ id: platform.id, tracking_mode: "POSITION" }))).success,
-      true,
-    );
-    const stored = await one(await sql`SELECT tracking_mode FROM platforms WHERE id = ${platform.id}`);
-    assert.equal(stored.tracking_mode, "POSITION");
+    // Never valued: the ceiling is what went in.
+    assert.match((await moneyOut(12000, "2026-07-03")).error, /exceeds the RM 10000\.00 put into this platform/);
+
+    // Worth 15k after a dividend: taking the dividend out must be allowed, even
+    // though it is more than the principal still notionally in there.
+    await fundDb.recordPlatformValuation({ platformId, asOfDate: "2026-07-03", totalValue: 15000 });
+    assert.equal((await moneyOut(12000, "2026-07-04")).success, true, "profit withdrawal must be recordable");
+
+    // Beyond the recorded value is still refused.
+    assert.match((await moneyOut(9000, "2026-07-05")).error, /exceeds this platform.s recorded value/);
+
+    // Net invested is now negative; the platform must still carry its value.
+    await fundDb.recordPlatformValuation({ platformId, asOfDate: "2026-07-06", totalValue: 3000 });
+    const preview = await fundDb.buildNavPlatformPreview("2026-07-06");
+    const row = preview.find((item) => item.platformId === platformId);
+    assert.equal(row.netInvested, -2000);
+    assert.equal(row.totalValue, 3000);
+  });
+
+  await check("fund cash is recorded, carried forward, and lands in gross assets", async () => {
+    assert.equal((await fundDb.recordFundCash({ asOfDate: "2026-07-10", balance: 25000 })).success, true);
 
     const audit = await one(await sql`
-      SELECT id FROM audit_events
-      WHERE action = 'platform.update_tracking_mode' AND entity_id = ${platform.id}
-      ORDER BY created_at DESC LIMIT 1
+      SELECT id FROM audit_events WHERE action = 'fund_cash.record' ORDER BY created_at DESC LIMIT 1
     `);
-    assert.ok(audit.id, "tracking mode change must be audited");
+    assert.ok(audit.id, "fund cash must be audited");
 
-    // Value is now computed from holdings x price x FX plus cash, not from a
-    // recorded valuation.
-    const preview = await fundDb.buildNavPlatformPreview("2026-07-20");
-    const row = preview.find((item) => item.platformId === platform.id);
-    assert.equal(row.source, "COMPUTED");
-    assert.equal(row.isStale, false);
-    assert.equal(row.ageDays, 0);
-    // 50 AAPL @ 190 x 4.70 FX = 44,650, plus cash from the deposit and buy.
-    assert.equal(row.totalValue > 0, true);
+    const sameDay = await fundDb.getFundCashAsOf("2026-07-10");
+    assert.equal(sameDay.balance, 25000);
+    assert.equal(sameDay.source, "RECORDED");
+    assert.equal(sameDay.ageDays, 0);
+
+    const carried = await fundDb.getFundCashAsOf("2026-07-24");
+    assert.equal(carried.balance, 25000);
+    assert.equal(carried.source, "CARRIED_FORWARD");
+    assert.equal(carried.ageDays, 14);
+
+    await fundDb.createNavWeek({ weekEnding: "2026-07-24", adjustments: 0, notes: "fund cash test" });
+    const week = await one(await sql`
+      SELECT gross_assets, fund_cash FROM nav_weeks WHERE week_ending = '2026-07-24'
+    `);
+    assert.equal(parseFloat(week.fund_cash), 25000);
+
+    // Recording no cash at all would have lost this money entirely.
+    await fundDb.createNavWeek({ weekEnding: "2026-07-25", fundCash: 0, adjustments: 0 });
+    const bare = await one(await sql`SELECT gross_assets FROM nav_weeks WHERE week_ending = '2026-07-25'`);
+    assert.equal(
+      Math.round((parseFloat(week.gross_assets) - parseFloat(bare.gross_assets)) * 100) / 100,
+      25000,
+      "gross assets must differ by exactly the fund cash",
+    );
+  });
+
+  await check("expected fund cash tracks money leaving and entering platforms", async () => {
+    const created = await trading.addPlatform(formData({ name: "Flow Broker", default_currency: "MYR" }));
+    const platformId = created.id;
+    const account = await one(await sql`SELECT id FROM platform_accounts WHERE platform_id = ${platformId} LIMIT 1`);
+
+    await fundDb.recordFundCash({ asOfDate: "2026-08-01", balance: 50000 });
+    const baseline = await fundDb.getFundCashAsOf("2026-08-01");
+    assert.equal(baseline.expectedBalance, 50000);
+
+    // Money into a platform leaves the fund cash account.
+    assert.equal((await trading.addPlatformTransaction(formData({
+      platform_id: platformId,
+      account_id: account.id,
+      date: "2026-08-02",
+      type: "BROKER_DEPOSIT",
+      amount: "8000",
+      currency: "MYR",
+      base_amount: "8000",
+      status: "SETTLED",
+    }))).success, true);
+
+    const afterDeposit = await fundDb.getFundCashAsOf("2026-08-02");
+    assert.equal(afterDeposit.balance, 50000, "balance is still the last recorded one");
+    assert.equal(afterDeposit.expectedBalance, 42000, "expected drops by the deposit");
+
+    // Money out of a platform comes back to the fund cash account.
+    await fundDb.recordPlatformValuation({ platformId, asOfDate: "2026-08-03", totalValue: 8000 });
+    assert.equal((await trading.addPlatformTransaction(formData({
+      platform_id: platformId,
+      account_id: account.id,
+      date: "2026-08-04",
+      type: "BROKER_WITHDRAWAL",
+      amount: "3000",
+      currency: "MYR",
+      base_amount: "3000",
+      status: "SETTLED",
+    }))).success, true);
+
+    const afterWithdrawal = await fundDb.getFundCashAsOf("2026-08-04");
+    assert.equal(afterWithdrawal.expectedBalance, 45000, "expected rises by the withdrawal");
+  });
+
+  await check("platform transactions reject future dates and locked periods", async () => {
+    const created = await trading.addPlatform(formData({ name: "Guarded Broker", default_currency: "MYR" }));
+    const account = await one(await sql`SELECT id FROM platform_accounts WHERE platform_id = ${created.id} LIMIT 1`);
+    const future = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+
+    assert.match((await trading.addPlatformTransaction(formData({
+      platform_id: created.id,
+      account_id: account.id,
+      date: future,
+      type: "BROKER_DEPOSIT",
+      amount: "100",
+      currency: "MYR",
+      base_amount: "100",
+      status: "SETTLED",
+    }))).error, /cannot be in the future/i);
+
+    const locked = await one(await sql`
+      SELECT TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending
+      FROM nav_weeks WHERE status = 'locked' ORDER BY week_ending DESC LIMIT 1
+    `);
+    assert.match((await trading.addPlatformTransaction(formData({
+      platform_id: created.id,
+      account_id: account.id,
+      date: locked.week_ending,
+      type: "BROKER_DEPOSIT",
+      amount: "100",
+      currency: "MYR",
+      base_amount: "100",
+      status: "SETTLED",
+    }))).error, /is locked and already priced/i);
+  });
+
+  await check("adjustments are rejected because they change no balance", async () => {
+    const created = await trading.addPlatform(formData({ name: "Typed Broker", default_currency: "MYR" }));
+    const account = await one(await sql`SELECT id FROM platform_accounts WHERE platform_id = ${created.id} LIMIT 1`);
+    for (const type of ["ADJUSTMENT"]) {
+      assert.match((await trading.addPlatformTransaction(formData({
+        platform_id: created.id,
+        account_id: account.id,
+        date: "2026-08-05",
+        type,
+        amount: "100",
+        currency: "MYR",
+        base_amount: "100",
+        status: "SETTLED",
+      }))).error, /Adjustments are no longer recorded/i, `${type} must be rejected`);
+    }
   });
 
   await check("withdrawing all principal keeps platform value in gross assets", async () => {
@@ -574,6 +708,26 @@ async function firstInvestor(name) {
     assert.deepEqual(legacy.tables.platform_valuations, []);
     assert.deepEqual(legacy.tables.platform_transaction_allocations, []);
     assert.equal(legacy.metadata.schemaVersion, backupTables.BACKUP_SCHEMA_VERSION);
+    assert.deepEqual(legacy.tables.fund_cash_valuations, []);
+
+    // v3 predates fund cash only.
+    const v3Order = backupTables.BACKUP_TABLE_ORDER_BY_VERSION[3];
+    const v3RowCounts = Object.fromEntries(v3Order.map((table) => [table, table === "investors" ? 1 : 0]));
+    const v3Tables = Object.fromEntries(v3Order.map((table) => [table, []]));
+    v3Tables.investors = [{ id: crypto.randomUUID(), name: "Legacy V3 Investor", created_at: exportedAt }];
+    const legacyV3 = backupValidation.parseBackupJson(JSON.stringify({
+      metadata: {
+        app: backupTables.BACKUP_APP_NAME,
+        schemaVersion: 3,
+        exportedAt,
+        baseCurrency: backupTables.BACKUP_BASE_CURRENCY,
+        tableOrder: v3Order,
+        rowCounts: v3RowCounts,
+      },
+      tables: v3Tables,
+    }));
+    assert.equal(backupValidation.createBackupPreview(legacyV3).totalRows, 1);
+    assert.deepEqual(legacyV3.tables.fund_cash_valuations, []);
 
     assert.throws(
       () => backupValidation.parseBackupJson(JSON.stringify({

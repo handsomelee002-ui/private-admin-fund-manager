@@ -4,18 +4,9 @@ const {
   MATERIAL_WEIGHT_PERCENT,
   STALE_AFTER_DAYS,
   blockingValuations,
-  isTrackingMode,
   resolvePlatformValue,
   selectValuationAsOf,
-  valueFromHoldings,
 } = require("./platformValuation");
-
-test("isTrackingMode accepts only the two supported modes", () => {
-  assert.equal(isTrackingMode("CASHFLOW"), true);
-  assert.equal(isTrackingMode("POSITION"), true);
-  assert.equal(isTrackingMode("cashflow"), false);
-  assert.equal(isTrackingMode("OTHER"), false);
-});
 
 test("selectValuationAsOf never returns a valuation from the future", () => {
   const valuations = [
@@ -28,50 +19,8 @@ test("selectValuationAsOf never returns a valuation from the future", () => {
   assert.equal(selectValuationAsOf(valuations, "2026-01-01"), null);
 });
 
-test("valueFromHoldings sums quantity times price plus cash", () => {
-  const result = valueFromHoldings({
-    holdings: [
-      { symbol: "AAPL", quantity: 200, latestPrice: 520, fxRateToBase: 1 },
-      { symbol: "MSFT", quantity: 100, latestPrice: 415, fxRateToBase: 1 },
-    ],
-    cashBalance: 10_750,
-  });
-  assert.equal(result.totalValue, 156_250);
-  assert.deepEqual(result.missingPrices, []);
-});
-
-test("valueFromHoldings applies the FX rate to base currency", () => {
-  const result = valueFromHoldings({
-    holdings: [{ symbol: "AAPL", quantity: 10, latestPrice: 100, fxRateToBase: 4.5 }],
-    cashBalance: 0,
-  });
-  assert.equal(result.totalValue, 4500);
-});
-
-test("valueFromHoldings reports missing prices instead of undervaluing", () => {
-  const result = valueFromHoldings({
-    holdings: [
-      { symbol: "AAPL", quantity: 200, latestPrice: 520, fxRateToBase: 1 },
-      { symbol: "XYZ", quantity: 50, latestPrice: 0, fxRateToBase: 1 },
-    ],
-    cashBalance: 1000,
-  });
-  assert.equal(result.totalValue, null);
-  assert.deepEqual(result.missingPrices, ["XYZ"]);
-});
-
-test("valueFromHoldings ignores fully closed positions", () => {
-  const result = valueFromHoldings({
-    holdings: [{ symbol: "SOLD", quantity: 0, latestPrice: 0, fxRateToBase: 1 }],
-    cashBalance: 500,
-  });
-  assert.equal(result.totalValue, 500);
-  assert.deepEqual(result.missingPrices, []);
-});
-
-test("CASHFLOW platform carries the last value forward and reports its age", () => {
+test("a platform carries the last value forward and reports its age", () => {
   const resolved = resolvePlatformValue({
-    trackingMode: "CASHFLOW",
     netInvested: 100_000,
     valuations: [{ asOfDate: "2026-01-31", totalValue: 104_800 }],
     asOfDate: "2026-02-28",
@@ -84,7 +33,6 @@ test("CASHFLOW platform carries the last value forward and reports its age", () 
 
 test("a valuation older than the stale threshold is flagged", () => {
   const resolved = resolvePlatformValue({
-    trackingMode: "CASHFLOW",
     netInvested: 100_000,
     valuations: [{ asOfDate: "2026-01-01", totalValue: 104_800 }],
     asOfDate: "2026-03-01",
@@ -95,7 +43,6 @@ test("a valuation older than the stale threshold is flagged", () => {
 
 test("a same-day valuation is RECORDED, not carried forward", () => {
   const resolved = resolvePlatformValue({
-    trackingMode: "CASHFLOW",
     netInvested: 80_000,
     valuations: [{ asOfDate: "2026-02-28", totalValue: 92_400 }],
     asOfDate: "2026-02-28",
@@ -107,7 +54,6 @@ test("a same-day valuation is RECORDED, not carried forward", () => {
 
 test("a never-valued platform falls back to net invested and is stale", () => {
   const resolved = resolvePlatformValue({
-    trackingMode: "CASHFLOW",
     netInvested: 50_000,
     valuations: [],
     asOfDate: "2026-02-28",
@@ -118,31 +64,16 @@ test("a never-valued platform falls back to net invested and is stale", () => {
   assert.equal(resolved.valuationDate, null);
 });
 
-test("POSITION platform computes from holdings and is never stale", () => {
+test("a value mark of zero is honoured, not treated as missing", () => {
+  // Closing a platform means marking it worth nothing. Falling back to net
+  // invested here would keep a dead platform alive in gross assets.
   const resolved = resolvePlatformValue({
-    trackingMode: "POSITION",
-    netInvested: 150_000,
-    holdings: [{ symbol: "AAPL", quantity: 200, latestPrice: 520, fxRateToBase: 1 }],
-    cashBalance: 10_750,
+    netInvested: 10_000,
+    valuations: [{ asOfDate: "2026-02-28", totalValue: 0 }],
     asOfDate: "2026-02-28",
   });
-  assert.equal(resolved.totalValue, 114_750);
-  assert.equal(resolved.source, "COMPUTED");
-  assert.equal(resolved.isStale, false);
-});
-
-test("POSITION platform falls back to a recorded valuation when a price is missing", () => {
-  const resolved = resolvePlatformValue({
-    trackingMode: "POSITION",
-    netInvested: 150_000,
-    holdings: [{ symbol: "XYZ", quantity: 10, latestPrice: 0, fxRateToBase: 1 }],
-    cashBalance: 0,
-    valuations: [{ asOfDate: "2026-02-20", totalValue: 158_900 }],
-    asOfDate: "2026-02-28",
-  });
-  assert.equal(resolved.totalValue, 158_900);
-  assert.equal(resolved.source, "RECORDED_FALLBACK");
-  assert.deepEqual(resolved.missingPrices, ["XYZ"]);
+  assert.equal(resolved.totalValue, 0);
+  assert.equal(resolved.source, "RECORDED");
 });
 
 test("blockingValuations flags only platforms that are both stale and material", () => {

@@ -26,8 +26,8 @@ This repository is operational software for private administration. It is not in
 ## Features
 
 - Event-driven unit-based NAV accounting with draft and locked NAV records.
-- Platform valuations recorded independently of the NAV cycle, carried forward with staleness tracking.
-- Per-platform tracking modes: `CASHFLOW` (record money in/out plus periodic value marks) and `POSITION` (value computed from holdings and latest prices).
+- Platform values recorded independently of the NAV cycle, carried forward with staleness tracking.
+- Fund cash tracked as its own balance, so money withdrawn from a platform stays in gross assets instead of disappearing.
 - Investor directory with unit balances, ownership, market value, equity P&L, equity return percentage, fixed-savings balance, and statement history.
 - Capital deposits and withdrawals settled against the latest locked NAV per unit.
 - Fixed-savings deposits, withdrawals, interest accrual, base rates, and promotional rate periods outside equity NAV.
@@ -63,32 +63,72 @@ This repository is operational software for private administration. It is not in
 - Profit claims are capped at the investor's attributable equity profit less profit already locked in existing claims.
 - Locked NAV records are immutable by design.
 
-### Platform Valuation
+### What a platform records
+
+A platform tracks three facts and nothing else:
+
+| Fact | Meaning |
+| --- | --- |
+| **Money in** | Ringgit left the fund's cash and entered the platform. |
+| **Money out** | Ringgit left the platform and returned to the fund's cash. |
+| **Value mark** | What the whole platform was worth on a given date. |
+
+Profit is derived: `value − (money in − money out)`.
+
+The rule is whether money crossed the platform boundary. Buying, selling, dividends
+that stay in the account, copy-trading gains, fees, withholding tax, FX drift and
+corporate actions are all **internal** — record nothing, and the next value mark
+absorbs them. Topping up a broker, cashing out to the fund's bank, taking dividends
+out, and moving between platforms (money out of one, money in to the other) are
+**boundary** events and must be recorded.
+
+Money out is capped at what the platform is currently worth, not at what was put
+in, so cashing out a gain or a dividend can be recorded. The ceiling is the latest
+value mark adjusted by anything that moved since it, which stops the same profit
+being withdrawn twice.
+
+### Platform valuation
 
 A platform's value is resolved for a NAV date in this order:
 
-| Tracking mode | Source | Behaviour |
-| --- | --- | --- |
-| `POSITION` | `COMPUTED` | Holdings × latest price × FX, plus cash. Never stale. |
-| `POSITION` | `RECORDED_FALLBACK` | Used when a held asset has no price, so a missing price never silently undervalues the platform. |
-| `CASHFLOW` | `RECORDED` | A valuation dated exactly on the NAV date. |
-| `CASHFLOW` | `CARRIED_FORWARD` | The most recent valuation on or before the NAV date, with its age reported. |
-| Either | `NET_INVESTED_FALLBACK` | No valuation ever recorded; assumed flat rather than inventing a gain. |
+| Source | Behaviour |
+| --- | --- |
+| `RECORDED` | A value mark dated exactly on the NAV date. |
+| `CARRIED_FORWARD` | The most recent value mark on or before the NAV date, with its age reported. |
+| `NET_INVESTED_FALLBACK` | Never valued; assumed flat rather than inventing a gain. |
 
-Valuations dated after the NAV date are never used, so a historical NAV cannot see a future mark.
+Value marks dated after the NAV date are never used, so a historical NAV cannot see a future mark.
 
 A valuation older than **30 days** is flagged stale. A platform that is both stale and **10% or more** of the fund is *material*: NAV can still be created and locked for reporting, but settling any deposit or withdrawal against it is rejected until the valuation is refreshed. Stale-but-immaterial and fresh-but-small platforms never block settlement.
 
-Recording a valuation dated on or before an already-locked NAV is rejected, because that NAV has already priced the period.
+Recording a value mark, a fund cash balance, or a platform transaction dated on or
+before an already-locked NAV is rejected, because that NAV has already priced the
+period.
+
+### Fund cash
+
+Gross assets are the sum of every platform's value **plus the fund's own cash** —
+money withdrawn from a platform, or investor capital not deployed yet. Without it
+that money belongs to no platform and falls out of the fund's value entirely.
+
+Fund cash is recorded the same way as a platform value: a balance and a date, taken
+from a bank statement, carried forward until replaced. The NAV screen also shows an
+**expected** balance derived from the last recorded balance plus settled investor
+deposits and withdrawals, minus money sent to platforms, plus money taken back out.
+A gap between the two is flagged: it is legitimate when money moved outside the app,
+and otherwise means something is unrecorded.
+
+`adjustments` remains available for genuine one-off corrections and normally stays
+at zero. It is no longer the only home for idle cash.
 
 ### Operating cycle
 
 NAV is event-driven: create one when you need to price something, not on a fixed calendar.
 
-1. Record platform transactions as they happen (money in/out at minimum).
-2. Record platform values whenever convenient — one number per `CASHFLOW` platform, prices per held asset for `POSITION` platforms.
+1. Record money in and money out as it happens.
+2. Record platform values whenever convenient — one number per platform, as your broker shows it. Record the fund's cash balance the same way.
 3. When a deposit, withdrawal, or reporting date arrives, open the NAV review screen and pick the valuation date.
-4. Review resolved values, staleness badges, gross assets, and adjustments. Override individual platforms only where needed.
+4. Review resolved values, staleness badges, fund cash against its expected balance, and gross assets. Override individual rows only where needed.
 5. Save the draft and lock it.
 6. Settle deposits, withdrawals, fixed-savings movements, claims, and bonuses.
 7. Review investor statements, equity performance, reports, brokerage reconciliation, and audit logs.
@@ -222,8 +262,8 @@ npm.cmd run dev
 7. Enter the admin password in the protected settings gate.
 8. Run `Initialize Database`.
 9. Optionally run `Import Dummy Data` for local development only.
-10. Add each trading platform and choose its tracking mode (`CASHFLOW` unless you want per-asset attribution).
-11. Record a starting value for every `CASHFLOW` platform.
+10. Add each trading platform.
+11. Record a starting value for every platform, and the fund's starting cash balance.
 12. Create and lock an opening NAV before recording any capital movement.
 13. Review `/nav`, `/capital`, `/investors`, `/trading`, `/claims`, `/fixed-savings`, `/fixed-savings-rates`, `/brokerage`, `/reports`, `/admin-logs`, and `/settings`.
 
@@ -287,7 +327,14 @@ The Settings page provides manual JSON backup tooling:
 
 Backup files contain financial records, investor names, portal identifiers, NAV history, claims, trading records, and audit events. Store them as secrets.
 
-The current backup schema version is **3**. Version 2 files still restore: `platform_valuations` and `platform_transaction_allocations` come back empty, and the never-created `platform_performance` table that v2 exported is ignored.
+The current backup schema version is **4**. Older files still restore:
+
+| Version | Behaviour on restore |
+| --- | --- |
+| 3 | `fund_cash_valuations` comes back empty. |
+| 2 | `platform_valuations`, `platform_transaction_allocations`, and `fund_cash_valuations` come back empty. |
+
+Two tables that older exports carried are ignored on restore: `platform_performance`, which no migration ever created, and `cash_balances`, which was written but never read before fund cash replaced it.
 
 Schema version 3 added `platform_valuations` and — importantly — `platform_transaction_allocations`, which version 2 omitted. Restoring a v2 backup therefore loses per-transaction funding-source splits, and affected platforms fall back to the legacy single-`funding_source` attribution. Re-enter allocations after restoring a v2 file if you relied on split funding.
 

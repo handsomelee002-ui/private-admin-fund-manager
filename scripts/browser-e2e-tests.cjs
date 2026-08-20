@@ -87,10 +87,70 @@ async function startDevServer() {
   return child;
 }
 
+/**
+ * Edge re-spawns itself into a detached process tree and its launcher exits
+ * immediately, so child.kill() reaps nothing: the real browser keeps the
+ * profile directory and the debugging port. A later run then attaches to that
+ * stale, already-logged-in browser and fails in ways that look like
+ * application bugs. Ask the browser to close itself over CDP instead.
+ */
+async function closeBrowser(child) {
+  try {
+    const version = await httpJson(`http://localhost:${CDP_PORT}/json/version`);
+    const ws = new WebSocket(version.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => {
+      ws.onopen = resolve;
+      ws.onerror = reject;
+    });
+    ws.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    ws.close();
+  } catch {
+    // Browser already gone, or never came up.
+  }
+  try {
+    child?.kill();
+  } catch {
+    // Already gone.
+  }
+  // Do not return while the debugging port is still bound, or the next run
+  // attaches to this browser instead of its own.
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      await httpJson(`http://localhost:${CDP_PORT}/json/version`);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
 async function startBrowser() {
-  const userDataDir = path.join(cwd, "scratch", "browser-e2e-profile");
-  fs.rmSync(userDataDir, { recursive: true, force: true });
+  // A browser from a previous run can still hold the profile on Windows, and
+  // force:true does not cover EBUSY. Fall back to a fresh directory rather than
+  // failing the whole suite on a stale lock.
+  let userDataDir = path.join(cwd, "scratch", "browser-e2e-profile");
+  try {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+  } catch {
+    userDataDir = path.join(cwd, "scratch", `browser-e2e-profile-${process.pid}-${Date.now()}`);
+  }
   fs.mkdirSync(userDataDir, { recursive: true });
+  // A browser left behind by an earlier run still owns the debugging port and
+  // its session cookies. Attaching to it silently would make authentication
+  // tests pass or fail for reasons unrelated to the code under test.
+  let stale = null;
+  try {
+    stale = await httpJson(`http://localhost:${CDP_PORT}/json/version`);
+  } catch {
+    stale = null;
+  }
+  if (stale) {
+    await closeBrowser(null);
+    throw new Error(
+      `Port ${CDP_PORT} is already serving a Chrome DevTools endpoint. Close the leftover browser and re-run.`,
+    );
+  }
   const child = spawn(edgePath(), [
     "--headless=new",
     "--disable-gpu",
@@ -292,6 +352,57 @@ async function noHorizontalOverflow(page) {
       }
     });
 
+    await check("tall dialogs fit the viewport and scroll internally", async () => {
+      // The NAV review dialog grows with the platform count. It must cap at the
+      // viewport and scroll its own body, never push the page taller than the
+      // screen and strand the Save button off-screen.
+      for (const [width, height] of [[1280, 720], [1366, 900], [768, 1024]]) {
+        await setViewport(page, width, height);
+        await navigate(page, `http://localhost:${TEST_PORT}/nav`);
+        await waitFor(page, 'document.body.innerText.includes("New NAV")');
+        await clickTriggerMouse(page, "New NAV");
+        await waitFor(page, 'document.body.innerText.includes("Review & create NAV")');
+        await waitFor(page, '!document.body.innerText.includes("Loading platform values")');
+
+        const metrics = await evalJs(page, `(() => {
+          const dialog = document.querySelector("[data-slot=dialog-content]");
+          const rect = dialog.getBoundingClientRect();
+          const scroller = [...dialog.querySelectorAll("*")]
+            .find((node) => getComputedStyle(node).overflowY === "auto" && node.scrollHeight > 0);
+          const save = [...dialog.querySelectorAll("button")]
+            .find((node) => node.textContent.includes("Save draft"));
+          const saveRect = save.getBoundingClientRect();
+          return {
+            dialogHeight: Math.round(rect.height),
+            viewport: window.innerHeight,
+            top: Math.round(rect.top),
+            bottom: Math.round(rect.bottom),
+            hasScroller: Boolean(scroller),
+            saveVisible: saveRect.bottom <= window.innerHeight + 1 && saveRect.top >= -1,
+          };
+        })()`);
+
+        assert.equal(
+          metrics.dialogHeight <= metrics.viewport,
+          true,
+          `NAV dialog is ${metrics.dialogHeight}px tall in a ${metrics.viewport}px viewport at ${width}x${height}`,
+        );
+        assert.equal(metrics.top >= 0, true, `NAV dialog top is cut off at ${width}x${height}`);
+        assert.equal(
+          metrics.bottom <= metrics.viewport,
+          true,
+          `NAV dialog bottom is cut off at ${width}x${height}`,
+        );
+        assert.equal(metrics.hasScroller, true, `NAV dialog has no internal scroll region at ${width}x${height}`);
+        assert.equal(metrics.saveVisible, true, `Save draft is off-screen at ${width}x${height}`);
+
+        await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+        await waitFor(page, '!document.querySelector("[data-slot=dialog-content]")');
+      }
+      await setViewport(page, 1280, 720);
+    });
+
     await check("add trading platform form submits and detail transaction form opens", async () => {
       await navigate(page, `http://localhost:${TEST_PORT}/trading`);
       await waitFor(page, 'document.body.innerText.includes("Add Platform")');
@@ -354,7 +465,7 @@ async function noHorizontalOverflow(page) {
     });
   } finally {
     page.close();
-    browserProcess.kill();
+    await closeBrowser(browserProcess);
     devServer.kill();
   }
 

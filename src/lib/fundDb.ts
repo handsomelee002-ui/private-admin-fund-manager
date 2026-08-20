@@ -15,6 +15,7 @@ import {
   MATERIAL_WEIGHT_PERCENT,
   STALE_AFTER_DAYS,
   blockingValuations,
+  daysBetween,
   resolvePlatformValue,
 } from "@/lib/platformValuation";
 import type { ResolvedValuation } from "@/lib/platformValuation";
@@ -27,9 +28,14 @@ type NavWeekInput = {
   settlementDate?: string;
   /**
    * Optional per-platform overrides. Omit to value every platform from its
-   * recorded valuations (CASHFLOW) or holdings (POSITION).
+   * recorded value marks, carried forward when not refreshed.
    */
   platformSnapshots?: PlatformSnapshotInput[];
+  /**
+   * Override for the fund's own cash balance. Omit to carry the last recorded
+   * balance forward.
+   */
+  fundCash?: number;
   adjustments: number;
   notes?: string;
 };
@@ -50,7 +56,6 @@ export type PlatformValuationSource = "MANUAL" | "STATEMENT" | "IMPORT";
 export type NavPlatformPreview = ResolvedValuation & {
   platformId: string;
   platformName: string;
-  trackingMode: string;
   netInvested: number;
   equityNetInvested: number;
   fixedSavingsNetInvested: number;
@@ -60,6 +65,16 @@ export type NavPlatformPreview = ResolvedValuation & {
   brokerageContributed: number;
   profitLoss: number;
   weightPercent: number;
+};
+
+export type FundCashPreview = {
+  balance: number;
+  source: "RECORDED" | "CARRIED_FORWARD" | "NEVER_RECORDED";
+  asOfDate: string | null;
+  ageDays: number | null;
+  isStale: boolean;
+  /** What the ledgers imply the balance should be, for comparison. */
+  expectedBalance: number;
 };
 
 type CashMovementInput = {
@@ -796,6 +811,7 @@ export async function ensureFreshFundSchema() {
       week_ending DATE NOT NULL UNIQUE,
       settlement_date DATE NOT NULL DEFAULT CURRENT_DATE,
       gross_assets NUMERIC(15, 4) NOT NULL,
+      fund_cash NUMERIC(15, 4) NOT NULL DEFAULT 0,
       liabilities NUMERIC(15, 4) NOT NULL DEFAULT 0,
       adjustments NUMERIC(15, 4) NOT NULL DEFAULT 0,
       net_asset_value NUMERIC(15, 4) NOT NULL,
@@ -808,6 +824,7 @@ export async function ensureFreshFundSchema() {
     );
   `;
   await sql`ALTER TABLE nav_weeks ALTER COLUMN settlement_date SET DEFAULT CURRENT_DATE`;
+  await sql`ALTER TABLE nav_weeks ADD COLUMN IF NOT EXISTS fund_cash NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`
     CREATE TABLE IF NOT EXISTS investor_unit_ledger (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -934,9 +951,10 @@ export async function ensureFreshFundSchema() {
   `;
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS base_currency TEXT NOT NULL DEFAULT 'MYR'`;
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS default_currency TEXT NOT NULL DEFAULT 'MYR'`;
-  await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS tracking_mode TEXT NOT NULL DEFAULT 'CASHFLOW'`;
+  // Tracking modes were removed: every platform is valued the same way, from
+  // recorded value marks. Drop the column so no stale mode can be read back.
   await sql`ALTER TABLE platforms DROP CONSTRAINT IF EXISTS platforms_tracking_mode_check`;
-  await sql`ALTER TABLE platforms ADD CONSTRAINT platforms_tracking_mode_check CHECK (tracking_mode IN ('CASHFLOW', 'POSITION'))`;
+  await sql`ALTER TABLE platforms DROP COLUMN IF EXISTS tracking_mode`;
   await sql`
     CREATE TABLE IF NOT EXISTS platform_valuations (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -952,6 +970,24 @@ export async function ensureFreshFundSchema() {
     );
   `;
   await sql`CREATE INDEX IF NOT EXISTS platform_valuations_platform_date_idx ON platform_valuations (platform_id, as_of_date DESC)`;
+  // Cash the fund holds outside any platform - money withdrawn from a broker,
+  // or investor capital not deployed yet. Without this it belonged to no
+  // platform and so fell out of gross assets entirely.
+  await sql`
+    CREATE TABLE IF NOT EXISTS fund_cash_valuations (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      as_of_date DATE NOT NULL UNIQUE,
+      balance NUMERIC(15, 4) NOT NULL,
+      notes TEXT,
+      audit_status TEXT NOT NULL DEFAULT 'active',
+      reversal_of_id UUID,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS fund_cash_valuations_date_idx ON fund_cash_valuations (as_of_date DESC)`;
+  // Superseded by fund_cash_valuations. It was seeded and backed up but never
+  // read, which made it look like fund cash was already tracked.
+  await sql`DROP TABLE IF EXISTS cash_balances`;
   await sql`
     CREATE TABLE IF NOT EXISTS platform_accounts (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -1092,14 +1128,6 @@ export async function ensureFreshFundSchema() {
     );
   `;
   await sql`
-    CREATE TABLE IF NOT EXISTS cash_balances (
-      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-      account_name TEXT NOT NULL,
-      current_balance NUMERIC(15, 2) NOT NULL DEFAULT 0,
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-  `;
-  await sql`
     CREATE TABLE IF NOT EXISTS fund_config (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -1164,7 +1192,7 @@ export async function getLatestLockedNavWeek() {
     SELECT id,
       TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
       TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-      gross_assets, liabilities, adjustments, net_asset_value,
+      gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
       total_units, nav_per_unit, status, locked_at, notes, created_at
     FROM nav_weeks
     WHERE status = 'locked'
@@ -1180,78 +1208,12 @@ export async function getNavWeeks() {
     SELECT id,
       TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
       TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-      gross_assets, liabilities, adjustments, net_asset_value,
+      gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
       total_units, nav_per_unit, status, locked_at, notes, created_at
     FROM nav_weeks
     ORDER BY nav_weeks.week_ending DESC
   `;
   return res.rows;
-}
-
-/**
- * Cash and holdings per platform as of a date, for POSITION-mode valuation.
- * Transactions after asOfDate are excluded so a historical NAV never sees
- * trades that had not happened yet.
- */
-async function getPlatformHoldingsAsOf(asOfDate: string) {
-  const [holdingRows, cashRows] = await Promise.all([
-    sql`
-      SELECT
-        pt.platform_id,
-        pa.symbol,
-        pa.latest_price,
-        pa.latest_fx_rate_to_myr,
-        SUM(
-          CASE
-            WHEN pt.type = 'BUY' THEN COALESCE(pt.quantity, 0)
-            WHEN pt.type = 'SELL' THEN -COALESCE(pt.quantity, 0)
-            ELSE 0
-          END
-        ) as quantity
-      FROM platform_transactions pt
-      JOIN platform_assets pa ON pa.id = pt.asset_id
-      WHERE COALESCE(pt.audit_status, 'active') = 'active'
-        AND COALESCE(pt.status, 'SETTLED') = 'SETTLED'
-        AND pt.date <= ${asOfDate}
-        AND pt.asset_id IS NOT NULL
-      GROUP BY pt.platform_id, pa.symbol, pa.latest_price, pa.latest_fx_rate_to_myr
-    `,
-    sql`
-      SELECT
-        pt.platform_id,
-        COALESCE(SUM(
-          CASE
-            WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit', 'TRANSFER') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-            WHEN pt.type IN ('SELL', 'DIVIDEND', 'INTEREST') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-            WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw', 'BUY', 'FEE', 'TAX') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
-            ELSE 0
-          END
-        ), 0) as cash_balance
-      FROM platform_transactions pt
-      WHERE COALESCE(pt.audit_status, 'active') = 'active'
-        AND COALESCE(pt.status, 'SETTLED') = 'SETTLED'
-        AND pt.date <= ${asOfDate}
-      GROUP BY pt.platform_id
-    `,
-  ]);
-
-  const holdings = new Map<string, { symbol: string; quantity: number; latestPrice: number; fxRateToBase: number }[]>();
-  for (const row of holdingRows.rows) {
-    const list = holdings.get(row.platform_id) ?? [];
-    list.push({
-      symbol: row.symbol,
-      quantity: parseFloat(row.quantity || "0"),
-      latestPrice: parseFloat(row.latest_price || "0"),
-      fxRateToBase: parseFloat(row.latest_fx_rate_to_myr || "1"),
-    });
-    holdings.set(row.platform_id, list);
-  }
-
-  const cash = new Map<string, number>(
-    cashRows.rows.map((row: any) => [row.platform_id, parseFloat(row.cash_balance || "0")]),
-  );
-
-  return { holdings, cash };
 }
 
 async function getPlatformValuationsAsOf(asOfDate: string) {
@@ -1278,10 +1240,9 @@ export async function buildNavPlatformPreview(
   asOfDate: string,
   overrides: Map<string, { totalValue?: number; unrealizedProfit?: number }> = new Map(),
 ): Promise<NavPlatformPreview[]> {
-  const [positions, valuations, holdingData] = await Promise.all([
+  const [positions, valuations] = await Promise.all([
     getPlatformFundingPositions(),
     getPlatformValuationsAsOf(asOfDate),
-    getPlatformHoldingsAsOf(asOfDate),
   ]);
 
   const resolved = positions.map((platform) => {
@@ -1301,14 +1262,10 @@ export async function buildNavPlatformPreview(
             valuationDate: asOfDate,
             ageDays: 0,
             isStale: false,
-            missingPrices: [],
           }
         : resolvePlatformValue({
-            trackingMode: platform.trackingMode === "POSITION" ? "POSITION" : "CASHFLOW",
             netInvested,
             valuations: valuations.get(platform.id) ?? [],
-            holdings: holdingData.holdings.get(platform.id) ?? null,
-            cashBalance: holdingData.cash.get(platform.id) ?? 0,
             asOfDate,
           });
 
@@ -1316,7 +1273,6 @@ export async function buildNavPlatformPreview(
       ...valuation,
       platformId: platform.id,
       platformName: platform.name,
-      trackingMode: platform.trackingMode,
       netInvested,
       equityNetInvested: platform.equityNetInvested,
       fixedSavingsNetInvested: platform.fixedSavingsNetInvested,
@@ -1334,6 +1290,154 @@ export async function buildNavPlatformPreview(
     ...item,
     weightPercent: grossValue > 0 ? roundMoney((item.totalValue / grossValue) * 100) : 0,
   }));
+}
+
+/**
+ * The fund's own cash balance for a date, carried forward from the last
+ * recorded balance. Money withdrawn from a platform lands here; without it that
+ * money belongs to no platform and vanishes from gross assets.
+ */
+export async function getFundCashAsOf(asOfDate: string): Promise<FundCashPreview> {
+  const [res, expected] = await Promise.all([
+    sql`
+      SELECT TO_CHAR(as_of_date, 'YYYY-MM-DD') as as_of_date, balance
+      FROM fund_cash_valuations
+      WHERE audit_status = 'active' AND as_of_date <= ${asOfDate}
+      ORDER BY as_of_date DESC
+      LIMIT 1
+    `,
+    getExpectedFundCash(asOfDate),
+  ]);
+  const row = res.rows[0];
+
+  if (!row) {
+    return {
+      balance: 0,
+      source: "NEVER_RECORDED",
+      asOfDate: null,
+      ageDays: null,
+      isStale: true,
+      expectedBalance: expected,
+    };
+  }
+
+  const balance = roundMoney(parseFloat(row.balance || "0"));
+  const ageDays = daysBetween(row.as_of_date, asOfDate);
+  return {
+    balance,
+    source: ageDays === 0 ? "RECORDED" : "CARRIED_FORWARD",
+    asOfDate: row.as_of_date,
+    ageDays,
+    isStale: ageDays > STALE_AFTER_DAYS,
+    expectedBalance: expected,
+  };
+}
+
+/**
+ * What the recorded ledgers imply the fund's cash should be: the last recorded
+ * balance, plus investor deposits and withdrawals, minus money sent to
+ * platforms, plus money taken back out of them.
+ *
+ * This deliberately does not chase every possible outflow - bank charges, or
+ * anything moved outside the app. A gap between this and the balance the admin
+ * types is exactly what needs looking at, so the NAV screen shows both rather
+ * than silently trusting either one.
+ */
+async function getExpectedFundCash(asOfDate: string) {
+  const anchorRow = await sql`
+    SELECT TO_CHAR(as_of_date, 'YYYY-MM-DD') as as_of_date, balance
+    FROM fund_cash_valuations
+    WHERE audit_status = 'active' AND as_of_date <= ${asOfDate}
+    ORDER BY as_of_date DESC
+    LIMIT 1
+  `;
+  const anchorDate = anchorRow.rows[0]?.as_of_date ?? "1900-01-01";
+  const anchorBalance = anchorRow.rows[0] ? roundMoney(parseFloat(anchorRow.rows[0].balance || "0")) : 0;
+
+  const [platformFlows, capitalFlows] = await Promise.all([
+    sql`
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END
+      ), 0) as delta
+      FROM platform_transactions pt
+      WHERE COALESCE(pt.audit_status, 'active') = 'active'
+        AND COALESCE(pt.status, 'SETTLED') = 'SETTLED'
+        AND pt.date > ${anchorDate} AND pt.date <= ${asOfDate}
+    `,
+    sql`
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN type = 'Deposit' THEN amount
+          WHEN type = 'Withdrawal' THEN -amount
+          ELSE 0
+        END
+      ), 0) as delta
+      FROM cash_movements
+      WHERE COALESCE(audit_status, 'active') = 'active'
+        AND status = 'settled'
+        AND date > ${anchorDate} AND date <= ${asOfDate}
+    `,
+  ]);
+
+  return roundMoney(
+    anchorBalance
+      + parseFloat(platformFlows.rows[0]?.delta || "0")
+      + parseFloat(capitalFlows.rows[0]?.delta || "0"),
+  );
+}
+
+/**
+ * Record what the fund's cash account held on a date. Same shape as a platform
+ * value mark: re-recording a date replaces it rather than stacking duplicates.
+ */
+export async function recordFundCash(input: { asOfDate: string; balance: number; notes?: string }) {
+  await requireAdmin();
+  await ensureAuditColumns();
+  assertNotFutureDate(input.asOfDate, "Fund cash date");
+
+  if (!Number.isFinite(input.balance) || input.balance < 0) {
+    throw new Error("Fund cash balance must be zero or a positive number.");
+  }
+
+  const blockingLock = await sql`
+    SELECT TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending
+    FROM nav_weeks
+    WHERE status = 'locked' AND week_ending >= ${input.asOfDate}
+    ORDER BY week_ending ASC
+    LIMIT 1
+  `;
+  if (blockingLock.rows.length > 0) {
+    throw new Error(
+      `NAV week ${blockingLock.rows[0].week_ending} is locked and already priced this period. Record the balance with a later date.`,
+    );
+  }
+
+  const existing = await sql`
+    SELECT balance FROM fund_cash_valuations
+    WHERE as_of_date = ${input.asOfDate} AND audit_status = 'active'
+  `;
+  const previousBalance = existing.rows[0] ? parseFloat(existing.rows[0].balance) : null;
+  const balance = roundMoney(input.balance);
+
+  const res = await sql`
+    INSERT INTO fund_cash_valuations (as_of_date, balance, notes)
+    VALUES (${input.asOfDate}, ${balance}, ${input.notes || ""})
+    ON CONFLICT (as_of_date) DO UPDATE SET
+      balance = EXCLUDED.balance,
+      notes = EXCLUDED.notes
+    RETURNING id
+  `;
+
+  await writeAuditEvent("fund_cash.record", "fund_cash_valuations", res.rows[0].id, {
+    asOfDate: input.asOfDate,
+    balance,
+    previousBalance,
+  });
+  return { success: true, id: res.rows[0].id as string };
 }
 
 /** Stale AND material platforms that must be refreshed before settling capital. */
@@ -1493,7 +1597,6 @@ async function getPlatformFundingPositions() {
     SELECT
       p.id,
       p.name,
-      COALESCE(p.tracking_mode, 'CASHFLOW') as tracking_mode,
       COALESCE(SUM(tf.cash_flow), 0) as net_invested,
       COALESCE(SUM(tf.equity_cash_flow), 0) as equity_net_invested,
       COALESCE(SUM(tf.fixed_savings_cash_flow), 0) as fixed_savings_net_invested,
@@ -1503,14 +1606,13 @@ async function getPlatformFundingPositions() {
       COALESCE(SUM(tf.brokerage_contributed), 0) as brokerage_contributed
     FROM platforms p
     LEFT JOIN transaction_flows tf ON tf.platform_id = p.id
-    GROUP BY p.id, p.name, p.tracking_mode
+    GROUP BY p.id, p.name
     ORDER BY p.name
   `;
 
   return platforms.rows.map((platform: any) => ({
     id: platform.id as string,
     name: platform.name as string,
-    trackingMode: platform.tracking_mode as string,
     netInvested: roundMoney(parseFloat(platform.net_invested || "0")),
     equityNetInvested: roundMoney(parseFloat(platform.equity_net_invested || "0")),
     fixedSavingsNetInvested: roundMoney(parseFloat(platform.fixed_savings_net_invested || "0")),
@@ -1561,8 +1663,20 @@ export async function createNavWeek(input: NavWeekInput) {
       allocation,
     };
   });
+  // Cash the fund holds outside every platform. Recording it here is what
+  // stops money withdrawn from a broker from disappearing out of gross assets
+  // between the withdrawal and its redeployment.
+  const fundCashPreview = await getFundCashAsOf(input.weekEnding);
+  const fundCash = input.fundCash !== undefined ? roundMoney(input.fundCash) : fundCashPreview.balance;
+  if (input.fundCash !== undefined && input.fundCash !== fundCashPreview.balance) {
+    await recordFundCash({
+      asOfDate: input.weekEnding,
+      balance: fundCash,
+      notes: "Recorded while creating NAV",
+    });
+  }
   const grossAssets = roundMoney(
-    platformSnapshots.reduce((sum, snapshot) => sum + snapshot.allocation.equityNavValue, 0),
+    platformSnapshots.reduce((sum, snapshot) => sum + snapshot.allocation.equityNavValue, 0) + fundCash,
   );
   const liabilities = 0;
   const netAssetValue = roundMoney(grossAssets - liabilities + input.adjustments);
@@ -1571,16 +1685,17 @@ export async function createNavWeek(input: NavWeekInput) {
 
   const res = await sql`
     INSERT INTO nav_weeks (
-      week_ending, settlement_date, gross_assets, liabilities, adjustments,
+      week_ending, settlement_date, gross_assets, fund_cash, liabilities, adjustments,
       net_asset_value, total_units, nav_per_unit, status, notes
     )
     VALUES (
-      ${input.weekEnding}, ${settlementDate}, ${grossAssets}, ${liabilities}, ${input.adjustments},
+      ${input.weekEnding}, ${settlementDate}, ${grossAssets}, ${fundCash}, ${liabilities}, ${input.adjustments},
       ${netAssetValue}, ${totalUnits}, ${navPerUnit}, 'draft', ${input.notes || ""}
     )
     ON CONFLICT (week_ending) DO UPDATE SET
       settlement_date = EXCLUDED.settlement_date,
       gross_assets = EXCLUDED.gross_assets,
+      fund_cash = EXCLUDED.fund_cash,
       liabilities = EXCLUDED.liabilities,
       adjustments = EXCLUDED.adjustments,
       net_asset_value = EXCLUDED.net_asset_value,
@@ -1610,6 +1725,8 @@ export async function createNavWeek(input: NavWeekInput) {
   await writeAuditEvent("nav_week.upsert", "nav_weeks", navWeekId, {
     weekEnding: input.weekEnding,
     grossAssets,
+    fundCash,
+    fundCashExpected: fundCashPreview.expectedBalance,
     platformCount: platformSnapshots.length,
     // Record where each value came from, so a later reviewer can tell a fresh
     // mark from a carried-forward one without re-deriving it.
@@ -1620,7 +1737,7 @@ export async function createNavWeek(input: NavWeekInput) {
     })),
     staleCount: preview.filter((platform) => platform.isStale).length,
   });
-  return { success: true, preview };
+  return { success: true, preview, fundCash: fundCashPreview };
 }
 
 export async function lockNavWeek(id: string) {
@@ -1677,7 +1794,7 @@ export async function getLockedNavWeekForDate(date: string) {
     SELECT id,
       TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
       TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-      gross_assets, liabilities, adjustments, net_asset_value,
+      gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
       total_units, nav_per_unit, status, locked_at, notes, created_at
     FROM nav_weeks
     WHERE status = 'locked' AND week_ending <= ${date}
@@ -2004,7 +2121,7 @@ export async function getInvestorStatement(investorId: string) {
         SELECT id,
           TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
           TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-          gross_assets, liabilities, adjustments, net_asset_value,
+          gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
           total_units, nav_per_unit, status, locked_at, notes, created_at
         FROM nav_weeks
         WHERE status = 'locked'
@@ -2191,7 +2308,7 @@ export async function getFundSummaryMetrics() {
         SELECT id,
           TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
           TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-          gross_assets, liabilities, adjustments, net_asset_value,
+          gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
           total_units, nav_per_unit, status, locked_at, notes, created_at
         FROM nav_weeks
         WHERE status = 'locked'
@@ -2255,7 +2372,7 @@ export async function getDashboardSummary() {
         SELECT id,
           TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
           TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-          gross_assets, liabilities, adjustments, net_asset_value,
+          gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
           total_units, nav_per_unit, status, locked_at, notes, created_at
         FROM nav_weeks
         WHERE status = 'locked'
@@ -3022,12 +3139,9 @@ export async function seedDummyData() {
       (${alice.rows[0].id}, '2026-03-30', 'Bonus', 1250, 'Mirror entry for equity bonus visibility')
   `;
   await sql`
-    INSERT INTO cash_balances (account_name, current_balance)
-    VALUES
-      ('Maybank Operating Reserve', 34500),
-      ('IBKR USD Cash Equivalent', 18750),
-      ('Moomoo MYR Available Cash', 14820),
-      ('Binance USDT Available Cash', 6220)
+    INSERT INTO fund_cash_valuations (as_of_date, balance, notes)
+    VALUES ('2026-04-05', 34500, 'Operating reserve from bank statement')
+    ON CONFLICT (as_of_date) DO NOTHING
   `;
   await sql`
     INSERT INTO trading_ledger (date, platform, ticker, type, currency, price, quantity, amount_rm, profit_loss, date_closed, receipt_url)

@@ -2,15 +2,15 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { calculateFixedSavingsLiability, ensureAuditColumns, getFixedSavingsRateInputs, writeAuditEvent } from "@/lib/fundDb";
+import { assertNotFutureDate, calculateFixedSavingsLiability, ensureAuditColumns, getFixedSavingsRateInputs, writeAuditEvent } from "@/lib/fundDb";
 import { requireAdmin } from "@/lib/auth";
 import {
   BASE_CURRENCY,
-  isInvestmentTransactionType,
+  isRecordableTransactionType,
   percentage,
 } from "@/lib/investmentAccounting";
 import { roundMoney } from "@/lib/accounting";
-import { STALE_AFTER_DAYS, daysBetween, isTrackingMode } from "@/lib/platformValuation";
+import { STALE_AFTER_DAYS, daysBetween } from "@/lib/platformValuation";
 import { calculatePlatformPerformance } from "@/lib/platformPerformance";
 
 const ACCOUNT_TYPES = ["BANK", "WALLET", "BROKER_CASH", "BROKER_PORTFOLIO", "OTHER"] as const;
@@ -236,7 +236,6 @@ export async function getPlatforms() {
       p.name,
       p.base_currency,
       p.default_currency,
-      COALESCE(p.tracking_mode, 'CASHFLOW') as tracking_mode,
       TO_CHAR(p.created_at, 'YYYY-MM-DD') as created_at,
       TO_CHAR(lv.as_of_date, 'YYYY-MM-DD') as latest_valuation_date,
       lv.total_value as latest_valuation_value,
@@ -264,7 +263,7 @@ export async function getPlatforms() {
       ORDER BY as_of_date DESC
       LIMIT 1
     ) lv ON TRUE
-    GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.tracking_mode, p.created_at,
+    GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.created_at,
       lv.as_of_date, lv.total_value, lps.unrealized_profit, lps.total_value, lps.brokerage_profit_loss
     ORDER BY p.created_at DESC, p.name ASC
   `;
@@ -294,18 +293,14 @@ export async function getPlatforms() {
       name: row.name,
       baseCurrency: row.base_currency,
       defaultCurrency: row.default_currency,
-      trackingMode: row.tracking_mode as "CASHFLOW" | "POSITION",
       createdAt: row.created_at,
       latestValuationDate: row.latest_valuation_date as string | null,
       latestValuationValue,
       valuationAgeDays: row.latest_valuation_date
         ? daysBetween(row.latest_valuation_date, today)
         : null,
-      // POSITION platforms price from live holdings, so they never go stale.
       isValuationStale:
-        row.tracking_mode === "POSITION"
-          ? false
-          : !row.latest_valuation_date || daysBetween(row.latest_valuation_date, today) > STALE_AFTER_DAYS,
+        !row.latest_valuation_date || daysBetween(row.latest_valuation_date, today) > STALE_AFTER_DAYS,
       netInvested,
       equityNetInvested,
       fixedSavingsNetInvested,
@@ -421,6 +416,111 @@ async function getPlatformSourceBalances(platformId?: string) {
   } satisfies Record<FundingSource, number>;
 }
 
+/**
+ * Gross amounts put into a platform per funding source, ignoring withdrawals.
+ * Once net invested is exhausted this is what decides who owns the money still
+ * coming out.
+ */
+async function getPlatformContributions(platformId: string) {
+  const data = await sql`
+    SELECT
+      COALESCE(SUM(CASE
+        WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+        WHEN pta.id IS NOT NULL AND pta.funding_source = 'equity' AND pta.base_amount > 0 THEN pta.base_amount
+        WHEN pta.id IS NULL AND COALESCE(pt.funding_source, 'equity') = 'equity' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+        ELSE 0
+      END), 0) as equity,
+      COALESCE(SUM(CASE
+        WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+        WHEN pta.id IS NOT NULL AND pta.funding_source = 'fixed_savings' AND pta.base_amount > 0 THEN pta.base_amount
+        WHEN pta.id IS NULL AND COALESCE(pt.funding_source, 'equity') = 'fixed_savings' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+        ELSE 0
+      END), 0) as fixed_savings,
+      COALESCE(SUM(CASE
+        WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+        WHEN pta.id IS NOT NULL AND pta.funding_source = 'brokerage' AND pta.base_amount > 0 THEN pta.base_amount
+        WHEN pta.id IS NULL AND COALESCE(pt.funding_source, 'equity') = 'brokerage' AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+        ELSE 0
+      END), 0) as brokerage
+    FROM platform_transactions pt
+    LEFT JOIN platform_transaction_allocations pta ON pta.transaction_id = pt.id
+    WHERE pt.platform_id = ${platformId}
+  `;
+  const row = data.rows[0] ?? {};
+  return {
+    equity: roundMoney(parseFloat(row.equity || "0")),
+    fixed_savings: roundMoney(parseFloat(row.fixed_savings || "0")),
+    brokerage: roundMoney(parseFloat(row.brokerage || "0")),
+  } satisfies Record<FundingSource, number>;
+}
+
+/**
+ * How much may be taken out of a platform, and how it splits across funding
+ * sources.
+ *
+ * The ceiling is what the platform is currently worth, not what was put in.
+ * Capping at net invested makes it impossible to record cashing out a dividend
+ * or a gain, which is money that genuinely left the platform.
+ */
+async function getPlatformWithdrawalBasis(platformId: string) {
+  const [balances, contributions, valuation] = await Promise.all([
+    getPlatformSourceBalances(platformId),
+    getPlatformContributions(platformId),
+    sql`
+      SELECT total_value, TO_CHAR(as_of_date, 'YYYY-MM-DD') as as_of_date
+      FROM platform_valuations
+      WHERE platform_id = ${platformId} AND audit_status = 'active'
+      ORDER BY as_of_date DESC
+      LIMIT 1
+    `,
+  ]);
+
+  const netTotal = roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, balances[source] || 0), 0));
+  const contributedTotal = roundMoney(
+    FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, contributions[source] || 0), 0),
+  );
+  const latestValue = valuation.rows[0] ? roundMoney(parseFloat(valuation.rows[0].total_value || "0")) : null;
+
+  let cap: number;
+  if (latestValue === null) {
+    // Never valued: the only defensible ceiling is what was put in.
+    cap = Math.max(0, netTotal);
+  } else {
+    // The value mark is a snapshot. Money that moved in or out since then has
+    // not been re-marked, so apply it to the mark; otherwise the same profit
+    // could be withdrawn twice.
+    const since = await sql`
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END
+      ), 0) as delta
+      FROM platform_transactions pt
+      WHERE pt.platform_id = ${platformId}
+        AND COALESCE(pt.audit_status, 'active') = 'active'
+        AND COALESCE(pt.status, 'SETTLED') = 'SETTLED'
+        AND pt.date > ${valuation.rows[0].as_of_date}
+    `;
+    cap = Math.max(0, roundMoney(latestValue + parseFloat(since.rows[0]?.delta || "0")));
+  }
+  // Split by capital still in the platform while there is any; once principal
+  // is fully withdrawn, by who funded it.
+  const basis = netTotal > 0 ? balances : contributedTotal > 0 ? contributions : balances;
+  const basisTotal = netTotal > 0 ? netTotal : contributedTotal;
+
+  const sourceCaps = FUNDING_SOURCES.reduce(
+    (caps, source) => {
+      caps[source] = basisTotal > 0 ? roundMoney(cap * (Math.max(0, basis[source] || 0) / basisTotal)) : 0;
+      return caps;
+    },
+    {} as Record<FundingSource, number>,
+  );
+
+  return { cap, basis, sourceCaps, latestValue };
+}
+
 export async function getPlatformCapitalAllocation(platformId: string) {
   await requireAdmin();
   await ensureTradingSchema();
@@ -487,14 +587,9 @@ export async function addPlatform(formData: FormData) {
     const existing = await sql`SELECT id FROM platforms WHERE name = ${name}`;
     if (existing.rows.length > 0) return { error: "A platform with this name already exists." };
 
-    const requestedMode = formData.get("tracking_mode")?.toString() || "CASHFLOW";
-    if (!isTrackingMode(requestedMode)) {
-      return { error: "Tracking mode must be CASHFLOW or POSITION." };
-    }
-
     const created = await sql`
-      INSERT INTO platforms (name, base_currency, default_currency, tracking_mode)
-      VALUES (${name}, ${BASE_CURRENCY}, ${defaultCurrency}, ${requestedMode})
+      INSERT INTO platforms (name, base_currency, default_currency)
+      VALUES (${name}, ${BASE_CURRENCY}, ${defaultCurrency})
       RETURNING id
     `;
     await sql`
@@ -505,7 +600,6 @@ export async function addPlatform(formData: FormData) {
     await writeAuditEvent("platform.add", "platforms", created.rows[0].id, {
       name,
       defaultCurrency,
-      trackingMode: requestedMode,
     });
     revalidateTrading(created.rows[0].id);
     return { success: true, id: created.rows[0].id };
@@ -526,56 +620,6 @@ export async function updatePlatformName(formData: FormData) {
     return { success: true };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "Failed to update platform name." };
-  }
-}
-
-/**
- * Switch a platform between cash-flow and position tracking. Existing
- * transactions and valuations are untouched; only how the platform is valued
- * for future NAV records changes.
- */
-export async function updatePlatformTrackingMode(formData: FormData) {
-  await requireAdmin();
-  await ensureTradingSchema();
-  const id = formData.get("id")?.toString();
-  const trackingMode = formData.get("tracking_mode")?.toString();
-  if (!id || !trackingMode) return { error: "Platform and tracking mode are required." };
-  if (!isTrackingMode(trackingMode)) return { error: "Tracking mode must be CASHFLOW or POSITION." };
-
-  try {
-    const existing = await sql`SELECT name, COALESCE(tracking_mode, 'CASHFLOW') as tracking_mode FROM platforms WHERE id = ${id}`;
-    if (existing.rows.length === 0) return { error: "Platform not found." };
-    const previousMode = existing.rows[0].tracking_mode;
-    if (previousMode === trackingMode) return { success: true };
-
-    // POSITION valuation needs priced assets; without them every NAV would
-    // fall back and the switch would look broken rather than warn.
-    if (trackingMode === "POSITION") {
-      const priced = await sql`
-        SELECT COUNT(*)::int as count
-        FROM platform_assets
-        WHERE platform_id = ${id} AND latest_price > 0
-      `;
-      if (priced.rows[0].count === 0) {
-        return {
-          error:
-            "This platform has no assets with a price yet. Add assets with a latest price and record BUY transactions before switching to position tracking.",
-        };
-      }
-    }
-
-    await sql`UPDATE platforms SET tracking_mode = ${trackingMode} WHERE id = ${id}`;
-    await writeAuditEvent("platform.update_tracking_mode", "platforms", id, {
-      platformId: id,
-      name: existing.rows[0].name,
-      previousMode,
-      trackingMode,
-    });
-    revalidateTrading(id);
-    revalidatePath("/nav");
-    return { success: true };
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : "Failed to update tracking mode." };
   }
 }
 
@@ -771,7 +815,27 @@ export async function addPlatformTransaction(formData: FormData) {
   const realizedProfit = formData.get("realized_profit") ? parseNumber(formData.get("realized_profit"), "Realized profit") : null;
   const status = formData.get("status")?.toString() || "SETTLED";
 
-  if (!platformId || !date || !isInvestmentTransactionType(type)) return { error: "Platform, date, and valid transaction type are required." };
+  if (!platformId || !date || !isRecordableTransactionType(type)) return { error: "Platform, date, and a valid transaction type are required. Adjustments are no longer recorded because they change no balance." };
+  try {
+    assertNotFutureDate(date, "Transaction date");
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Invalid transaction date." };
+  }
+  // A locked NAV already priced this period from the platform values of the
+  // time. Money moving in or out beneath it changes net invested that the
+  // locked NAV was built on, so refuse rather than silently contradict it.
+  const lockedBeneath = await sql`
+    SELECT TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending
+    FROM nav_weeks
+    WHERE status = 'locked' AND week_ending >= ${date}
+    ORDER BY week_ending ASC
+    LIMIT 1
+  `;
+  if (lockedBeneath.rows.length > 0) {
+    return {
+      error: `NAV week ${lockedBeneath.rows[0].week_ending} is locked and already priced this period. Date this transaction after it.`,
+    };
+  }
   if (!hasBaseAmount && !hasAmount) return { error: "RM amount or native amount is required." };
   if (currency !== BASE_CURRENCY && !hasBaseAmount && fxRateToBase <= 0) return { error: "FX rate is required when only a foreign amount is entered." };
   if (!STATUSES.includes(status as (typeof STATUSES)[number])) return { error: "Invalid transaction status." };
@@ -800,10 +864,22 @@ export async function addPlatformTransaction(formData: FormData) {
 
   try {
     if (cashFlow !== 0) {
-      const basis = cashFlow > 0 ? await getCapitalAllocationBasis() : await getPlatformSourceBalances(platformId);
-      const totalBasis = roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, basis[source] || 0), 0));
-      if (Math.abs(cashFlow) > totalBasis + 0.001) {
-        return { error: `Transaction amount exceeds available ${cashFlow > 0 ? "capital" : "platform allocation"} balance.` };
+      const moneyIn = cashFlow > 0;
+      const withdrawal = moneyIn ? null : await getPlatformWithdrawalBasis(platformId);
+      const basis = moneyIn ? await getCapitalAllocationBasis() : withdrawal!.basis;
+      const totalCap = moneyIn
+        ? roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, basis[source] || 0), 0))
+        : withdrawal!.cap;
+      const sourceCaps = moneyIn ? basis : withdrawal!.sourceCaps;
+
+      if (Math.abs(cashFlow) > totalCap + 0.001) {
+        return {
+          error: moneyIn
+            ? "Transaction amount exceeds available capital balance."
+            : withdrawal!.latestValue === null
+              ? `Money out of RM ${Math.abs(cashFlow).toFixed(2)} exceeds the RM ${totalCap.toFixed(2)} put into this platform. Record what the platform is worth first if you are taking out a gain.`
+              : `Money out of RM ${Math.abs(cashFlow).toFixed(2)} exceeds this platform's recorded value of RM ${totalCap.toFixed(2)}. Update its value first if the platform has grown.`,
+        };
       }
       if (allocationMode === "manual") {
         const ratios = {
@@ -813,7 +889,7 @@ export async function addPlatformTransaction(formData: FormData) {
         } satisfies Record<FundingSource, number>;
         if (FUNDING_SOURCES.some((source) => ratios[source] < 0)) return { error: "Allocation percentages cannot be negative." };
         allocations = buildAllocationsFromRatios(cashFlow, ratios);
-        const exceededSource = allocations.find((allocation) => Math.abs(allocation.baseAmount) > Math.max(0, basis[allocation.fundingSource]) + 0.001);
+        const exceededSource = allocations.find((allocation) => Math.abs(allocation.baseAmount) > Math.max(0, sourceCaps[allocation.fundingSource]) + 0.001);
         if (exceededSource) {
           return { error: `${sourceLabel(exceededSource.fundingSource)} allocation exceeds available balance.` };
         }
