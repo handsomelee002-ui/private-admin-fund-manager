@@ -2,7 +2,7 @@
 
 import { createClient, sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { assertAdminPassword, requireAdmin } from "@/lib/auth";
+import { assertAdminPassword, isRedirectError, requireAdmin } from "@/lib/auth";
 import {
   BACKUP_APP_NAME,
   BACKUP_BASE_CURRENCY,
@@ -101,6 +101,7 @@ export async function previewFundBackupImport(formData: FormData) {
   try {
     assertAdminPassword(formData.get("admin_password")?.toString());
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Admin password is invalid." };
   }
 
@@ -115,6 +116,7 @@ export async function previewFundBackupImport(formData: FormData) {
     validateBackupReferences(backup);
     return { success: true, preview: createBackupPreview(backup), raw };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Backup validation failed." };
   }
 }
@@ -124,6 +126,7 @@ export async function restoreFundBackup(formData: FormData) {
   try {
     assertAdminPassword(formData.get("admin_password")?.toString());
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Admin password is invalid." };
   }
   await ensureAuditColumns();
@@ -142,6 +145,7 @@ export async function restoreFundBackup(formData: FormData) {
     existingTables = await existingBackupTables();
     assertRestoreTablesExist(existingTables, backup.tables);
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Backup validation failed." };
   }
   if (!backup) return { error: "Backup validation failed." };
@@ -179,6 +183,7 @@ export async function restoreFundBackup(formData: FormData) {
     await client.query("COMMIT");
     committed = true;
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     if (!committed) {
       try {
         await client.query("ROLLBACK");

@@ -2,8 +2,8 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { requireAdmin } from "@/lib/auth";
-import { ensureAuditColumns, writeAuditEvent } from "@/lib/fundDb";
+import { isRedirectError, requireAdmin } from "@/lib/auth";
+import { ensureAuditColumns, withTransaction, writeAuditEvent } from "@/lib/fundDb";
 
 const REVERSIBLE_ACTION_LIST = [
   "platform_transaction.add",
@@ -537,7 +537,10 @@ async function revertPlatformTransaction(auditEventId: string, entityId: string)
   }
   await assertNoLockedNavOnOrAfter(tx.date);
 
-  const reversal = await sql`
+  // Writing the reversal and marking the original reverted must be one unit:
+  // either alone leaves the ledger double-counting or silently unreversed.
+  await withTransaction(async (db) => {
+  const reversal = await db`
     INSERT INTO platform_transactions (
       platform_id, account_id, asset_id, date, type, amount, currency, base_currency, base_amount,
       fx_rate_to_base, quantity, price_per_unit, gross_amount, fee_amount, tax_amount, net_amount,
@@ -569,12 +572,13 @@ async function revertPlatformTransaction(auditEventId: string, entityId: string)
     )
     RETURNING id
   `;
-  await sql`UPDATE platform_transactions SET audit_status = 'reverted' WHERE id = ${tx.id}`;
+  await db`UPDATE platform_transactions SET audit_status = 'reverted' WHERE id = ${tx.id}`;
   await writeAuditEvent("platform_transaction.revert", "platform_transactions", reversal.rows[0].id, {
     originalAuditEventId: auditEventId,
     originalTransactionId: tx.id,
     reversalTransactionId: reversal.rows[0].id,
     platformId: tx.platform_id,
+  }, db);
   });
   revalidateFinancialViews(null, tx.platform_id);
 }
@@ -621,7 +625,8 @@ async function revertCashMovement(auditEventId: string, entityId: string, detail
   }
   await assertNoLockedNavOnOrAfter(movement.date);
 
-  const unitReversal = await sql`
+  await withTransaction(async (db) => {
+  const unitReversal = await db`
     INSERT INTO investor_unit_ledger (investor_id, nav_week_id, date, type, units, nav_per_unit, gross_amount, notes, audit_status, reversal_of_id)
     VALUES (
       ${movement.investor_id},
@@ -637,7 +642,7 @@ async function revertCashMovement(auditEventId: string, entityId: string, detail
     )
     RETURNING id
   `;
-  const cashReversal = await sql`
+  const cashReversal = await db`
     INSERT INTO cash_movements (investor_id, nav_week_id, unit_ledger_id, date, type, amount, status, notes, audit_status, reversal_of_id)
     VALUES (
       ${movement.investor_id},
@@ -653,11 +658,11 @@ async function revertCashMovement(auditEventId: string, entityId: string, detail
     )
     RETURNING id
   `;
-  await sql`UPDATE cash_movements SET audit_status = 'reverted' WHERE id = ${movement.id}`;
-  await sql`UPDATE investor_unit_ledger SET audit_status = 'reverted' WHERE id = ${movement.unit_ledger_id}`;
+  await db`UPDATE cash_movements SET audit_status = 'reverted' WHERE id = ${movement.id}`;
+  await db`UPDATE investor_unit_ledger SET audit_status = 'reverted' WHERE id = ${movement.unit_ledger_id}`;
 
   if (details.performanceFeeId) {
-    await sql`
+    await db`
       UPDATE performance_fees
       SET audit_status = 'reverted'
       WHERE id = ${details.performanceFeeId}
@@ -672,6 +677,7 @@ async function revertCashMovement(auditEventId: string, entityId: string, detail
     reversalCashMovementId: cashReversal.rows[0].id,
     reversalUnitLedgerId: unitReversal.rows[0].id,
     investorId: movement.investor_id,
+  }, db);
   });
   revalidateFinancialViews(movement.investor_id, null);
 }
@@ -708,7 +714,8 @@ async function revertFixedSavings(auditEventId: string, entityId: string) {
     throw new Error(REVERT_REASONS.fixedSavingsLatest);
   }
 
-  const reversal = await sql`
+  await withTransaction(async (db) => {
+  const reversal = await db`
     INSERT INTO fixed_savings_ledger (account_id, investor_id, date, type, amount, annual_rate_percent, notes, audit_status, reversal_of_id)
     VALUES (
       ${movement.account_id},
@@ -723,9 +730,9 @@ async function revertFixedSavings(auditEventId: string, entityId: string) {
     )
     RETURNING id
   `;
-  await sql`UPDATE fixed_savings_ledger SET audit_status = 'reverted' WHERE id = ${movement.id}`;
+  await db`UPDATE fixed_savings_ledger SET audit_status = 'reverted' WHERE id = ${movement.id}`;
   if (movement.account_id) {
-    await sql`
+    await db`
       UPDATE fixed_savings_accounts
       SET status = CASE WHEN (
         SELECT COALESCE(SUM(CASE WHEN type = 'Deposit' THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END), 0)
@@ -740,6 +747,7 @@ async function revertFixedSavings(auditEventId: string, entityId: string) {
     originalLedgerId: movement.id,
     reversalLedgerId: reversal.rows[0].id,
     investorId: movement.investor_id,
+  }, db);
   });
   revalidateFinancialViews(movement.investor_id, null);
 }
@@ -771,7 +779,8 @@ async function revertBonusPayment(auditEventId: string, entityId: string) {
   }
   await assertNoLockedNavOnOrAfter(bonus.date);
 
-  const unitReversal = await sql`
+  await withTransaction(async (db) => {
+  const unitReversal = await db`
     INSERT INTO investor_unit_ledger (investor_id, nav_week_id, date, type, units, nav_per_unit, gross_amount, notes, audit_status, reversal_of_id)
     VALUES (
       ${bonus.investor_id},
@@ -787,14 +796,15 @@ async function revertBonusPayment(auditEventId: string, entityId: string) {
     )
     RETURNING id
   `;
-  await sql`UPDATE bonus_payments SET audit_status = 'reverted' WHERE id = ${bonus.id}`;
-  await sql`UPDATE investor_unit_ledger SET audit_status = 'reverted' WHERE id = ${bonus.source_id}`;
+  await db`UPDATE bonus_payments SET audit_status = 'reverted' WHERE id = ${bonus.id}`;
+  await db`UPDATE investor_unit_ledger SET audit_status = 'reverted' WHERE id = ${bonus.source_id}`;
   await writeAuditEvent("bonus_payment.revert", "bonus_payments", unitReversal.rows[0].id, {
     originalAuditEventId: auditEventId,
     originalBonusPaymentId: bonus.id,
     originalUnitLedgerId: bonus.source_id,
     reversalUnitLedgerId: unitReversal.rows[0].id,
     investorId: bonus.investor_id,
+  }, db);
   });
   revalidateFinancialViews(bonus.investor_id, null);
 }
@@ -827,6 +837,7 @@ export async function revertAuditLog(id: string) {
 
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to revert audit log." };
   }
 }

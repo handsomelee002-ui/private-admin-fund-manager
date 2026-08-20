@@ -46,7 +46,8 @@ This repository is operational software for private administration. It is not in
 - Equity investors own fund units.
 - Locked NAV is the source of truth for equity unit pricing.
 - Deposits issue units at the latest locked NAV per unit **on or before the movement date**.
-- Withdrawals redeem units at the latest locked NAV per unit **on or before the movement date**.
+- Withdrawals redeem units at the latest locked NAV per unit **on or before the movement date**, against the units the investor held **on that date**.
+- The profit performance fee is charged only on a realized gain — a withdrawal at a loss is not charged — and is **withheld from the payout**: the investor receives the redemption value less the fee, and the fee stays in the fund as brokerage income.
 - A withdrawal larger than the investor's redeemable equity is rejected, not silently reduced. Use "withdraw all" to redeem a full balance.
 - Financial records may be backdated but never post-dated.
 - Investor ownership is calculated from current investor units divided by total active fund units.
@@ -59,8 +60,9 @@ This repository is operational software for private administration. It is not in
 - Platform funding can be attributed to equity, fixed savings, and brokerage sources.
 - Equity-funded platform P&L flows into equity NAV.
 - Fixed-savings-funded and brokerage-funded platform P&L is reported as non-equity investment P&L and reconciled through the brokerage workflow.
-- Profit claims and profit performance fees are tracked separately from investor unit ownership.
-- Profit claims are capped at the investor's attributable equity profit less profit already locked in existing claims.
+- Profit claims are capped at the investor's attributable equity profit less profit still outstanding in existing claims.
+- Settling a claim **redeems units** from the claimant at the NAV in force on the settlement date, so the investor taking profit out is the one whose position shrinks rather than every other investor being diluted.
+- Equity bonuses are funded from the brokerage pot, not by dilution: the pot's claim falls by the bonus, which raises equity's share of cash by exactly what the new units are worth.
 - Locked NAV records are immutable by design.
 
 ### What a platform records
@@ -110,6 +112,26 @@ period.
 Gross assets are the sum of every platform's value **plus the fund's own cash** —
 money withdrawn from a platform, or investor capital not deployed yet. Without it
 that money belongs to no platform and falls out of the fund's value entirely.
+
+The bank balance is **not** all equity's. Savers' principal and interest, and the
+brokerage pot's own money, pass through the same account. Only equity's share
+prices the units:
+
+```
+equityCash = bankBalance + nonEquityValueInPlatforms
+           - fixedSavingsLiability - brokerageClaim
+```
+
+Equity is the residual owner: savers hold a fixed contractual claim, the
+brokerage pot holds what it has earned and not yet spent, and equity owns what is
+left. `nonEquityValueInPlatforms` appears because the other two pools hold part
+of their claim as platform value rather than cash. The brokerage claim is built
+from *cumulative* interest and bonuses, not outstanding ones — an obligation
+already paid in cash has left the bank, so treating it as no longer owed would
+return the money to equity twice.
+
+The NAV row stores both: `fund_cash` is the whole bank balance, `equity_fund_cash`
+is the slice that priced the units.
 
 Fund cash is recorded the same way as a platform value: a balance and a date, taken
 from a bank statement, carried forward until replaced. The NAV screen also shows an

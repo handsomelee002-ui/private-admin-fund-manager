@@ -1,24 +1,35 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin } from "@/lib/auth";
+import { isRedirectError, requireAdmin } from "@/lib/auth";
 import {
   assertNotFutureDate,
   buildNavPlatformPreview,
   createNavWeek,
   getFundCashAsOf,
+  getFundCashAttribution,
   deleteDraftNavWeek,
   lockNavWeek,
   recordCashMovement,
   recordFixedSavings,
   recordFundCash,
   recordPlatformValuation,
+  splitNavPlatformValue,
+  summarizeNavPlatformPreview,
 } from "@/lib/fundDb";
 
 function parsePositiveMoney(value: FormDataEntryValue | null, label: string) {
   const amount = Number(value);
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error(`${label} must be a positive number.`);
+  }
+  return amount;
+}
+
+function parseNonNegativeMoney(value: FormDataEntryValue | null, label: string) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error(`${label} must be zero or a positive number.`);
   }
   return amount;
 }
@@ -58,7 +69,9 @@ export async function createNavWeekAction(formData: FormData) {
       .filter(([key, value]) => key.startsWith("platform_value_") && value.toString().trim() !== "")
       .map(([key, value]) => ({
         platformId: key.replace("platform_value_", ""),
-        totalValue: parseMoney(value, "Platform value"),
+        // Same rule as recordPlatformValuation: a platform cannot be worth less
+        // than nothing. The override path used to accept negatives it rejects.
+        totalValue: parseNonNegativeMoney(value, "Platform value"),
       }));
 
     const fundCashRaw = formData.get("fund_cash");
@@ -77,21 +90,59 @@ export async function createNavWeekAction(formData: FormData) {
     revalidateFundViews();
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to create NAV week." };
   }
 }
 
-/** Value every platform for a date, for the NAV review screen. */
-export async function getNavPreviewAction(asOfDate: string) {
+/**
+ * Value every platform for a date, for the NAV review screen.
+ *
+ * Takes the same overrides the save will take, so the gross assets shown are
+ * arithmetically the number that gets locked. Letting the screen total the raw
+ * platform values and the whole bank balance would show something the server
+ * never computes.
+ */
+export async function getNavPreviewAction(
+  asOfDate: string,
+  overrides: { platformId: string; totalValue: number }[] = [],
+  fundCashOverride?: number,
+) {
   try {
     await requireAdmin();
     assertNotFutureDate(asOfDate, "Valuation date");
+    const overrideMap = new Map(
+      overrides
+        .filter((override) => Number.isFinite(override.totalValue) && override.totalValue >= 0)
+        .map((override) => [override.platformId, { totalValue: override.totalValue }]),
+    );
     const [preview, fundCash] = await Promise.all([
-      buildNavPlatformPreview(asOfDate),
+      buildNavPlatformPreview(asOfDate, overrideMap),
       getFundCashAsOf(asOfDate),
     ]);
-    return { success: true as const, preview, fundCash };
+    const bankBalance =
+      fundCashOverride !== undefined && Number.isFinite(fundCashOverride)
+        ? fundCashOverride
+        : fundCash.balance;
+    // Show the operator which slice of the bank balance will actually price the
+    // units, rather than letting the screen imply the whole balance does.
+    const valueSplit = splitNavPlatformValue(summarizeNavPlatformPreview(preview));
+    const attribution = await getFundCashAttribution({
+      asOfDate,
+      bankBalance,
+      nonEquityValueInPlatforms: valueSplit.nonEquityValueInPlatforms,
+      nonEquityPlatformProfitLoss: valueSplit.nonEquityPlatformProfitLoss,
+    });
+    return {
+      success: true as const,
+      preview,
+      fundCash,
+      attribution,
+      equityPlatformValue: valueSplit.equityPlatformValue,
+      grossAssets: Math.round((valueSplit.equityPlatformValue + attribution.equity) * 100) / 100,
+    };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to build NAV preview." };
   }
 }
@@ -114,6 +165,7 @@ export async function recordFundCashAction(formData: FormData) {
     revalidatePath("/trading");
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to record fund cash." };
   }
 }
@@ -143,6 +195,7 @@ export async function recordPlatformValuationAction(formData: FormData) {
     revalidatePath(`/trading/${platformId}`);
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to record platform valuation." };
   }
 }
@@ -156,6 +209,7 @@ export async function lockNavWeekAction(formData: FormData) {
     revalidateFundViews();
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to lock NAV week." };
   }
 }
@@ -169,6 +223,7 @@ export async function deleteDraftNavWeekAction(formData: FormData) {
     revalidateFundViews();
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to delete NAV draft." };
   }
 }
@@ -196,6 +251,7 @@ export async function recordCashMovementAction(formData: FormData) {
     revalidateFundViews(investorId);
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to record cash movement." };
   }
 }
@@ -220,6 +276,7 @@ export async function recordFixedSavingsAction(formData: FormData) {
     revalidateFundViews(investorId);
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to record fixed savings." };
   }
 }

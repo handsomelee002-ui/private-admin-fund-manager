@@ -139,6 +139,18 @@ export async function isAdminSessionValid() {
   }
 }
 
+/**
+ * `redirect()` works by throwing, and most server actions wrap their body in a
+ * try/catch that returns `{ error }`. That swallowed the redirect and showed a
+ * raw "NEXT_REDIRECT" string instead of the login page. Rethrowing it here is
+ * not enough - the catch is downstream - so callers use `isRedirectError` to
+ * let it through.
+ */
+export function isRedirectError(error: unknown) {
+  return typeof (error as { digest?: unknown })?.digest === "string"
+    && ((error as { digest: string }).digest.startsWith("NEXT_REDIRECT"));
+}
+
 export async function requireAdmin() {
   if (!(await isAdminSessionValid())) {
     redirect("/admin/login");

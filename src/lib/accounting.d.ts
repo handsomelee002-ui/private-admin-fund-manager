@@ -50,3 +50,22 @@ export function accrueDailyCompoundInterest(input: {
   startDate: string;
   endDate: string;
 }): number;
+
+export type FundCashAttributionResult = {
+  bankBalance: number;
+  nonEquityValueInPlatforms: number;
+  fixedSavingsLiability: number;
+  brokerageClaim: number;
+  equity: number;
+};
+
+export function calculateEquityFundCash(input: {
+  bankBalance: number;
+  nonEquityValueInPlatforms: number;
+  fixedSavingsLiability: number;
+  nonEquityPlatformProfitLoss: number;
+  performanceFees: number;
+  cumulativeFixedSavingsInterest: number;
+  cumulativeFixedSavingsBonuses: number;
+  cumulativeEquityBonuses: number;
+}): FundCashAttributionResult;

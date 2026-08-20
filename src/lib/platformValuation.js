@@ -65,8 +65,12 @@ function resolvePlatformValue({ netInvested, valuations = [], asOfDate }) {
  * movements. Stale alone is tolerated; stale AND material is not, because that
  * combination transfers value between investors at the wrong unit price.
  */
-function blockingValuations(resolved) {
-  const grossValue = resolved.reduce((sum, item) => sum + (Number(item.totalValue) || 0), 0);
+function blockingValuations(resolved, fundCash = 0) {
+  // Cash the fund holds is part of what a platform's weight is measured
+  // against. Leaving it out overstated every weight and blocked settlement
+  // more often than the documented 10% rule.
+  const platformValue = resolved.reduce((sum, item) => sum + (Number(item.totalValue) || 0), 0);
+  const grossValue = platformValue + Math.max(0, Number(fundCash) || 0);
   if (grossValue <= 0) return [];
 
   return resolved

@@ -28,4 +28,5 @@ export function resolvePlatformValue(input: {
 }): ResolvedValuation;
 export function blockingValuations<T extends ResolvedValuation>(
   resolved: T[],
+  fundCash?: number,
 ): (T & { weightPercent: number })[];

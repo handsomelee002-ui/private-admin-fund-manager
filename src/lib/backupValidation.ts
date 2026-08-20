@@ -39,7 +39,7 @@ const BACKUP_TABLE_COLUMN_ALLOWLIST: Record<BackupTableName, readonly string[]> 
   platforms: ["id", "name", "base_currency", "default_currency", "created_at"],
   platform_accounts: ["id", "platform_id", "name", "account_type", "currency", "created_at"],
   platform_assets: ["id", "platform_id", "symbol", "name", "asset_type", "currency", "latest_price", "latest_fx_rate_to_myr", "updated_at", "created_at"],
-  nav_weeks: ["id", "week_ending", "settlement_date", "gross_assets", "fund_cash", "liabilities", "adjustments", "net_asset_value", "total_units", "nav_per_unit", "status", "locked_at", "notes", "created_at"],
+  nav_weeks: ["id", "week_ending", "settlement_date", "gross_assets", "fund_cash", "equity_fund_cash", "liabilities", "adjustments", "net_asset_value", "total_units", "nav_per_unit", "status", "locked_at", "notes", "created_at"],
   nav_week_platform_snapshots: [
     "id", "nav_week_id", "platform_id", "net_invested", "unrealized_profit", "total_value", "equity_net_invested",
     "fixed_savings_net_invested", "brokerage_net_invested", "equity_unrealized_profit", "brokerage_profit_loss", "created_at",

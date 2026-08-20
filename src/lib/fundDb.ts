@@ -1,7 +1,8 @@
-import { sql } from "@vercel/postgres";
+import { createClient, sql, type QueryResult, type QueryResultRow } from "@vercel/postgres";
 import { createHash, randomUUID } from "node:crypto";
 import {
   calculateBrokerageFundingAllocation,
+  calculateEquityFundCash,
   calculateNavPerUnit,
   calculateOwnershipPercent,
   issueUnitsForDeposit,
@@ -368,6 +369,10 @@ async function ensureAuditColumnsUncached() {
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS brokerage_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS equity_unrealized_profit NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS brokerage_profit_loss NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  // fund_cash is the whole bank balance; equity_fund_cash is the slice of it
+  // that priced the units, so gross_assets can be re-derived from stored
+  // columns instead of being an opaque number.
+  await sql`ALTER TABLE nav_weeks ADD COLUMN IF NOT EXISTS equity_fund_cash NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`CREATE INDEX IF NOT EXISTS audit_events_created_at_idx ON audit_events (created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS audit_events_action_created_at_idx ON audit_events (action, created_at DESC)`;
   await sql`CREATE INDEX IF NOT EXISTS audit_events_reversal_original_idx ON audit_events ((details->>'originalAuditEventId')) WHERE action LIKE '%.revert'`;
@@ -467,7 +472,12 @@ function calculateEquityCapitalPosition(rows: EquityUnitLedgerRow[]) {
       if (!row.is_bonus) {
         investedCapital = roundMoney(investedCapital + grossAmount);
       }
-    } else if (row.type === "UnitRedemption" && units > 0) {
+    } else if (row.type === "UnitRedemption") {
+      // Silently skipping a redemption with no units behind it would report a
+      // corrupt ledger as a valid zero position.
+      if (units <= 0) {
+        throw new Error(`Unit redemption on ${row.date} has no units to redeem against.`);
+      }
       const unitsRedeemed = Math.min(movementUnits, units);
       const redeemedBasis = row.is_bonus ? 0 : roundMoney((investedCapital / units) * unitsRedeemed);
       units = roundUnits(units - unitsRedeemed);
@@ -551,28 +561,66 @@ function accruePooledNominalInterest({
   const rates = normalizeFixedSavingsRates(rateInput);
   let currentDate = startDate;
   let currentBalance = balance;
-  let totalInterest = 0;
 
+  // Walk rate segments rather than individual days. Within a segment the rate
+  // is constant, so compounding closes into a single power - which matters
+  // because this runs per investor on every dashboard, statement and portal
+  // render, and the day loop grew without bound as the book aged. A capped
+  // promotion is genuinely path-dependent (the promoted slice changes as the
+  // balance grows past the cap), so those segments still step day by day.
   while (currentDate < endDate) {
     const baseRate = baseRateForDate(currentDate, rates.baseRates, fallbackRate);
     const promotion = promotionForDate(currentDate, rates.promotions);
-    const baseDailyRate = baseRate / 100 / 365;
-    let dailyInterest = currentBalance * baseDailyRate;
+    const segmentEnd = nextFixedSavingsRateBoundary(currentDate, endDate, rates, promotion);
+    const days = daysBetween(currentDate, segmentEnd);
 
-    if (promotion) {
-      const promotedBalance = promotion.balanceCap == null
-        ? currentBalance
-        : Math.min(currentBalance, promotion.balanceCap);
-      const standardBalance = Math.max(0, currentBalance - promotedBalance);
-      dailyInterest = (promotedBalance * (promotion.annualRatePercent / 100 / 365)) + (standardBalance * baseDailyRate);
+    if (days > 0) {
+      const baseDailyRate = baseRate / 100 / 365;
+      if (!promotion) {
+        currentBalance *= (1 + baseDailyRate) ** days;
+      } else if (promotion.balanceCap == null) {
+        currentBalance *= (1 + promotion.annualRatePercent / 100 / 365) ** days;
+      } else {
+        const promotedDailyRate = promotion.annualRatePercent / 100 / 365;
+        for (let day = 0; day < days; day += 1) {
+          const promotedBalance = Math.min(currentBalance, promotion.balanceCap);
+          const standardBalance = Math.max(0, currentBalance - promotedBalance);
+          currentBalance += (promotedBalance * promotedDailyRate) + (standardBalance * baseDailyRate);
+        }
+      }
     }
-
-    currentBalance += dailyInterest;
-    totalInterest += dailyInterest;
-    currentDate = addDaysIso(currentDate, 1);
+    currentDate = segmentEnd;
   }
 
-  return { balance: roundMoney(currentBalance), interest: roundMoney(totalInterest) };
+  return {
+    balance: roundMoney(currentBalance),
+    interest: roundMoney(currentBalance - balance),
+  };
+}
+
+/**
+ * The next date at or before `endDate` on which the applicable rate changes:
+ * a base-rate effective date, a promotion starting, or the active promotion
+ * ending.
+ */
+function nextFixedSavingsRateBoundary(
+  currentDate: string,
+  endDate: string,
+  rates: ReturnType<typeof normalizeFixedSavingsRates>,
+  promotion: ReturnType<typeof promotionForDate>,
+) {
+  let boundary = endDate;
+  const consider = (candidate: string) => {
+    if (candidate > currentDate && candidate < boundary) boundary = candidate;
+  };
+
+  for (const rate of rates.baseRates) consider(rate.effectiveDate);
+  for (const promo of rates.promotions) {
+    consider(promo.startDate);
+    consider(addDaysIso(promo.endDate, 1));
+  }
+  if (promotion) consider(addDaysIso(promotion.endDate, 1));
+  return boundary;
 }
 
 export function calculateFixedSavingsLiability(rows: FixedSavingsLedgerRow[], endDate = todayIso(), rateInput?: FixedSavingsRateInput) {
@@ -812,6 +860,7 @@ export async function ensureFreshFundSchema() {
       settlement_date DATE NOT NULL DEFAULT CURRENT_DATE,
       gross_assets NUMERIC(15, 4) NOT NULL,
       fund_cash NUMERIC(15, 4) NOT NULL DEFAULT 0,
+      equity_fund_cash NUMERIC(15, 4) NOT NULL DEFAULT 0,
       liabilities NUMERIC(15, 4) NOT NULL DEFAULT 0,
       adjustments NUMERIC(15, 4) NOT NULL DEFAULT 0,
       net_asset_value NUMERIC(15, 4) NOT NULL,
@@ -825,6 +874,7 @@ export async function ensureFreshFundSchema() {
   `;
   await sql`ALTER TABLE nav_weeks ALTER COLUMN settlement_date SET DEFAULT CURRENT_DATE`;
   await sql`ALTER TABLE nav_weeks ADD COLUMN IF NOT EXISTS fund_cash NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE nav_weeks ADD COLUMN IF NOT EXISTS equity_fund_cash NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`
     CREATE TABLE IF NOT EXISTS investor_unit_ledger (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -1161,8 +1211,59 @@ export async function ensureFreshFundSchema() {
   await ensureAuditColumns();
 }
 
-export async function writeAuditEvent(action: string, entityType: string, entityId: string | null, details = {}) {
-  await sql`
+/**
+ * A tagged-template executor. Satisfied both by the pooled `sql` and by a
+ * transaction-bound client, so a function can be written once and run either
+ * standalone or as part of a larger atomic operation.
+ */
+type SqlPrimitive = string | number | boolean | undefined | null;
+export type SqlExecutor = <O extends QueryResultRow>(
+  strings: TemplateStringsArray,
+  ...values: SqlPrimitive[]
+) => Promise<QueryResult<O>>;
+
+/**
+ * Run several writes as one unit.
+ *
+ * Financial operations touch three or four tables each - a fee, a unit ledger
+ * row, a cash movement, an audit event - and previously issued them as
+ * independent statements. A failure partway through left units issued with no
+ * matching cash movement, or a platform transaction with no funding
+ * allocations, both of which silently corrupt every balance derived from them.
+ */
+export async function withTransaction<T>(work: (db: SqlExecutor) => Promise<T>): Promise<T> {
+  const client = createClient();
+  await client.connect();
+  const db = client.sql.bind(client) as SqlExecutor;
+  try {
+    await client.query("BEGIN");
+    const result = await work(db);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // The original failure is more useful than a rollback failure.
+    }
+    throw error;
+  } finally {
+    try {
+      await client.end();
+    } catch {
+      // Nothing recoverable once the outcome is known.
+    }
+  }
+}
+
+export async function writeAuditEvent(
+  action: string,
+  entityType: string,
+  entityId: string | null,
+  details = {},
+  db: SqlExecutor = sql,
+) {
+  await db`
     INSERT INTO audit_events (actor_id, action, entity_type, entity_id, details)
     VALUES ('system', ${action}, ${entityType}, ${entityId}, ${JSON.stringify(details)}::jsonb)
   `;
@@ -1192,7 +1293,7 @@ export async function getLatestLockedNavWeek() {
     SELECT id,
       TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
       TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-      gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
+      gross_assets, fund_cash, equity_fund_cash, liabilities, adjustments, net_asset_value,
       total_units, nav_per_unit, status, locked_at, notes, created_at
     FROM nav_weeks
     WHERE status = 'locked'
@@ -1208,7 +1309,7 @@ export async function getNavWeeks() {
     SELECT id,
       TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
       TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-      gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
+      gross_assets, fund_cash, equity_fund_cash, liabilities, adjustments, net_asset_value,
       total_units, nav_per_unit, status, locked_at, notes, created_at
     FROM nav_weeks
     ORDER BY nav_weeks.week_ending DESC
@@ -1240,9 +1341,10 @@ export async function buildNavPlatformPreview(
   asOfDate: string,
   overrides: Map<string, { totalValue?: number; unrealizedProfit?: number }> = new Map(),
 ): Promise<NavPlatformPreview[]> {
-  const [positions, valuations] = await Promise.all([
+  const [positions, valuations, fundCash] = await Promise.all([
     getPlatformFundingPositions(),
     getPlatformValuationsAsOf(asOfDate),
+    getFundCashAsOf(asOfDate),
   ]);
 
   const resolved = positions.map((platform) => {
@@ -1285,7 +1387,11 @@ export async function buildNavPlatformPreview(
     };
   });
 
-  const grossValue = resolved.reduce((sum, item) => sum + item.totalValue, 0);
+  // Weight is a share of the whole fund, so the fund's own cash belongs in the
+  // denominator. Measuring against platform value alone overstated every weight
+  // and tripped the stale-and-material settlement block too readily.
+  const grossValue = resolved.reduce((sum, item) => sum + item.totalValue, 0)
+    + Math.max(0, fundCash.balance);
   return resolved.map((item) => ({
     ...item,
     weightPercent: grossValue > 0 ? roundMoney((item.totalValue / grossValue) * 100) : 0,
@@ -1354,7 +1460,7 @@ async function getExpectedFundCash(asOfDate: string) {
   const anchorDate = anchorRow.rows[0]?.as_of_date ?? "1900-01-01";
   const anchorBalance = anchorRow.rows[0] ? roundMoney(parseFloat(anchorRow.rows[0].balance || "0")) : 0;
 
-  const [platformFlows, capitalFlows] = await Promise.all([
+  const [platformFlows, capitalFlows, fixedSavingsFlows] = await Promise.all([
     sql`
       SELECT COALESCE(SUM(
         CASE
@@ -1381,13 +1487,106 @@ async function getExpectedFundCash(asOfDate: string) {
         AND status = 'settled'
         AND date > ${anchorDate} AND date <= ${asOfDate}
     `,
+    // Savers' money passes through the same bank account, so leaving it out
+    // guaranteed a permanent unexplained gap once fixed savings existed.
+    // 'Bonus' is a book entry against the liability and moves no cash.
+    sql`
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN type = 'Deposit' THEN amount
+          WHEN type IN ('Withdrawal', 'InterestWithdrawal') THEN -amount
+          ELSE 0
+        END
+      ), 0) as delta
+      FROM fixed_savings_ledger
+      WHERE COALESCE(audit_status, 'active') = 'active'
+        AND date > ${anchorDate} AND date <= ${asOfDate}
+    `,
   ]);
 
   return roundMoney(
     anchorBalance
       + parseFloat(platformFlows.rows[0]?.delta || "0")
-      + parseFloat(capitalFlows.rows[0]?.delta || "0"),
+      + parseFloat(capitalFlows.rows[0]?.delta || "0")
+      + parseFloat(fixedSavingsFlows.rows[0]?.delta || "0"),
   );
+}
+
+/**
+ * How the fund's bank balance divides between the three pools that have a claim
+ * on it.
+ *
+ * Equity is the residual owner: savers hold a fixed contractual claim, the
+ * brokerage pot holds what it has earned and not yet spent, and equity owns
+ * whatever is left. Putting the whole bank balance into equity gross assets -
+ * which is what this replaces - priced savers' money into the unit price.
+ *
+ *   equityCash = bankCash + nonEquityValueInPlatforms
+ *                - fixedSavingsLiability - brokerageClaim
+ *
+ * `nonEquityValueInPlatforms` appears because the other two pools' claims are
+ * partly held as platform value rather than cash; without it their deployed
+ * capital would be deducted from cash it is no longer sitting in.
+ *
+ * The brokerage claim uses *cumulative* interest and bonuses, not outstanding
+ * ones. An obligation that has been paid in cash has already left the bank, so
+ * treating it as no longer owed would hand the money back to equity twice.
+ */
+export type FundCashAttribution = {
+  bankBalance: number;
+  nonEquityValueInPlatforms: number;
+  fixedSavingsLiability: number;
+  brokerageClaim: number;
+  equity: number;
+};
+
+export async function getFundCashAttribution(input: {
+  asOfDate: string;
+  bankBalance: number;
+  nonEquityValueInPlatforms: number;
+  nonEquityPlatformProfitLoss: number;
+}): Promise<FundCashAttribution> {
+  const [savingsRows, rateInput, potRows] = await Promise.all([
+    sql`
+      SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
+      FROM fixed_savings_ledger
+      WHERE audit_status = 'active' AND date <= ${input.asOfDate}
+      ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
+    `,
+    getFixedSavingsRateInputs(),
+    sql`
+      SELECT
+        COALESCE((
+          SELECT SUM(fee_amount) FROM performance_fees
+          WHERE audit_status <> 'reverted' AND date <= ${input.asOfDate}
+        ), 0) as performance_fees,
+        COALESCE((
+          SELECT SUM(amount) FROM bonus_payments
+          WHERE audit_status = 'active' AND ledger_type = 'equity' AND date <= ${input.asOfDate}
+        ), 0) as equity_bonuses,
+        COALESCE((
+          SELECT SUM(amount) FROM bonus_payments
+          WHERE audit_status = 'active' AND ledger_type = 'fixed_savings' AND date <= ${input.asOfDate}
+        ), 0) as fixed_savings_bonuses
+    `,
+  ]);
+
+  const fixedSavings = calculateFixedSavingsLiability(
+    savingsRows.rows as FixedSavingsLedgerRow[],
+    input.asOfDate,
+    rateInput,
+  );
+  const pot = potRows.rows[0] ?? {};
+  return calculateEquityFundCash({
+    bankBalance: input.bankBalance,
+    nonEquityValueInPlatforms: input.nonEquityValueInPlatforms,
+    fixedSavingsLiability: fixedSavings.totalLiability,
+    nonEquityPlatformProfitLoss: input.nonEquityPlatformProfitLoss,
+    performanceFees: parseFloat(pot.performance_fees || "0"),
+    cumulativeFixedSavingsInterest: fixedSavings.totalAccruedInterest,
+    cumulativeFixedSavingsBonuses: parseFloat(pot.fixed_savings_bonuses || "0"),
+    cumulativeEquityBonuses: parseFloat(pot.equity_bonuses || "0"),
+  });
 }
 
 /**
@@ -1428,7 +1627,10 @@ export async function recordFundCash(input: { asOfDate: string; balance: number;
     VALUES (${input.asOfDate}, ${balance}, ${input.notes || ""})
     ON CONFLICT (as_of_date) DO UPDATE SET
       balance = EXCLUDED.balance,
-      notes = EXCLUDED.notes
+      notes = EXCLUDED.notes,
+      -- The unique key ignores audit_status, so without this a re-record after
+      -- a revert would quietly update a row no query can see.
+      audit_status = 'active'
     RETURNING id
   `;
 
@@ -1440,10 +1642,33 @@ export async function recordFundCash(input: { asOfDate: string; balance: number;
   return { success: true, id: res.rows[0].id as string };
 }
 
+/**
+ * Refuse to write a financial record beneath an already-locked NAV. That NAV
+ * priced the period from the balances of the time; changing them underneath it
+ * silently contradicts an immutable record.
+ */
+export async function assertNoLockedNavOnOrAfter(date: string, what = "this record") {
+  const blockingLock = await sql`
+    SELECT TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending
+    FROM nav_weeks
+    WHERE status = 'locked' AND week_ending >= ${date}
+    ORDER BY week_ending ASC
+    LIMIT 1
+  `;
+  if (blockingLock.rows.length > 0) {
+    throw new Error(
+      `NAV week ${blockingLock.rows[0].week_ending} is locked and already priced this period. Date ${what} after it.`,
+    );
+  }
+}
+
 /** Stale AND material platforms that must be refreshed before settling capital. */
 export async function getBlockingValuations(asOfDate: string) {
-  const preview = await buildNavPlatformPreview(asOfDate);
-  return blockingValuations(preview);
+  const [preview, fundCash] = await Promise.all([
+    buildNavPlatformPreview(asOfDate),
+    getFundCashAsOf(asOfDate),
+  ]);
+  return blockingValuations(preview, fundCash.balance);
 }
 
 /**
@@ -1496,7 +1721,9 @@ export async function recordPlatformValuation(input: {
     ON CONFLICT (platform_id, as_of_date) DO UPDATE SET
       total_value = EXCLUDED.total_value,
       source = EXCLUDED.source,
-      notes = EXCLUDED.notes
+      notes = EXCLUDED.notes,
+      -- See recordFundCash: the unique key ignores audit_status.
+      audit_status = 'active'
     RETURNING id
   `;
 
@@ -1623,25 +1850,13 @@ async function getPlatformFundingPositions() {
   }));
 }
 
-export async function createNavWeek(input: NavWeekInput) {
-  const existingWeek = await sql`SELECT status FROM nav_weeks WHERE week_ending = ${input.weekEnding}`;
-  if (existingWeek.rows[0]?.status === "locked") {
-    throw new Error("Locked NAV weeks cannot be modified.");
-  }
-  const totalUnits = await getTotalUnits();
-
-  // Overrides are optional now: an omitted platform is valued from its recorded
-  // valuations or computed holdings rather than requiring fresh input.
-  const overrides = new Map<string, { totalValue?: number; unrealizedProfit?: number }>();
-  for (const snapshot of input.platformSnapshots ?? []) {
-    overrides.set(snapshot.platformId, {
-      totalValue: snapshot.totalValue,
-      unrealizedProfit: snapshot.unrealizedProfit,
-    });
-  }
-
-  const preview = await buildNavPlatformPreview(input.weekEnding, overrides);
-  const platformSnapshots = preview.map((platform) => {
+/**
+ * Split each previewed platform's value across the pools that funded it. Shared
+ * by the NAV review screen and by createNavWeek so what the operator reviews is
+ * arithmetically the same thing that gets locked.
+ */
+export function summarizeNavPlatformPreview(preview: NavPlatformPreview[]) {
+  return preview.map((platform) => {
     const allocation = calculateBrokerageFundingAllocation({
       equityNetInvested: platform.equityNetInvested,
       fixedSavingsNetInvested: platform.fixedSavingsNetInvested,
@@ -1663,6 +1878,42 @@ export async function createNavWeek(input: NavWeekInput) {
       allocation,
     };
   });
+}
+
+/** Equity's share of platform value, and the share belonging to everyone else. */
+export function splitNavPlatformValue(snapshots: ReturnType<typeof summarizeNavPlatformPreview>) {
+  return {
+    equityPlatformValue: roundMoney(
+      snapshots.reduce((sum, snapshot) => sum + snapshot.allocation.equityNavValue, 0),
+    ),
+    nonEquityValueInPlatforms: roundMoney(
+      snapshots.reduce((sum, snapshot) => sum + (snapshot.totalValue - snapshot.allocation.equityNavValue), 0),
+    ),
+    nonEquityPlatformProfitLoss: roundMoney(
+      snapshots.reduce((sum, snapshot) => sum + snapshot.allocation.brokerageProfitLoss, 0),
+    ),
+  };
+}
+
+export async function createNavWeek(input: NavWeekInput) {
+  const existingWeek = await sql`SELECT status FROM nav_weeks WHERE week_ending = ${input.weekEnding}`;
+  if (existingWeek.rows[0]?.status === "locked") {
+    throw new Error("Locked NAV weeks cannot be modified.");
+  }
+  const totalUnits = await getTotalUnits();
+
+  // Overrides are optional now: an omitted platform is valued from its recorded
+  // valuations or computed holdings rather than requiring fresh input.
+  const overrides = new Map<string, { totalValue?: number; unrealizedProfit?: number }>();
+  for (const snapshot of input.platformSnapshots ?? []) {
+    overrides.set(snapshot.platformId, {
+      totalValue: snapshot.totalValue,
+      unrealizedProfit: snapshot.unrealizedProfit,
+    });
+  }
+
+  const preview = await buildNavPlatformPreview(input.weekEnding, overrides);
+  const platformSnapshots = summarizeNavPlatformPreview(preview);
   // Cash the fund holds outside every platform. Recording it here is what
   // stops money withdrawn from a broker from disappearing out of gross assets
   // between the withdrawal and its redeployment.
@@ -1675,27 +1926,41 @@ export async function createNavWeek(input: NavWeekInput) {
       notes: "Recorded while creating NAV",
     });
   }
-  const grossAssets = roundMoney(
-    platformSnapshots.reduce((sum, snapshot) => sum + snapshot.allocation.equityNavValue, 0) + fundCash,
-  );
+  // Only equity's share of the bank balance may price equity units. The rest
+  // belongs to savers and to the brokerage pot, and counting it here inflated
+  // NAV per unit by every ringgit of their money the fund happened to hold.
+  const valueSplit = splitNavPlatformValue(platformSnapshots);
+  const attribution = await getFundCashAttribution({
+    asOfDate: input.weekEnding,
+    bankBalance: fundCash,
+    nonEquityValueInPlatforms: valueSplit.nonEquityValueInPlatforms,
+    nonEquityPlatformProfitLoss: valueSplit.nonEquityPlatformProfitLoss,
+  });
+  const grossAssets = roundMoney(valueSplit.equityPlatformValue + attribution.equity);
   const liabilities = 0;
   const netAssetValue = roundMoney(grossAssets - liabilities + input.adjustments);
   const navPerUnit = calculateNavPerUnit({ netAssetValue, totalUnits });
   const settlementDate = input.settlementDate || input.weekEnding;
 
-  const res = await sql`
+  // The NAV row and its platform snapshots are one record. The snapshots are
+  // deleted and reinserted on re-save, so a failure between the two would leave
+  // a NAV with no platform detail behind it - and that detail is what the
+  // settlement staleness guard reads.
+  await withTransaction(async (db) => {
+  const res = await db`
     INSERT INTO nav_weeks (
-      week_ending, settlement_date, gross_assets, fund_cash, liabilities, adjustments,
+      week_ending, settlement_date, gross_assets, fund_cash, equity_fund_cash, liabilities, adjustments,
       net_asset_value, total_units, nav_per_unit, status, notes
     )
     VALUES (
-      ${input.weekEnding}, ${settlementDate}, ${grossAssets}, ${fundCash}, ${liabilities}, ${input.adjustments},
+      ${input.weekEnding}, ${settlementDate}, ${grossAssets}, ${fundCash}, ${attribution.equity}, ${liabilities}, ${input.adjustments},
       ${netAssetValue}, ${totalUnits}, ${navPerUnit}, 'draft', ${input.notes || ""}
     )
     ON CONFLICT (week_ending) DO UPDATE SET
       settlement_date = EXCLUDED.settlement_date,
       gross_assets = EXCLUDED.gross_assets,
       fund_cash = EXCLUDED.fund_cash,
+      equity_fund_cash = EXCLUDED.equity_fund_cash,
       liabilities = EXCLUDED.liabilities,
       adjustments = EXCLUDED.adjustments,
       net_asset_value = EXCLUDED.net_asset_value,
@@ -1704,10 +1969,10 @@ export async function createNavWeek(input: NavWeekInput) {
       notes = EXCLUDED.notes
     RETURNING id
   `;
-  const navWeekId = res.rows[0].id;
-  await sql`DELETE FROM nav_week_platform_snapshots WHERE nav_week_id = ${navWeekId}`;
+  const navWeekId = res.rows[0].id as string;
+  await db`DELETE FROM nav_week_platform_snapshots WHERE nav_week_id = ${navWeekId}`;
   for (const snapshot of platformSnapshots) {
-    await sql`
+    await db`
       INSERT INTO nav_week_platform_snapshots (
         nav_week_id, platform_id, net_invested, unrealized_profit, total_value,
         equity_net_invested, fixed_savings_net_invested, brokerage_net_invested,
@@ -1727,6 +1992,9 @@ export async function createNavWeek(input: NavWeekInput) {
     grossAssets,
     fundCash,
     fundCashExpected: fundCashPreview.expectedBalance,
+    // Who owned the bank balance on this date, so the unit price can be
+    // re-derived later without re-running the whole calculation.
+    cashAttribution: attribution,
     platformCount: platformSnapshots.length,
     // Record where each value came from, so a later reviewer can tell a fresh
     // mark from a carried-forward one without re-deriving it.
@@ -1736,8 +2004,9 @@ export async function createNavWeek(input: NavWeekInput) {
       valuationDate: snapshot.valuationDate,
     })),
     staleCount: preview.filter((platform) => platform.isStale).length,
+  }, db);
   });
-  return { success: true, preview, fundCash: fundCashPreview };
+  return { success: true, preview, fundCash: fundCashPreview, attribution };
 }
 
 export async function lockNavWeek(id: string) {
@@ -1794,7 +2063,7 @@ export async function getLockedNavWeekForDate(date: string) {
     SELECT id,
       TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
       TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-      gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
+      gross_assets, fund_cash, equity_fund_cash, liabilities, adjustments, net_asset_value,
       total_units, nav_per_unit, status, locked_at, notes, created_at
     FROM nav_weeks
     WHERE status = 'locked' AND week_ending <= ${date}
@@ -1832,6 +2101,110 @@ async function assertNavIsSettlementGrade(navWeekId: string, weekEnding: string)
   );
 }
 
+/**
+ * An investor's units and remaining cost basis as they stood on a date.
+ *
+ * The date bound matters: a backdated movement is priced at the NAV in force on
+ * its own date, so validating it against today's balance would let units issued
+ * later be redeemed before they existed.
+ */
+async function getEquityPositionAsOf(investorId: string, date: string) {
+  const priorLedger = await sql`
+    SELECT iul.type, iul.units, iul.gross_amount, iul.audit_status, TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
+      CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
+    FROM investor_unit_ledger iul
+    LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
+    WHERE iul.investor_id = ${investorId}
+      AND iul.audit_status = 'active'
+      AND iul.date <= ${date}
+    ORDER BY iul.date ASC, iul.created_at ASC
+  `;
+  return calculateEquityCapitalPosition(priorLedger.rows as EquityUnitLedgerRow[]);
+}
+
+/**
+ * Redeem units to cover a settled profit claim.
+ *
+ * Paying a claim in cash without redeeming anything left the claimant holding
+ * the units that produced the profit while the cash leaving the bank lowered
+ * NAV per unit for everyone. Redeeming makes the claimant carry their own
+ * payout: their position falls by the gross amount crystallized, they receive
+ * the net, and the fee stays with the fund exactly as on a withdrawal.
+ */
+export async function redeemUnitsForProfitClaim(input: {
+  investorId: string;
+  date: string;
+  grossAmount: number;
+  feeAmount: number;
+  notes: string;
+}, db: SqlExecutor = sql) {
+  await ensureAuditColumns();
+  assertNotFutureDate(input.date, "Settlement date");
+
+  const navWeek = await getLockedNavWeekForDate(input.date);
+  if (!navWeek) {
+    throw new Error(
+      `No locked NAV exists on or before ${input.date}. Lock a NAV dated on or before the settlement before settling a claim.`,
+    );
+  }
+  await assertNavIsSettlementGrade(navWeek.id, navWeek.week_ending);
+
+  const navPerUnit = parseFloat(navWeek.nav_per_unit);
+  const grossAmount = roundMoney(input.grossAmount);
+  const feeAmount = roundMoney(input.feeAmount);
+  const netAmount = roundMoney(grossAmount - feeAmount);
+  const position = await getEquityPositionAsOf(input.investorId, input.date);
+  const redemption = redeemUnitsForWithdrawal({
+    requestedAmount: grossAmount,
+    navPerUnit,
+    availableUnits: roundUnits(position.units),
+  });
+
+  const unitLedger = await db`
+    INSERT INTO investor_unit_ledger (investor_id, nav_week_id, date, type, units, nav_per_unit, gross_amount, notes)
+    VALUES (
+      ${input.investorId}, ${navWeek.id}, ${input.date}, 'UnitRedemption',
+      ${redemption.unitsRedeemed}, ${navPerUnit}, ${redemption.grossAmount}, ${input.notes}
+    )
+    RETURNING id
+  `;
+  const cashMovement = await db`
+    INSERT INTO cash_movements (investor_id, nav_week_id, unit_ledger_id, date, type, amount, status, notes)
+    VALUES (
+      ${input.investorId}, ${navWeek.id}, ${unitLedger.rows[0].id}, ${input.date}, 'Withdrawal',
+      ${netAmount}, 'settled', ${input.notes}
+    )
+    RETURNING id
+  `;
+  let performanceFeeId: string | null = null;
+  if (feeAmount > 0) {
+    // Credit the withheld fee to the brokerage pot, the same way a withdrawal
+    // fee is credited, so the cash attribution sees where the money went.
+    const fee = await db`
+      INSERT INTO performance_fees (investor_id, nav_week_id, crystallized_gain, fee_rate_percent, fee_amount, date, notes)
+      VALUES (
+        ${input.investorId}, ${navWeek.id}, ${grossAmount},
+        ${grossAmount > 0 ? roundMoney((feeAmount / grossAmount) * 100) : 0},
+        ${feeAmount}, ${input.date}, ${input.notes}
+      )
+      RETURNING id
+    `;
+    performanceFeeId = fee.rows[0]?.id ?? null;
+  }
+
+  return {
+    navWeekId: navWeek.id as string,
+    navPerUnit,
+    unitsRedeemed: redemption.unitsRedeemed,
+    grossAmount: redemption.grossAmount,
+    netAmount,
+    feeAmount,
+    unitLedgerId: unitLedger.rows[0].id as string,
+    cashMovementId: cashMovement.rows[0].id as string,
+    performanceFeeId,
+  };
+}
+
 export async function recordCashMovement(input: CashMovementInput) {
   await requireAdmin();
   await ensureAuditColumns();
@@ -1854,6 +2227,7 @@ export async function recordCashMovement(input: CashMovementInput) {
   let units = 0;
   let grossAmount = roundMoney(input.amount);
   let brokerageFee = 0;
+  let brokerageRate = 0;
   let realizedGain = 0;
   let performanceFeeId: string | null = null;
 
@@ -1861,16 +2235,7 @@ export async function recordCashMovement(input: CashMovementInput) {
     units = issueUnitsForDeposit({ amount: input.amount, navPerUnit });
   } else {
     ledgerType = "UnitRedemption";
-    const priorLedger = await sql`
-      SELECT iul.type, iul.units, iul.gross_amount, iul.audit_status, TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
-        CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
-      FROM investor_unit_ledger iul
-      LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
-      WHERE iul.investor_id = ${input.investorId}
-        AND iul.audit_status = 'active'
-      ORDER BY iul.date ASC, iul.created_at ASC
-    `;
-    const equityPosition = calculateEquityCapitalPosition(priorLedger.rows as EquityUnitLedgerRow[]);
+    const equityPosition = await getEquityPositionAsOf(input.investorId, input.date);
     const availableUnits = roundUnits(equityPosition.units);
     if (input.withdrawAll) {
       if (availableUnits <= 0) throw new Error("No units available to redeem.");
@@ -1888,68 +2253,78 @@ export async function recordCashMovement(input: CashMovementInput) {
     const redeemedBasis = roundMoney(availableUnits > 0 ? (equityPosition.investedCapital / availableUnits) * units : 0);
     realizedGain = roundMoney(Math.max(0, grossAmount - redeemedBasis));
     if (realizedGain > 0) {
-      const brokerageRate = await getBrokerageFeeRateValue();
+      brokerageRate = await getBrokerageFeeRateValue();
       brokerageFee = roundMoney(realizedGain * (brokerageRate / 100));
-      if (brokerageFee > 0) {
-        const fee = await sql`
-          INSERT INTO performance_fees (investor_id, nav_week_id, crystallized_gain, fee_rate_percent, fee_amount, date, notes)
-          VALUES (
-            ${input.investorId},
-            ${navWeek.id},
-            ${realizedGain},
-            ${brokerageRate},
-            ${brokerageFee},
-            ${input.date},
-            ${`Withdrawal brokerage fee on realized gain RM ${realizedGain.toFixed(2)}`}
-          )
-          RETURNING id
-        `;
-        performanceFeeId = fee.rows[0]?.id ?? null;
-      }
     }
   }
 
-  const unitLedger = await sql`
-    INSERT INTO investor_unit_ledger (investor_id, nav_week_id, date, type, units, nav_per_unit, gross_amount, notes)
-    VALUES (
-      ${input.investorId},
-      ${navWeek.id},
-      ${input.date},
-      ${ledgerType},
-      ${units},
-      ${navPerUnit},
-      ${grossAmount},
-      ${input.type === "Withdrawal" && brokerageFee > 0
-        ? `${input.notes || "Withdrawal"} | Fee RM ${brokerageFee.toFixed(2)} on realized gain RM ${realizedGain.toFixed(2)}`
-        : input.notes || ""}
-    )
-    RETURNING id
-  `;
-  const cashMovement = await sql`
-    INSERT INTO cash_movements (investor_id, nav_week_id, unit_ledger_id, date, type, amount, status, notes)
-    VALUES (
-      ${input.investorId},
-      ${navWeek.id},
-      ${unitLedger.rows[0].id},
-      ${input.date},
-      ${input.type},
-      ${grossAmount},
-      'settled',
-      ${input.type === "Withdrawal" && brokerageFee > 0
-        ? `${input.notes || "Withdrawal"} | Brokerage fee RM ${brokerageFee.toFixed(2)}`
-        : input.notes || ""}
-    )
-    RETURNING id
-  `;
-  await writeAuditEvent("cash_movement.add", "cash_movements", cashMovement.rows[0].id, {
-    type: input.type,
-    amount: grossAmount,
-    units,
-    brokerageFee,
-    realizedGain,
-    unitLedgerId: unitLedger.rows[0].id,
-    performanceFeeId,
+  // The fee is withheld, not invoiced: the investor receives the redemption
+  // value less the fee, and the fee stays in the fund as brokerage income.
+  // cash_movements records the cash that actually moved, which is what the fund
+  // cash reconciliation reads; the unit ledger keeps the gross unit valuation.
+  const netAmount = roundMoney(grossAmount - brokerageFee);
+
+  await withTransaction(async (db) => {
+    if (brokerageFee > 0) {
+      const fee = await db`
+        INSERT INTO performance_fees (investor_id, nav_week_id, crystallized_gain, fee_rate_percent, fee_amount, date, notes)
+        VALUES (
+          ${input.investorId},
+          ${navWeek.id},
+          ${realizedGain},
+          ${brokerageRate},
+          ${brokerageFee},
+          ${input.date},
+          ${`Withdrawal brokerage fee on realized gain RM ${realizedGain.toFixed(2)}`}
+        )
+        RETURNING id
+      `;
+      performanceFeeId = fee.rows[0]?.id ?? null;
+    }
+    const unitLedger = await db`
+      INSERT INTO investor_unit_ledger (investor_id, nav_week_id, date, type, units, nav_per_unit, gross_amount, notes)
+      VALUES (
+        ${input.investorId},
+        ${navWeek.id},
+        ${input.date},
+        ${ledgerType},
+        ${units},
+        ${navPerUnit},
+        ${grossAmount},
+        ${input.type === "Withdrawal" && brokerageFee > 0
+          ? `${input.notes || "Withdrawal"} | Fee RM ${brokerageFee.toFixed(2)} on realized gain RM ${realizedGain.toFixed(2)}`
+          : input.notes || ""}
+      )
+      RETURNING id
+    `;
+    const cashMovement = await db`
+      INSERT INTO cash_movements (investor_id, nav_week_id, unit_ledger_id, date, type, amount, status, notes)
+      VALUES (
+        ${input.investorId},
+        ${navWeek.id},
+        ${unitLedger.rows[0].id},
+        ${input.date},
+        ${input.type},
+        ${netAmount},
+        'settled',
+        ${input.type === "Withdrawal" && brokerageFee > 0
+          ? `${input.notes || "Withdrawal"} | Paid RM ${netAmount.toFixed(2)} after brokerage fee RM ${brokerageFee.toFixed(2)}`
+          : input.notes || ""}
+      )
+      RETURNING id
+    `;
+    await writeAuditEvent("cash_movement.add", "cash_movements", cashMovement.rows[0].id, {
+      type: input.type,
+      amount: netAmount,
+      grossAmount,
+      units,
+      brokerageFee,
+      realizedGain,
+      unitLedgerId: unitLedger.rows[0].id,
+      performanceFeeId,
+    }, db);
   });
+
   return { success: true };
 }
 
@@ -2121,7 +2496,7 @@ export async function getInvestorStatement(investorId: string) {
         SELECT id,
           TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
           TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-          gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
+          gross_assets, fund_cash, equity_fund_cash, liabilities, adjustments, net_asset_value,
           total_units, nav_per_unit, status, locked_at, notes, created_at
         FROM nav_weeks
         WHERE status = 'locked'
@@ -2308,7 +2683,7 @@ export async function getFundSummaryMetrics() {
         SELECT id,
           TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
           TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-          gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
+          gross_assets, fund_cash, equity_fund_cash, liabilities, adjustments, net_asset_value,
           total_units, nav_per_unit, status, locked_at, notes, created_at
         FROM nav_weeks
         WHERE status = 'locked'
@@ -2372,7 +2747,7 @@ export async function getDashboardSummary() {
         SELECT id,
           TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
           TO_CHAR(settlement_date, 'YYYY-MM-DD') as settlement_date,
-          gross_assets, fund_cash, liabilities, adjustments, net_asset_value,
+          gross_assets, fund_cash, equity_fund_cash, liabilities, adjustments, net_asset_value,
           total_units, nav_per_unit, status, locked_at, notes, created_at
         FROM nav_weeks
         WHERE status = 'locked'

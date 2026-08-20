@@ -3,7 +3,7 @@
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { ensureFixedSavingsRateTables } from "@/lib/fundDb";
-import { requireAdmin } from "@/lib/auth";
+import { isRedirectError, requireAdmin } from "@/lib/auth";
 
 function parseRate(value: FormDataEntryValue | null) {
   const rate = Number(value);
@@ -48,6 +48,7 @@ export async function addFixedSavingsBaseRate(formData: FormData) {
     revalidateFixedSavingsRateViews();
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to save base rate." };
   }
 }
@@ -87,6 +88,7 @@ export async function addFixedSavingsPromotion(formData: FormData) {
     revalidateFixedSavingsRateViews();
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to add promotion." };
   }
 }
@@ -103,6 +105,7 @@ export async function disableFixedSavingsPromotion(id: string) {
     revalidateFixedSavingsRateViews();
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to disable promotion." };
   }
 }

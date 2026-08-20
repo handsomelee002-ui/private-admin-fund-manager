@@ -46,7 +46,10 @@ export default async function ReportsPage({
   const platformPagination = paginateRows(sortedPlatforms, resolvedSearchParams, "platform");
   const navPagination = paginateRows(sortedNavWeeks, resolvedSearchParams, "nav");
   const totalRealized = platforms.reduce((sum: number, platform: any) => sum + platform.realizedProfit, 0);
-  const latestLockedWeek = [...navWeeks].sort((a: any, b: any) => String(b.week_ending).localeCompare(String(a.week_ending)))[0]?.week_ending ?? "No locked NAV";
+  // Drafts are not locked NAVs; showing one here implied a price was final.
+  const latestLockedWeek = [...navWeeks]
+    .filter((week: any) => week.status === "locked")
+    .sort((a: any, b: any) => String(b.week_ending).localeCompare(String(a.week_ending)))[0]?.week_ending ?? "No locked NAV";
 
   return (
     <div className="space-y-6">

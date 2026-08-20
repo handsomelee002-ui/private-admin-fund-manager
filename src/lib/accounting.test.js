@@ -275,3 +275,33 @@ test("fixed savings withdrawal can be interest only without a separate target", 
     },
   );
 });
+
+test("profit shares are taken from exact fractions, not rounded percentages", () => {
+  // A basis that does not divide cleanly: rounding the ratio to 2dp before
+  // applying it used to lose money against the total on large balances.
+  const allocation = calculateBrokerageFundingAllocation({
+    equityNetInvested: 333333,
+    fixedSavingsNetInvested: 333333,
+    brokerageNetInvested: 333334,
+    equityContributed: 333333,
+    fixedSavingsContributed: 333333,
+    brokerageContributed: 333334,
+    totalValue: 1500000,
+  });
+
+  // Equity's share plus everything else must still be the whole profit.
+  assert.equal(
+    roundMoney(allocation.equityProfitLoss + allocation.brokerageProfitLoss),
+    allocation.profitLoss,
+  );
+  // And the platform's parts must still sum to its value.
+  assert.equal(
+    roundMoney(
+      allocation.equityNavValue
+        + allocation.fixedSavingsNetInvested
+        + allocation.brokerageNetInvested
+        + allocation.brokerageProfitLoss,
+    ),
+    1500000,
+  );
+});

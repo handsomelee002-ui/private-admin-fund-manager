@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { assertAdminPassword, assertDevelopmentDataToolsEnabled, requireAdmin } from "@/lib/auth";
+import { assertAdminPassword, assertDevelopmentDataToolsEnabled, isRedirectError, requireAdmin } from "@/lib/auth";
 import { cleanAllData, dropAllFundTables, initializeFreshFundDatabase, seedDummyData } from "@/lib/fundDb";
 
 const CLEAN_CONFIRMATION = "DELETE ALL FUND DATA";
@@ -25,6 +25,7 @@ export async function importDummyDataAction(formData: FormData) {
     revalidateAll();
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to import dummy data." };
   }
 }
@@ -41,6 +42,7 @@ export async function initializeDatabaseAction(formData: FormData) {
     revalidateAll();
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to initialize database." };
   }
 }
@@ -57,6 +59,7 @@ export async function dropAllTablesAction(formData: FormData) {
     revalidateAll();
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to drop fund tables." };
   }
 }
@@ -73,6 +76,7 @@ export async function cleanAllDataAction(formData: FormData) {
     revalidateAll();
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to clean data." };
   }
 }

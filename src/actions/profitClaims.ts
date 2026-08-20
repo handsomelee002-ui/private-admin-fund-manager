@@ -3,8 +3,8 @@
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { getBrokerageFeeRate } from "@/actions/settings";
-import { requireAdmin } from "@/lib/auth";
-import { assertNotFutureDate, ensureAuditColumns, getInvestorStatement, writeAuditEvent } from "@/lib/fundDb";
+import { isRedirectError, requireAdmin } from "@/lib/auth";
+import { assertNotFutureDate, ensureAuditColumns, getInvestorStatement, redeemUnitsForProfitClaim, withTransaction, writeAuditEvent } from "@/lib/fundDb";
 import { calculateClaimSettlement } from "@/lib/profitClaimAccounting";
 
 /**
@@ -19,8 +19,12 @@ import { calculateClaimSettlement } from "@/lib/profitClaimAccounting";
 async function getClaimableProfit(investorId: string) {
   const [statement, locked] = await Promise.all([
     getInvestorStatement(investorId),
+    // Only the *outstanding* part of a claim still blocks further claiming.
+    // Settling redeems units, which already removes that profit from the
+    // investor's position, so counting it again here would permanently strand
+    // profit the investor has genuinely earned since.
     sql`
-      SELECT COALESCE(SUM(locked_amount), 0) as total
+      SELECT COALESCE(SUM(GREATEST(locked_amount - COALESCE(settled_gross_amount, 0), 0)), 0) as total
       FROM investor_profit_claims
       WHERE investor_id = ${investorId}
     `,
@@ -58,6 +62,12 @@ export async function ensureClaimsTable() {
   await sql`
     ALTER TABLE investor_profit_claims
     ADD COLUMN IF NOT EXISTS brokerage_fee NUMERIC(15, 4) NOT NULL DEFAULT 0;
+  `;
+  // Gross profit already crystallized out of the investor's position by
+  // settlement, as opposed to settled_amount which is the net cash paid.
+  await sql`
+    ALTER TABLE investor_profit_claims
+    ADD COLUMN IF NOT EXISTS settled_gross_amount NUMERIC(15, 4) NOT NULL DEFAULT 0;
   `;
 }
 
@@ -123,6 +133,7 @@ export async function addProfitClaim(formData: FormData) {
   try {
     assertNotFutureDate(claimDate, "Claim date");
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Invalid claim date." };
   }
 
@@ -163,6 +174,7 @@ export async function addProfitClaim(formData: FormData) {
     revalidatePath("/reports");
     return { success: true, brokerageFee: roundedBrokerage, netAmount };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     console.error("DB Error:", error);
     return { error: error instanceof Error ? error.message : "Failed to create profit claim." };
   }
@@ -193,6 +205,7 @@ export async function settleClaim(formData: FormData) {
   try {
     assertNotFutureDate(settledDate, "Settlement date");
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Invalid settlement date." };
   }
 
@@ -200,15 +213,16 @@ export async function settleClaim(formData: FormData) {
     await ensureAuditColumns();
     // Fetch current claim including investor_id for ledger entries
     const current = await sql`
-      SELECT locked_amount, settled_amount, brokerage_fee, investor_id
+      SELECT locked_amount, settled_amount, settled_gross_amount, brokerage_fee, investor_id
       FROM investor_profit_claims WHERE id = ${id}
     `;
     if (current.rows.length === 0) return { error: "Claim not found" };
 
-    const locked       = parseFloat(current.rows[0].locked_amount);
-    const prevSettled  = parseFloat(current.rows[0].settled_amount);
-    const brokerageFee = parseFloat(current.rows[0].brokerage_fee || "0");
-    const investorId   = current.rows[0].investor_id;
+    const locked           = parseFloat(current.rows[0].locked_amount);
+    const prevSettled      = parseFloat(current.rows[0].settled_amount);
+    const prevSettledGross = parseFloat(current.rows[0].settled_gross_amount || "0");
+    const brokerageFee     = parseFloat(current.rows[0].brokerage_fee || "0");
+    const investorId       = current.rows[0].investor_id;
 
     const settlement = calculateClaimSettlement({
       lockedAmount: locked,
@@ -220,35 +234,68 @@ export async function settleClaim(formData: FormData) {
       return { error: "This claim is already fully settled." };
     }
 
-    // ── Update the claim record ─────────────────────────────────────────────
-    const notesParam = notes || null;
-    await sql`
-      UPDATE investor_profit_claims
-      SET
-        settled_amount = ${settlement.finalSettledAmount},
-        settled_date   = ${settledDate},
-        status         = ${settlement.status},
-        notes          = COALESCE(NULLIF(${notesParam}, ''), notes)
-      WHERE id = ${id}
-    `;
+    // ── Crystallize the profit out of the investor's own position ───────────
+    // Paying cash without redeeming units left the claimant holding the units
+    // that produced the profit while the outgoing cash diluted everyone else.
+    // The gross share of this instalment is what leaves their position; they
+    // receive the net and the fund keeps the fee.
+    const grossThisSettlement =
+      settlement.netPayable > 0
+        ? Math.round(locked * (settlement.cappedAmount / settlement.netPayable) * 100) / 100
+        : settlement.cappedAmount;
+    const feeThisSettlement = Math.round((grossThisSettlement - settlement.cappedAmount) * 100) / 100;
 
-    // ── On full settlement: record cash outflow in capital_ledger ───────────
-    // "ProfitDistribution" type = profit paid out; excluded from equity calcs
-    // The investor receives netPayable; the fund retains brokerageFee as income.
+    const notesParam = notes || null;
+    const settledGross = Math.round((prevSettledGross + grossThisSettlement) * 100) / 100;
     const ledgerNote = settlement.isFullySettled
       ? `Profit claim settled — gross RM ${locked.toFixed(2)}, fee RM ${brokerageFee.toFixed(2)}, net RM ${settlement.netPayable.toFixed(2)}`
       : `Partial profit settlement (${notes || "payment"})`;
-    const ledgerEntry = await sql`
-      INSERT INTO capital_ledger (investor_id, date, type, amount, notes)
-      VALUES (
-        ${investorId},
-        ${settledDate},
-        'ProfitDistribution',
-        ${settlement.ledgerAmount},
-        ${ledgerNote}
-      )
-      RETURNING id
-    `;
+
+    let redemption;
+    let ledgerEntryId: string;
+    try {
+      // Redemption, claim update and distribution record are one unit: a
+      // half-applied settlement would either pay cash without shrinking the
+      // position or shrink it without recording the payment.
+      const result = await withTransaction(async (db) => {
+        const redeemed = await redeemUnitsForProfitClaim({
+          investorId,
+          date: settledDate,
+          grossAmount: grossThisSettlement,
+          feeAmount: feeThisSettlement,
+          notes: `Profit claim settlement — gross RM ${grossThisSettlement.toFixed(2)}, fee RM ${feeThisSettlement.toFixed(2)}, net RM ${settlement.cappedAmount.toFixed(2)}`,
+        }, db);
+        await db`
+          UPDATE investor_profit_claims
+          SET
+            settled_amount       = ${settlement.finalSettledAmount},
+            settled_gross_amount = ${settledGross},
+            settled_date         = ${settledDate},
+            status               = ${settlement.status},
+            notes                = COALESCE(NULLIF(${notesParam}, ''), notes)
+          WHERE id = ${id}
+        `;
+        // Retained as a human-readable record of the distribution. The balance
+        // impact now lives in the unit ledger and cash movement above.
+        const ledger = await db`
+          INSERT INTO capital_ledger (investor_id, date, type, amount, notes)
+          VALUES (
+            ${investorId},
+            ${settledDate},
+            'ProfitDistribution',
+            ${settlement.ledgerAmount},
+            ${ledgerNote}
+          )
+          RETURNING id
+        `;
+        return { redeemed, ledgerId: ledger.rows[0].id as string };
+      });
+      redemption = result.redeemed;
+      ledgerEntryId = result.ledgerId;
+    } catch (error) {
+    if (isRedirectError(error)) throw error;
+      return { error: error instanceof Error ? error.message : "Failed to settle this claim." };
+    }
 
     await writeAuditEvent("profit_claim.settle", "investor_profit_claims", id, {
       investorId,
@@ -256,10 +303,18 @@ export async function settleClaim(formData: FormData) {
       previousSettledAmount: prevSettled,
       settledAmount: settlement.finalSettledAmount,
       paidThisSettlement: settlement.cappedAmount,
+      grossThisSettlement,
+      feeThisSettlement,
+      settledGrossAmount: settledGross,
+      unitsRedeemed: redemption.unitsRedeemed,
+      navPerUnit: redemption.navPerUnit,
+      unitLedgerId: redemption.unitLedgerId,
+      cashMovementId: redemption.cashMovementId,
+      performanceFeeId: redemption.performanceFeeId,
       brokerageFee,
       status: settlement.status,
       settledDate,
-      capitalLedgerId: ledgerEntry.rows[0].id,
+      capitalLedgerId: ledgerEntryId,
     });
 
     revalidatePath("/claims");
@@ -271,6 +326,7 @@ export async function settleClaim(formData: FormData) {
     revalidatePath("/");
     return { success: true, netPaid: settlement.cappedAmount, brokerageFee: settlement.isFullySettled ? brokerageFee : 0 };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     console.error("DB Error:", error);
     return { error: "Failed to settle claim." };
   }

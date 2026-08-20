@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { generatePortalAccessId, requireAdmin } from "@/lib/auth";
+import { generatePortalAccessId, isRedirectError, requireAdmin } from "@/lib/auth";
 import { ensureAuditColumns, getInvestorsWithBalances, writeAuditEvent } from "@/lib/fundDb";
 
 function hashPortalAccessId(portalAccessId: string | null | undefined) {
@@ -15,6 +15,7 @@ export async function getInvestors() {
   try {
     return await getInvestorsWithBalances();
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     console.error("Database Error:", error);
     throw new Error("Failed to fetch investors.");
   }
@@ -39,6 +40,7 @@ export async function addInvestor(formData: FormData) {
     revalidatePath("/investors");
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     console.error("Database Error:", error);
     return { error: "Failed to add investor." };
   }
@@ -65,6 +67,7 @@ export async function rotateInvestorPortalAccess(id: string) {
     revalidatePath(`/investors/${id}`);
     return { success: true, portalAccessId };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     console.error("Database Error:", error);
     return { error: "Failed to rotate portal access." };
   }
@@ -94,6 +97,7 @@ export async function updateInvestorName(formData: FormData) {
     revalidatePath("/");
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     console.error("Database Error:", error);
     return { error: "Failed to update investor name." };
   }

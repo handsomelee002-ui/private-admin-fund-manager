@@ -3,8 +3,16 @@
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { issueUnitsForDeposit, redeemUnitsForWithdrawal } from "@/lib/accounting";
-import { writeAuditEvent } from "@/lib/fundDb";
-import { requireAdmin } from "@/lib/auth";
+import {
+  assertNoLockedNavOnOrAfter,
+  assertNotFutureDate,
+  calculateFixedSavingsLiability,
+  getFixedSavingsRateInputs,
+  withTransaction,
+  writeAuditEvent,
+} from "@/lib/fundDb";
+import { roundMoney } from "@/lib/accounting";
+import { isRedirectError, requireAdmin } from "@/lib/auth";
 
 let settingsTablesPromise: Promise<void> | null = null;
 
@@ -147,52 +155,58 @@ async function insertBonusRecord(
       : null;
     const units = redemption?.unitsRedeemed ?? issueUnitsForDeposit({ amount: absAmount, navPerUnit });
     const grossAmount = redemption?.grossAmount ?? absAmount;
-    const r = await sql`
-      INSERT INTO investor_unit_ledger (investor_id, nav_week_id, date, type, units, nav_per_unit, gross_amount, notes)
-      VALUES (
-        ${investorId},
-        ${navWeek.id},
-        ${date},
-        ${isReversal ? "UnitRedemption" : "UnitIssue"},
-        ${units},
-        ${navPerUnit},
-        ${grossAmount},
-        ${notes}
-      )
-      RETURNING id
-    `;
-    const sourceId = r.rows[0]?.id;
-    const bonus = await sql`
-      INSERT INTO bonus_payments (investor_id, ledger_type, source_id, amount, date, notes)
-      VALUES (${investorId}, 'equity', ${sourceId}, ${amount}, ${date}, ${notes})
-      RETURNING id
-    `;
-    await writeAuditEvent("bonus_payment.add", "bonus_payments", bonus.rows[0].id, {
-      investorId,
-      ledgerType,
-      sourceId,
-      amount,
-      date,
+    // The ledger row and its bonus_payments record identify each other; a
+    // half-written pair reads as an ordinary unit issue with no bonus behind it.
+    await withTransaction(async (db) => {
+      const r = await db`
+        INSERT INTO investor_unit_ledger (investor_id, nav_week_id, date, type, units, nav_per_unit, gross_amount, notes)
+        VALUES (
+          ${investorId},
+          ${navWeek.id},
+          ${date},
+          ${isReversal ? "UnitRedemption" : "UnitIssue"},
+          ${units},
+          ${navPerUnit},
+          ${grossAmount},
+          ${notes}
+        )
+        RETURNING id
+      `;
+      const sourceId = r.rows[0]?.id;
+      const bonus = await db`
+        INSERT INTO bonus_payments (investor_id, ledger_type, source_id, amount, date, notes)
+        VALUES (${investorId}, 'equity', ${sourceId}, ${amount}, ${date}, ${notes})
+        RETURNING id
+      `;
+      await writeAuditEvent("bonus_payment.add", "bonus_payments", bonus.rows[0].id, {
+        investorId,
+        ledgerType,
+        sourceId,
+        amount,
+        date,
+      }, db);
     });
   } else {
     // fixed_savings bonus has NO interest rate — it's a flat bonus, doesn't accrue
-    const r = await sql`
-      INSERT INTO fixed_savings_ledger (investor_id, date, type, amount, notes)
-      VALUES (${investorId}, ${date}, 'Bonus', ${amount}, ${notes})
-      RETURNING id
-    `;
-    const sourceId = r.rows[0]?.id;
-    const bonus = await sql`
-      INSERT INTO bonus_payments (investor_id, ledger_type, source_id, amount, date, notes)
-      VALUES (${investorId}, 'fixed_savings', ${sourceId}, ${amount}, ${date}, ${notes})
-      RETURNING id
-    `;
-    await writeAuditEvent("bonus_payment.add", "bonus_payments", bonus.rows[0].id, {
-      investorId,
-      ledgerType,
-      sourceId,
-      amount,
-      date,
+    await withTransaction(async (db) => {
+      const r = await db`
+        INSERT INTO fixed_savings_ledger (investor_id, date, type, amount, notes)
+        VALUES (${investorId}, ${date}, 'Bonus', ${amount}, ${notes})
+        RETURNING id
+      `;
+      const sourceId = r.rows[0]?.id;
+      const bonus = await db`
+        INSERT INTO bonus_payments (investor_id, ledger_type, source_id, amount, date, notes)
+        VALUES (${investorId}, 'fixed_savings', ${sourceId}, ${amount}, ${date}, ${notes})
+        RETURNING id
+      `;
+      await writeAuditEvent("bonus_payment.add", "bonus_payments", bonus.rows[0].id, {
+        investorId,
+        ledgerType,
+        sourceId,
+        amount,
+        date,
+      }, db);
     });
   }
 }
@@ -220,55 +234,91 @@ export async function addBonusPayment(formData: FormData) {
   if (!targetType || !ledgerType || !amountStr || !date) {
     return { error: "Missing required fields" };
   }
+  if (!["equity", "fixed_savings"].includes(ledgerType)) return { error: "Invalid bonus ledger type" };
   const totalAmount = parseFloat(amountStr);
   if (isNaN(totalAmount) || totalAmount === 0) return { error: "Amount must be a non-zero number" };
+
+  // Bonuses were the one financial record with neither guard: a post-dated
+  // bonus was accepted, and one dated beneath a locked NAV retroactively
+  // changed the unit count that NAV was built on.
+  try {
+    assertNotFutureDate(date, "Bonus date");
+    await assertNoLockedNavOnOrAfter(date, "the bonus");
+  } catch (error) {
+    if (isRedirectError(error)) throw error;
+    return { error: error instanceof Error ? error.message : "Invalid bonus date." };
+  }
 
   try {
     if (targetType === "specific") {
       if (!investorId) return { error: "Please select an investor" };
       await insertBonusRecord(investorId, ledgerType, totalAmount, date, notes || "Special bonus");
     } else {
-      // Distribute proportionally to all investors
-      const rows = ledgerType === "equity"
-        ? await sql`
-            WITH latest_nav AS (
-              SELECT nav_per_unit
-              FROM nav_weeks
-              WHERE status = 'locked'
-              ORDER BY week_ending DESC
-              LIMIT 1
-            )
-            SELECT investor_id,
-              SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END)
-                * COALESCE((SELECT nav_per_unit FROM latest_nav), 1) as net
-            FROM investor_unit_ledger
-            WHERE audit_status = 'active'
-            GROUP BY investor_id
-            HAVING SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END) > 0
-          `
-        : await sql`
-            SELECT investor_id,
-              SUM(CASE WHEN type = 'Deposit' THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END) as net
+      // Distribute proportionally to all investors.
+      let balances: { investor_id: string; net: number }[];
+      if (ledgerType === "equity") {
+        const rows = await sql`
+          WITH latest_nav AS (
+            SELECT nav_per_unit
+            FROM nav_weeks
+            WHERE status = 'locked'
+            ORDER BY week_ending DESC
+            LIMIT 1
+          )
+          SELECT investor_id,
+            SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END)
+              * COALESCE((SELECT nav_per_unit FROM latest_nav), 1) as net
+          FROM investor_unit_ledger
+          WHERE audit_status = 'active'
+            AND date <= ${date}
+          GROUP BY investor_id
+          HAVING SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END) > 0
+        `;
+        balances = rows.rows.map((r: any) => ({ investor_id: r.investor_id, net: parseFloat(r.net) }));
+      } else {
+        // Share by the actual liability - principal plus accrued interest and
+        // bonuses - not by raw deposits minus withdrawals, which ignored
+        // everything a saver had earned and mismatched their real balance.
+        const [savingsRows, rateInput] = await Promise.all([
+          sql`
+            SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
             FROM fixed_savings_ledger
-            WHERE audit_status = 'active'
-            GROUP BY investor_id
-            HAVING SUM(CASE WHEN type = 'Deposit' THEN amount WHEN type = 'Withdrawal' THEN -amount ELSE 0 END) > 0
-          `;
-      const totalNet = rows.rows.reduce((s: number, r: any) => s + parseFloat(r.net), 0);
+            WHERE audit_status = 'active' AND date <= ${date}
+            ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
+          `,
+          getFixedSavingsRateInputs(),
+        ]);
+        const liability = calculateFixedSavingsLiability(savingsRows.rows as any[], date, rateInput);
+        balances = [...liability.byInvestor.entries()]
+          .filter(([investorId, summary]) => investorId !== "fund" && summary.totalLiability > 0)
+          .map(([investorId, summary]) => ({ investor_id: investorId, net: summary.totalLiability }));
+      }
+
+      const totalNet = roundMoney(balances.reduce((sum, row) => sum + row.net, 0));
       if (totalNet <= 0) return { error: ledgerType === "equity" ? "No positive investor unit balance found to distribute to" : "No fixed savings balance found to distribute to" };
 
-      for (const r of rows.rows) {
-        const share = parseFloat(r.net) / totalNet;
-        const investorBonus = totalAmount * share;
-        if (Math.abs(investorBonus) > 0.001) {
-          await insertBonusRecord(
-            r.investor_id,
-            ledgerType,
-            investorBonus,
-            date,
-            notes || (ledgerType === "equity" ? "Proportional equity bonus" : "Proportional savings bonus"),
-          );
-        }
+      // Give the rounding remainder to the largest holder rather than letting
+      // the distributed total silently fall short of the amount entered.
+      const ordered = [...balances].sort((a, b) => b.net - a.net);
+      const rounded = roundMoney(totalAmount);
+      let allocated = 0;
+      const shares = ordered.map((row, index) => {
+        const amount = index === ordered.length - 1
+          ? roundMoney(rounded - allocated)
+          : roundMoney(rounded * (row.net / totalNet));
+        allocated = roundMoney(allocated + amount);
+        return { investorId: row.investor_id, amount };
+      });
+
+      for (const share of shares) {
+        if (Math.abs(share.amount) < 0.005) continue;
+        await insertBonusRecord(
+          share.investorId,
+          ledgerType,
+          share.amount,
+          date,
+          notes || (ledgerType === "equity" ? "Proportional equity bonus" : "Proportional savings bonus"),
+        );
       }
     }
 
@@ -279,6 +329,7 @@ export async function addBonusPayment(formData: FormData) {
     revalidatePath("/");
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     console.error("DB Error:", error);
     return { error: "Failed to add bonus payment." };
   }

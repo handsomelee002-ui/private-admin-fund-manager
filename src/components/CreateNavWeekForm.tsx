@@ -31,6 +31,18 @@ type FundCash = {
   expectedBalance: number;
 };
 
+/**
+ * How the bank balance divides between the pools with a claim on it. Only
+ * equity's share prices the units, so this is what the screen must show.
+ */
+type CashAttribution = {
+  bankBalance: number;
+  nonEquityValueInPlatforms: number;
+  fixedSavingsLiability: number;
+  brokerageClaim: number;
+  equity: number;
+};
+
 const SOURCE_LABELS: Record<string, string> = {
   RECORDED: "recorded",
   CARRIED_FORWARD: "carried forward",
@@ -61,27 +73,51 @@ export function CreateNavWeekForm() {
   const [fundCash, setFundCash] = useState<FundCash | null>(null);
   const [fundCashOverride, setFundCashOverride] = useState("");
   const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [attribution, setAttribution] = useState<CashAttribution | null>(null);
+  const [equityPlatformValue, setEquityPlatformValue] = useState(0);
+  const [grossAssets, setGrossAssets] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  const loadPreview = useCallback(async (date: string) => {
+  const loadPreview = useCallback(async (
+    date: string,
+    platformOverrides: Record<string, string>,
+    cashOverride: string,
+  ) => {
     setPreviewLoading(true);
     setError(null);
-    const result = await getNavPreviewAction(date);
+    const parsedOverrides = Object.entries(platformOverrides)
+      .filter(([, value]) => value.trim() !== "" && Number.isFinite(Number(value)))
+      .map(([platformId, value]) => ({ platformId, totalValue: Number(value) }));
+    const parsedCash = cashOverride.trim() !== "" && Number.isFinite(Number(cashOverride))
+      ? Number(cashOverride)
+      : undefined;
+    const result = await getNavPreviewAction(date, parsedOverrides, parsedCash);
     setPreviewLoading(false);
     if ("preview" in result && result.preview) {
       setRows(result.preview as PreviewRow[]);
       setFundCash((result.fundCash as FundCash) ?? null);
+      setAttribution((result.attribution as CashAttribution) ?? null);
+      setEquityPlatformValue(result.equityPlatformValue ?? 0);
+      setGrossAssets(result.grossAssets ?? 0);
     } else {
       setRows([]);
       setFundCash(null);
+      setAttribution(null);
+      setEquityPlatformValue(0);
+      setGrossAssets(0);
       setError(result.error || "Failed to load platform values.");
     }
   }, []);
 
+  // Overrides change what equity's share of the cash works out to, so the whole
+  // preview is re-derived server-side rather than re-totalled in the browser.
   useEffect(() => {
     if (!open) return;
-    void loadPreview(asOfDate);
-  }, [open, asOfDate, loadPreview]);
+    const timer = setTimeout(() => {
+      void loadPreview(asOfDate, overrides, fundCashOverride);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [open, asOfDate, overrides, fundCashOverride, loadPreview]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -116,8 +152,6 @@ export function CreateNavWeekForm() {
     return fundCash?.balance ?? 0;
   })();
 
-  const platformValue = rows.reduce((sum, row) => sum + effectiveValue(row), 0);
-  const grossAssets = platformValue + effectiveFundCash;
   const cashGap = fundCash ? Math.round((effectiveFundCash - fundCash.expectedBalance) * 100) / 100 : 0;
   const staleRows = rows.filter((row) => row.isStale);
   const blockingRows = staleRows.filter((row) => row.weightPercent >= 10);
@@ -244,7 +278,7 @@ export function CreateNavWeekForm() {
                       <td className="px-3 py-2">
                         <div className="font-medium">Fund cash</div>
                         <div className="text-muted-foreground text-xs">
-                          not in any platform · {grossAssets > 0 ? ((effectiveFundCash / grossAssets) * 100).toFixed(1) : "0.0"}% of fund
+                          bank balance · {attribution ? `${formatMoney(attribution.equity)} is equity's` : "not in any platform"}
                         </div>
                       </td>
                       <td className="text-muted-foreground px-3 py-2 text-right tabular-nums">—</td>
@@ -291,6 +325,20 @@ export function CreateNavWeekForm() {
             </div>
           )}
 
+          {attribution && (attribution.fixedSavingsLiability > 0.009 || Math.abs(attribution.brokerageClaim) > 0.009) && (
+            <div className="border-border/50 bg-muted/20 text-muted-foreground rounded-md border p-3 text-xs">
+              <p className="text-foreground font-medium">Who owns the {formatMoney(attribution.bankBalance)} in the bank</p>
+              <p className="mt-1">
+                Fixed-savings savers are owed {formatMoney(attribution.fixedSavingsLiability)} and the brokerage pot holds{" "}
+                {formatMoney(attribution.brokerageClaim)}
+                {attribution.nonEquityValueInPlatforms > 0.009
+                  ? `, of which ${formatMoney(attribution.nonEquityValueInPlatforms)} sits inside platforms rather than in cash`
+                  : ""}
+                . Equity owns the remaining {formatMoney(attribution.equity)}, and only that share prices the units.
+              </p>
+            </div>
+          )}
+
           {blockingRows.length > 0 && (
             <div className="border-destructive/40 bg-destructive/10 text-destructive flex gap-2 rounded-md border p-3 text-sm">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -310,11 +358,11 @@ export function CreateNavWeekForm() {
 
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="text-sm">
-              <span className="text-muted-foreground">Gross assets </span>
+              <span className="text-muted-foreground">Equity gross assets </span>
               <span className="font-semibold tabular-nums">{formatMoney(grossAssets)}</span>
               <span className="text-muted-foreground ml-2 text-xs">
-                ({formatMoney(platformValue)} in platforms + {formatMoney(effectiveFundCash)} cash
-                {staleRows.length > 0 ? `, ${staleRows.length} carried forward` : ""})
+                ({formatMoney(equityPlatformValue)} equity share of platforms + {formatMoney(attribution?.equity ?? 0)} equity
+                share of cash{staleRows.length > 0 ? `, ${staleRows.length} carried forward` : ""})
               </span>
             </div>
             <Button type="submit" disabled={loading || rows.length === 0}>

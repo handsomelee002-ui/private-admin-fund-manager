@@ -2,8 +2,8 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { assertNotFutureDate, calculateFixedSavingsLiability, ensureAuditColumns, getFixedSavingsRateInputs, writeAuditEvent } from "@/lib/fundDb";
-import { requireAdmin } from "@/lib/auth";
+import { assertNotFutureDate, calculateFixedSavingsLiability, ensureAuditColumns, getFixedSavingsRateInputs, withTransaction, writeAuditEvent } from "@/lib/fundDb";
+import { isRedirectError, requireAdmin } from "@/lib/auth";
 import {
   BASE_CURRENCY,
   isRecordableTransactionType,
@@ -314,11 +314,20 @@ export async function getPlatforms() {
   });
 }
 
+/**
+ * Cash each pool still has available to deploy into a platform.
+ *
+ * The brokerage pot is charged with *cumulative* interest and bonuses, not
+ * outstanding ones: an obligation already paid in cash has left the bank, so
+ * treating it as no longer owed would hand the same money back to the pot
+ * twice. Fixed-savings bonuses are charged once - they reach the pot through
+ * the fixed-savings liability - which is what previously double-counted them.
+ */
 async function getCapitalAllocationBasis() {
-  const [summary, savings, bonusPayments, deployed, rateInput] = await Promise.all([
+  const [summary, savings, deployed, rateInput] = await Promise.all([
     sql`
       WITH latest_nav AS (
-        SELECT id, net_asset_value
+        SELECT id, net_asset_value, equity_fund_cash
         FROM nav_weeks
         WHERE status = 'locked'
         ORDER BY week_ending DESC
@@ -330,19 +339,17 @@ async function getCapitalAllocationBasis() {
         WHERE audit_status <> 'reverted'
       )
       SELECT
-        COALESCE(
-          (SELECT net_asset_value FROM latest_nav),
-          (
-            SELECT COALESCE(SUM(CASE
-              WHEN type IN ('Deposit', 'Bonus') THEN amount
-              WHEN type = 'Withdrawal' THEN -amount
-              ELSE 0
-            END), 0)
-            FROM capital_ledger
-          ),
-          0
-        ) as equity_capital,
+        COALESCE((SELECT equity_fund_cash FROM latest_nav), 0) as equity_fund_cash,
+        (SELECT id FROM latest_nav) as latest_nav_id,
         COALESCE((SELECT total FROM fees), 0) as performance_fees,
+        COALESCE((
+          SELECT SUM(amount) FROM bonus_payments
+          WHERE audit_status = 'active' AND ledger_type = 'equity'
+        ), 0) as equity_bonuses,
+        COALESCE((
+          SELECT SUM(amount) FROM bonus_payments
+          WHERE audit_status = 'active' AND ledger_type = 'fixed_savings'
+        ), 0) as fixed_savings_bonuses,
         COALESCE((
           SELECT SUM(nwps.brokerage_profit_loss)
           FROM nav_week_platform_snapshots nwps
@@ -355,11 +362,6 @@ async function getCapitalAllocationBasis() {
       WHERE audit_status = 'active'
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
     `,
-    sql`
-      SELECT COALESCE(SUM(amount), 0) as total
-      FROM bonus_payments
-      WHERE audit_status = 'active'
-    `.catch(() => ({ rows: [{ total: 0 }] })),
     getPlatformSourceBalances(),
     getFixedSavingsRateInputs(),
   ]);
@@ -369,12 +371,15 @@ async function getCapitalAllocationBasis() {
   const brokerageBalance = roundMoney(
     parseFloat(row.brokerage_profit_loss || "0")
       + parseFloat(row.performance_fees || "0")
-      - fixedSavings.payableInterest
-      - parseFloat(bonusPayments.rows[0]?.total || "0"),
+      - fixedSavings.totalAccruedInterest
+      - parseFloat(row.fixed_savings_bonuses || "0")
+      - parseFloat(row.equity_bonuses || "0"),
   );
 
   return {
-    equity: Math.max(0, roundMoney(parseFloat(row.equity_capital || "0") - deployed.equity)),
+    // equity_fund_cash is already net of what equity has deployed, so unlike
+    // the other two it must not have `deployed` subtracted again.
+    equity: Math.max(0, roundMoney(parseFloat(row.equity_fund_cash || "0"))),
     fixed_savings: Math.max(0, roundMoney(fixedSavings.totalLiability - deployed.fixed_savings)),
     brokerage: Math.max(0, roundMoney(brokerageBalance - deployed.brokerage)),
   } satisfies Record<FundingSource, number>;
@@ -462,14 +467,18 @@ async function getPlatformContributions(platformId: string) {
  * Capping at net invested makes it impossible to record cashing out a dividend
  * or a gain, which is money that genuinely left the platform.
  */
-async function getPlatformWithdrawalBasis(platformId: string) {
+async function getPlatformWithdrawalBasis(platformId: string, asOfDate: string) {
   const [balances, contributions, valuation] = await Promise.all([
     getPlatformSourceBalances(platformId),
     getPlatformContributions(platformId),
+    // The mark in force on the transaction's own date, not today's. A backdated
+    // withdrawal validated against a later mark could take out a gain the
+    // platform had not made yet.
     sql`
       SELECT total_value, TO_CHAR(as_of_date, 'YYYY-MM-DD') as as_of_date
       FROM platform_valuations
       WHERE platform_id = ${platformId} AND audit_status = 'active'
+        AND as_of_date <= ${asOfDate}
       ORDER BY as_of_date DESC
       LIMIT 1
     `,
@@ -502,6 +511,7 @@ async function getPlatformWithdrawalBasis(platformId: string) {
         AND COALESCE(pt.audit_status, 'active') = 'active'
         AND COALESCE(pt.status, 'SETTLED') = 'SETTLED'
         AND pt.date > ${valuation.rows[0].as_of_date}
+        AND pt.date <= ${asOfDate}
     `;
     cap = Math.max(0, roundMoney(latestValue + parseFloat(since.rows[0]?.delta || "0")));
   }
@@ -604,6 +614,7 @@ export async function addPlatform(formData: FormData) {
     revalidateTrading(created.rows[0].id);
     return { success: true, id: created.rows[0].id };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to add platform." };
   }
 }
@@ -619,6 +630,7 @@ export async function updatePlatformName(formData: FormData) {
     revalidateTrading(id);
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to update platform name." };
   }
 }
@@ -670,6 +682,7 @@ export async function deletePlatform(id: string) {
     revalidateTrading(id);
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to delete platform." };
   }
 }
@@ -694,6 +707,7 @@ export async function addPlatformAccount(formData: FormData) {
     revalidateTrading(platformId);
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to add account." };
   }
 }
@@ -720,6 +734,7 @@ export async function addPlatformAsset(formData: FormData) {
     revalidateTrading(platformId);
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to add asset." };
   }
 }
@@ -810,6 +825,10 @@ export async function addPlatformTransaction(formData: FormData) {
           ? 1
           : 0;
   const baseAmount = hasBaseAmount ? enteredBaseAmount : amount * fxRateToBase;
+  // Entering only an RM figure for a foreign-currency transaction used to store
+  // that figure as the native amount at a rate of 1, mislabelling ringgit as
+  // the foreign currency. Record it as what it is.
+  const effectiveCurrency = !hasAmount && hasBaseAmount ? BASE_CURRENCY : currency;
   const feeAmount = parseNumber(formData.get("fee_amount"), "Fee");
   const taxAmount = parseNumber(formData.get("tax_amount"), "Tax");
   const realizedProfit = formData.get("realized_profit") ? parseNumber(formData.get("realized_profit"), "Realized profit") : null;
@@ -819,6 +838,7 @@ export async function addPlatformTransaction(formData: FormData) {
   try {
     assertNotFutureDate(date, "Transaction date");
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Invalid transaction date." };
   }
   // A locked NAV already priced this period from the platform values of the
@@ -865,7 +885,7 @@ export async function addPlatformTransaction(formData: FormData) {
   try {
     if (cashFlow !== 0) {
       const moneyIn = cashFlow > 0;
-      const withdrawal = moneyIn ? null : await getPlatformWithdrawalBasis(platformId);
+      const withdrawal = moneyIn ? null : await getPlatformWithdrawalBasis(platformId, date);
       const basis = moneyIn ? await getCapitalAllocationBasis() : withdrawal!.basis;
       const totalCap = moneyIn
         ? roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, basis[source] || 0), 0))
@@ -898,52 +918,57 @@ export async function addPlatformTransaction(formData: FormData) {
       }
     }
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to allocate transaction." };
   }
   const fundingSource = allocations.length > 0 ? primaryFundingSource(allocations) : "equity";
 
   try {
-    const inserted = await sql`
-      INSERT INTO platform_transactions (
-        platform_id, account_id, asset_id, funding_source, date, type, amount, currency, base_currency, base_amount,
-        fx_rate_to_base, from_currency, to_currency, from_amount, to_amount, quantity, price_per_unit,
-        gross_amount, fee_amount, tax_amount, net_amount, realized_profit, reference, status, settlement_date, notes
-      )
-      VALUES (
-        ${platformId}, ${accountId}, ${assetId}, ${fundingSource}, ${date}, ${type}, ${amount}, ${currency}, ${BASE_CURRENCY}, ${baseAmount},
-        ${fxRateToBase}, ${fromCurrency}, ${toCurrency}, ${fromAmount}, ${toAmount}, ${quantity}, ${pricePerUnit},
-        ${grossAmount}, ${feeAmount}, ${taxAmount}, ${netAmount}, ${realizedProfit}, ${reference}, ${status}, ${settlementDate}, ${notes}
-      )
-      RETURNING id
-    `;
-    for (const allocation of allocations) {
-      await sql`
-        INSERT INTO platform_transaction_allocations (transaction_id, funding_source, ratio_percent, base_amount)
-        VALUES (${inserted.rows[0].id}, ${allocation.fundingSource}, ${allocation.ratioPercent}, ${allocation.baseAmount})
+    // The transaction and its funding allocations must land together. A
+    // transaction left with no allocation rows falls back to its single
+    // funding_source column, which silently attributes the whole amount to one
+    // pool and corrupts every balance derived from it.
+    await withTransaction(async (db) => {
+      const inserted = await db`
+        INSERT INTO platform_transactions (
+          platform_id, account_id, asset_id, funding_source, date, type, amount, currency, base_currency, base_amount,
+          fx_rate_to_base, from_currency, to_currency, from_amount, to_amount, quantity, price_per_unit,
+          gross_amount, fee_amount, tax_amount, net_amount, realized_profit, reference, status, settlement_date, notes,
+          allocation_method
+        )
+        VALUES (
+          ${platformId}, ${accountId}, ${assetId}, ${fundingSource}, ${date}, ${type}, ${amount}, ${effectiveCurrency}, ${BASE_CURRENCY}, ${baseAmount},
+          ${fxRateToBase}, ${fromCurrency}, ${toCurrency}, ${fromAmount}, ${toAmount}, ${quantity}, ${pricePerUnit},
+          ${grossAmount}, ${feeAmount}, ${taxAmount}, ${netAmount}, ${realizedProfit}, ${reference}, ${status}, ${settlementDate}, ${notes},
+          ${allocations.length > 0 ? allocationMode : "none"}
+        )
+        RETURNING id
       `;
-    }
-    await sql`
-      UPDATE platform_transactions
-      SET allocation_method = ${allocations.length > 0 ? allocationMode : "none"}
-      WHERE id = ${inserted.rows[0].id}
-    `;
-    await writeAuditEvent("platform_transaction.add", "platform_transactions", inserted.rows[0].id, {
-      platformId,
-      accountId,
-      assetId,
-      fundingSource,
-      allocationMode: allocations.length > 0 ? allocationMode : "none",
-      allocations,
-      type,
-      amount,
-      currency,
-      baseAmount,
-      fxRateToBase,
-      status,
+      for (const allocation of allocations) {
+        await db`
+          INSERT INTO platform_transaction_allocations (transaction_id, funding_source, ratio_percent, base_amount)
+          VALUES (${inserted.rows[0].id}, ${allocation.fundingSource}, ${allocation.ratioPercent}, ${allocation.baseAmount})
+        `;
+      }
+      await writeAuditEvent("platform_transaction.add", "platform_transactions", inserted.rows[0].id, {
+        platformId,
+        accountId,
+        assetId,
+        fundingSource,
+        allocationMode: allocations.length > 0 ? allocationMode : "none",
+        allocations,
+        type,
+        amount,
+        currency: effectiveCurrency,
+        baseAmount,
+        fxRateToBase,
+        status,
+      }, db);
     });
     revalidateTrading(platformId);
     return { success: true };
   } catch (error) {
+    if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to add transaction." };
   }
 }

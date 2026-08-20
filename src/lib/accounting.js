@@ -110,11 +110,18 @@ function calculateBrokerageFundingAllocation({
     basis = { equity: 1, fixedSavings: 0, brokerage: 0, total: 1 };
   }
 
+  // Ratios are rounded for display only. Splitting the money by the *rounded*
+  // percentage let the shares drift from the total on large balances, so the
+  // shares are taken from the exact fractions and the residual is carried by
+  // the non-equity side, which keeps the parts summing to the whole.
   const equityRatio = roundMoney((basis.equity / basis.total) * 100);
   const fixedSavingsRatio = roundMoney((basis.fixedSavings / basis.total) * 100);
   const brokerageRatio = roundMoney((basis.brokerage / basis.total) * 100);
-  const equityProfitLoss = roundMoney(profitLoss * (equityRatio / 100));
-  const fixedSavingsProfitLoss = roundMoney(profitLoss * (fixedSavingsRatio / 100));
+  const equityProfitLoss = roundMoney(profitLoss * (basis.equity / basis.total));
+  const fixedSavingsProfitLoss = roundMoney(profitLoss * (basis.fixedSavings / basis.total));
+  // Everything not attributed to equity: the fixed-savings and brokerage shares
+  // together. This is the fund's "non-equity investment P&L" and is what the
+  // brokerage reconciliation reads - do not add fixedSavingsProfitLoss to it.
   const businessProfitLoss = roundMoney(profitLoss - equityProfitLoss);
 
   return {
@@ -130,6 +137,52 @@ function calculateBrokerageFundingAllocation({
     fixedSavingsProfitLoss,
     brokerageProfitLoss: businessProfitLoss,
     equityNavValue: roundMoney(equity + equityProfitLoss),
+  };
+}
+
+/**
+ * Split the fund's bank balance between the pools with a claim on it.
+ *
+ * Equity is the residual owner: savers hold a fixed contractual claim, the
+ * brokerage pot holds what it has earned and not yet spent, and equity owns the
+ * remainder. Counting the whole balance as equity - which this replaces - priced
+ * savers' money into the unit price.
+ *
+ * `nonEquityValueInPlatforms` is needed because the other pools hold part of
+ * their claim as platform value rather than cash. Without it their deployed
+ * capital would be deducted from cash it is no longer sitting in.
+ *
+ * The brokerage claim must be built from *cumulative* interest and bonuses, not
+ * outstanding ones: an obligation already paid in cash has left the bank, so
+ * treating it as no longer owed would return the money to equity twice.
+ */
+function calculateEquityFundCash({
+  bankBalance,
+  nonEquityValueInPlatforms,
+  fixedSavingsLiability,
+  nonEquityPlatformProfitLoss,
+  performanceFees,
+  cumulativeFixedSavingsInterest,
+  cumulativeFixedSavingsBonuses,
+  cumulativeEquityBonuses,
+}) {
+  const bank = roundMoney(Number(bankBalance) || 0);
+  const nonEquityInPlatforms = roundMoney(Number(nonEquityValueInPlatforms) || 0);
+  const savers = roundMoney(Number(fixedSavingsLiability) || 0);
+  const brokerageClaim = roundMoney(
+    (Number(nonEquityPlatformProfitLoss) || 0)
+      + (Number(performanceFees) || 0)
+      - (Number(cumulativeFixedSavingsInterest) || 0)
+      - (Number(cumulativeFixedSavingsBonuses) || 0)
+      - (Number(cumulativeEquityBonuses) || 0),
+  );
+
+  return {
+    bankBalance: bank,
+    nonEquityValueInPlatforms: nonEquityInPlatforms,
+    fixedSavingsLiability: savers,
+    brokerageClaim,
+    equity: roundMoney(bank + nonEquityInPlatforms - savers - brokerageClaim),
   };
 }
 
@@ -186,6 +239,7 @@ function accrueDailyCompoundInterest({ principal, annualRatePercent, startDate, 
 
 module.exports = {
   accrueDailyCompoundInterest,
+  calculateEquityFundCash,
   allocateFixedSavingsWithdrawal,
   calculateBrokerageFundingAllocation,
   calculateNavPerUnit,

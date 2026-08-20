@@ -99,3 +99,32 @@ test("thresholds are the documented values", () => {
   assert.equal(STALE_AFTER_DAYS, 30);
   assert.equal(MATERIAL_WEIGHT_PERCENT, 10);
 });
+
+test("fund cash counts toward the materiality denominator", () => {
+  // A platform worth 10,000 against 10,000 of platform value alone is 100% of
+  // the fund and blocks settlement. With 90,000 of fund cash it is 10% - still
+  // material - and with 190,000 it drops below the threshold.
+  const stalePlatform = {
+    totalValue: 10000,
+    source: "CARRIED_FORWARD",
+    valuationDate: "2025-01-01",
+    ageDays: 90,
+    isStale: true,
+  };
+
+  assert.equal(blockingValuations([stalePlatform]).length, 1);
+  assert.equal(blockingValuations([stalePlatform], 90000).length, 1);
+  assert.equal(blockingValuations([stalePlatform], 190000).length, 0);
+});
+
+test("a fresh platform never blocks regardless of weight", () => {
+  const fresh = {
+    totalValue: 10000,
+    source: "RECORDED",
+    valuationDate: "2025-06-01",
+    ageDays: 0,
+    isStale: false,
+  };
+  assert.equal(blockingValuations([fresh]).length, 0);
+  assert.equal(blockingValuations([fresh], 0).length, 0);
+});

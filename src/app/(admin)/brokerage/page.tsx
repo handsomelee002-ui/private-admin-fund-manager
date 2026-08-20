@@ -61,9 +61,14 @@ export default async function BrokeragePage({
       FROM performance_fees
       WHERE audit_status <> 'reverted'
     `, { route: "/brokerage" }).catch(() => null),
+    // Must filter to active. A reversal writes two rows - the original flipped
+    // to 'reverted' plus an opposite-type row marked 'reversal' - and the
+    // liability calculation only drops the first, so an unfiltered read counted
+    // the compensating withdrawal while ignoring the deposit it undid.
     timeAsync("route.brokerage.fixedSavingsRowsQuery", () => sql`
       SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
       FROM fixed_savings_ledger
+      WHERE audit_status = 'active'
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
     `, { route: "/brokerage" }),
     timeAsync("route.brokerage.getFixedSavingsRateInputs", () => getFixedSavingsRateInputs(), { route: "/brokerage" }),
@@ -77,7 +82,9 @@ export default async function BrokeragePage({
   const brokerageFeeEarned = withdrawalBrokerageEarned;
 
   const fixedSavingsLiability = calculateFixedSavingsLiability(fsRows.rows as any[], undefined, fixedSavingsRates);
-  const totalInterestOwed = fixedSavingsLiability.accruedInterest;
+  // Cumulative, not outstanding: interest already paid out in cash has still
+  // been borne by the pot, so netting it back would overstate what is left.
+  const totalInterestOwed = fixedSavingsLiability.totalAccruedInterest;
 
   const sortedBonusPayments = sortRows(bonusPayments, sortState, {
     investor: (bonus: any) => bonus.investor_name,
@@ -162,11 +169,11 @@ export default async function BrokeragePage({
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <TrendingDown className="h-4 w-4 text-orange-400" />
-                    Accrued Interest
+                    Interest Credited
                   </div>
                   <span className="font-semibold text-orange-400">-{fmt(totalInterestOwed)}</span>
                 </div>
-                <p className="text-[10px] text-muted-foreground mt-2">Contractual fixed-savings interest payable.</p>
+                <p className="text-[10px] text-muted-foreground mt-2">All fixed-savings interest ever credited, paid or still owed.</p>
               </div>
               <div className="rounded-md border border-border/50 bg-background/40 p-3">
                 <div className="flex items-center justify-between gap-3">
