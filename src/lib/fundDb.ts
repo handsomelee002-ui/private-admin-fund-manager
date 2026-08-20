@@ -981,6 +981,7 @@ export async function ensureFreshFundSchema() {
       investor_id UUID NOT NULL REFERENCES investors(id) ON DELETE CASCADE,
       locked_amount NUMERIC(15, 4) NOT NULL,
       settled_amount NUMERIC(15, 4) NOT NULL DEFAULT 0,
+      settled_gross_amount NUMERIC(15, 4) NOT NULL DEFAULT 0,
       brokerage_fee NUMERIC(15, 4) NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'pending',
       claim_date DATE NOT NULL,
@@ -990,6 +991,9 @@ export async function ensureFreshFundSchema() {
     );
   `;
   await sql`ALTER TABLE investor_profit_claims ADD COLUMN IF NOT EXISTS brokerage_fee NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  // Gross profit crystallized out of the position by settlement, as opposed to
+  // settled_amount which is the net cash paid.
+  await sql`ALTER TABLE investor_profit_claims ADD COLUMN IF NOT EXISTS settled_gross_amount NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`
     CREATE TABLE IF NOT EXISTS platforms (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -3179,9 +3183,21 @@ export async function seedDummyData() {
         });
       }
 
+      // The seed moves real money: subscriptions, redemptions, savings
+      // placements and trades. Leaving the bank balance unrecorded makes the
+      // book claim the fund holds nothing, so savers' undeployed cash shows up
+      // as negative equity instead of cash held on their behalf.
+      //
+      // Trade sizing here is formula-driven rather than cash-constrained, so a
+      // few weeks deploy marginally more than subscriptions brought in. A bank
+      // account cannot hold less than nothing - recordFundCash rejects a
+      // negative balance - so those weeks show an empty account.
+      const expectedCash = (await getFundCashAsOf(weekEnding)).expectedBalance;
+
       await createNavWeek({
         weekEnding,
         settlementDate: weekEnding,
+        fundCash: roundMoney(Math.max(expectedCash, 0)),
         platformSnapshots: [
           { platformId: ibkr.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 4) * 4800 + index * 210) },
           { platformId: moomoo.rows[0].id, unrealizedProfit: roundMoney(Math.cos(index / 5) * 2600 + index * 95) },

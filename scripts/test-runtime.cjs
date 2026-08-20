@@ -73,6 +73,10 @@ function installTsRuntime({
         clearAdminSession: async () => {},
         isAdminSessionValid: async () => true,
         requireAdmin: async () => ({ id: "admin", role: "admin", name: "Admin" }),
+        // Mirrors the real implementation. Server actions call this in every
+        // catch block, so omitting it here fails them with "not a function"
+        // rather than exercising the behaviour under test.
+        isRedirectError: (error) => typeof error?.digest === "string" && error.digest.startsWith("NEXT_REDIRECT"),
         generatePortalAccessId: () => `portal_${cryptoRandom()}`,
         assertDevelopmentDataToolsEnabled: () => {},
       };
