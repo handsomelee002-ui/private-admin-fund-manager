@@ -59,6 +59,34 @@ export type FundCashAttributionResult = {
   equity: number;
 };
 
+export type PoolAvailabilityPool = {
+  /** Everything the pool owns, cash and deployed capital together. */
+  claim: number;
+  /** The part of that claim currently sitting in a platform. */
+  deployed: number;
+  /** Cash the pool still has free to deploy. */
+  available: number;
+};
+
+export type PoolAvailabilityResult = {
+  bankBalance: number;
+  equity: PoolAvailabilityPool;
+  fixedSavings: PoolAvailabilityPool;
+  brokerage: PoolAvailabilityPool;
+};
+
+export function splitPoolAvailability(input: {
+  bankBalance: number;
+  equityValueInPlatforms: number;
+  fixedSavingsLiability: number;
+  fixedSavingsPrincipalInPlatforms: number;
+  brokerageBalance: number;
+  brokerageDeployedInPlatforms: number;
+}): PoolAvailabilityResult;
+
+/** Percentage shares of a total that always add to exactly 100. */
+export function allocateSharePercentages(values: number[]): number[];
+
 export function calculateEquityFundCash(input: {
   bankBalance: number;
   nonEquityValueInPlatforms: number;

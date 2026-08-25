@@ -2,7 +2,7 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { assertNotFutureDate, calculateFixedSavingsLiability, ensureAuditColumns, getFixedSavingsRateInputs, withTransaction, writeAuditEvent } from "@/lib/fundDb";
+import { assertNotFutureDate, calculateFixedSavingsLiability, ensureAuditColumns, getBrokerageBalance, getFixedSavingsRateInputs, withTransaction, writeAuditEvent } from "@/lib/fundDb";
 import { isRedirectError, requireAdmin } from "@/lib/auth";
 import {
   BASE_CURRENCY,
@@ -324,37 +324,12 @@ export async function getPlatforms() {
  * the fixed-savings liability - which is what previously double-counted them.
  */
 async function getCapitalAllocationBasis() {
-  const [summary, savings, deployed, rateInput] = await Promise.all([
+  const [summary, savings, deployed, rateInput, pot] = await Promise.all([
     sql`
-      WITH latest_nav AS (
-        SELECT id, net_asset_value, equity_fund_cash
-        FROM nav_weeks
-        WHERE status = 'locked'
-        ORDER BY week_ending DESC
-        LIMIT 1
-      ),
-      fees AS (
-        SELECT COALESCE(SUM(fee_amount), 0) as total
-        FROM performance_fees
-        WHERE audit_status <> 'reverted'
-      )
-      SELECT
-        COALESCE((SELECT equity_fund_cash FROM latest_nav), 0) as equity_fund_cash,
-        (SELECT id FROM latest_nav) as latest_nav_id,
-        COALESCE((SELECT total FROM fees), 0) as performance_fees,
-        COALESCE((
-          SELECT SUM(amount) FROM bonus_payments
-          WHERE audit_status = 'active' AND ledger_type = 'equity'
-        ), 0) as equity_bonuses,
-        COALESCE((
-          SELECT SUM(amount) FROM bonus_payments
-          WHERE audit_status = 'active' AND ledger_type = 'fixed_savings'
-        ), 0) as fixed_savings_bonuses,
-        COALESCE((
-          SELECT SUM(nwps.brokerage_profit_loss)
-          FROM nav_week_platform_snapshots nwps
-          WHERE nwps.nav_week_id = (SELECT id FROM latest_nav)
-        ), 0) as brokerage_profit_loss
+      SELECT COALESCE((
+        SELECT equity_fund_cash FROM nav_weeks
+        WHERE status = 'locked' ORDER BY week_ending DESC LIMIT 1
+      ), 0) as equity_fund_cash
     `,
     sql`
       SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
@@ -364,17 +339,14 @@ async function getCapitalAllocationBasis() {
     `,
     getPlatformSourceBalances(),
     getFixedSavingsRateInputs(),
+    // One source for the pot's balance. This used to be recomputed here, and
+    // drifted from /brokerage and from the NAV attribution.
+    getBrokerageBalance(),
   ]);
 
   const fixedSavings = calculateFixedSavingsLiability(savings.rows as any[], undefined, rateInput);
   const row = summary.rows[0] ?? {};
-  const brokerageBalance = roundMoney(
-    parseFloat(row.brokerage_profit_loss || "0")
-      + parseFloat(row.performance_fees || "0")
-      - fixedSavings.totalAccruedInterest
-      - parseFloat(row.fixed_savings_bonuses || "0")
-      - parseFloat(row.equity_bonuses || "0"),
-  );
+  const brokerageBalance = pot.balance;
 
   return {
     // equity_fund_cash is already net of what equity has deployed, so unlike

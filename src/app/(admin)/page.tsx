@@ -1,14 +1,15 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { AvailableCashPools } from "@/components/AvailableCashPools";
 import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
-import { getDashboardSummary } from "@/lib/fundDb";
+import { getDashboardSummary, getFundCashAvailability } from "@/lib/fundDb";
 import { formatMoney, formatPercent, formatUnits } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { Activity, Banknote, Landmark, Percent, Users, Wallet } from "lucide-react";
+import { Activity, Banknote, Coins, Landmark, Percent, Users, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,17 @@ export default async function Dashboard({
 }) {
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, dashboardInvestorSorts, { sort: "marketValue", dir: "desc" });
-  const summary = await timeAsync("route.dashboard.getDashboardSummary", () => getDashboardSummary(), { route: "/" });
+  const [summary, cashAvailability] = await Promise.all([
+    timeAsync("route.dashboard.getDashboardSummary", () => getDashboardSummary(), { route: "/" }),
+    timeAsync("route.dashboard.getFundCashAvailability", () => getFundCashAvailability(), { route: "/" }),
+  ]);
+  // Each pool's free cash, in the same order the funding forms show them.
+  const cashPools = [
+    { key: "equity", label: "Equity", ...cashAvailability.equity, text: "text-blue-400", bg: "bg-blue-400" },
+    { key: "fixed_savings", label: "Fixed Savings", ...cashAvailability.fixedSavings, text: "text-amber-400", bg: "bg-amber-400" },
+    { key: "brokerage", label: "Brokerage", ...cashAvailability.brokerage, text: "text-emerald-400", bg: "bg-emerald-400" },
+  ];
+
   const sortedInvestors = sortRows(summary.investors, sortState, {
     investor: (investor: any) => investor.name,
     units: (investor: any) => investor.units,
@@ -104,6 +115,32 @@ export default async function Dashboard({
           </CardContent>
         </Card>
       </div>
+
+      <Card className="bg-card/50 border-border/50">
+        <CardHeader className="flex flex-row items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Coins className="h-4 w-4 text-primary" />
+              <CardTitle className="text-base">Available Cash by Pool</CardTitle>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              What each pool can still deploy, as opposed to what it owns.
+            </p>
+          </div>
+          <div className="text-right">
+            <div className={metricValueClass}>{formatMoney(cashAvailability.bankBalance)}</div>
+            <p className="text-xs text-muted-foreground mt-1">Bank total</p>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <AvailableCashPools
+            pools={cashPools}
+            bankBalance={cashAvailability.bankBalance}
+            asOfDate={cashAvailability.asOfDate}
+            fundCashRecorded={cashAvailability.fundCashSource !== "NEVER_RECORDED"}
+          />
+        </CardContent>
+      </Card>
 
       <Card className="bg-card/50 border-border/50">
         <CardHeader>

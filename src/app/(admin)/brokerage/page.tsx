@@ -1,5 +1,4 @@
-﻿import { sql } from "@vercel/postgres";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+﻿import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
@@ -7,10 +6,11 @@ import {
   getAllBonusPayments,
   deleteBonusPayment,
 } from "@/actions/settings";
-import { calculateFixedSavingsLiability, getFixedSavingsRateInputs } from "@/lib/fundDb";
+import { getBrokerageBalance, getBrokerageWithdrawals } from "@/lib/fundDb";
 import { getInvestors } from "@/actions/investors";
 import { BrokerageFeeConfig } from "@/components/BrokerageFeeConfig";
 import { AddBonusForm } from "@/components/AddBonusForm";
+import { BrokerageWithdrawalForm } from "@/components/BrokerageWithdrawalForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { NotesTableCell } from "@/components/NotesTableCell";
 import { PaginationControls } from "@/components/PaginationControls";
@@ -19,7 +19,7 @@ import { formatMoney } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { Percent, DollarSign, TrendingDown, TrendingUp, Gift, Wallet } from "lucide-react";
+import { Percent, Banknote, DollarSign, TrendingDown, TrendingUp, Gift, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -36,55 +36,26 @@ export default async function BrokeragePage({
 
   const [
     brokerageFeeRate,
-    brokeragePnlRes,
-    withdrawalFeesRes,
-    fsRows,
-    fixedSavingsRates,
+    pot,
+    brokerageWithdrawals,
     bonusPayments,
     investors,
   ] = await Promise.all([
     timeAsync("route.brokerage.getBrokerageFeeRate", () => getBrokerageFeeRate(), { route: "/brokerage" }),
-    timeAsync("route.brokerage.latestBrokeragePnlQuery", () => sql`
-      WITH latest_nav AS (
-        SELECT id
-        FROM nav_weeks
-        WHERE status = 'locked'
-        ORDER BY week_ending DESC
-        LIMIT 1
-      )
-      SELECT COALESCE(SUM(nwps.brokerage_profit_loss), 0) as brokerage_profit_loss
-      FROM nav_week_platform_snapshots nwps
-      WHERE nwps.nav_week_id = (SELECT id FROM latest_nav)
-    `, { route: "/brokerage" }),
-    timeAsync("route.brokerage.withdrawalFeesQuery", () => sql`
-      SELECT COALESCE(SUM(fee_amount), 0) as total
-      FROM performance_fees
-      WHERE audit_status <> 'reverted'
-    `, { route: "/brokerage" }).catch(() => null),
-    // Must filter to active. A reversal writes two rows - the original flipped
-    // to 'reverted' plus an opposite-type row marked 'reversal' - and the
-    // liability calculation only drops the first, so an unfiltered read counted
-    // the compensating withdrawal while ignoring the deposit it undid.
-    timeAsync("route.brokerage.fixedSavingsRowsQuery", () => sql`
-      SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
-      FROM fixed_savings_ledger
-      WHERE audit_status = 'active'
-      ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
-    `, { route: "/brokerage" }),
-    timeAsync("route.brokerage.getFixedSavingsRateInputs", () => getFixedSavingsRateInputs(), { route: "/brokerage" }),
+    // One source for the pot's balance, shared with getCapitalAllocationBasis
+    // and the dashboard availability card. Recomputing it here is what made this
+    // page disagree with them.
+    timeAsync("route.brokerage.getBrokerageBalance", () => getBrokerageBalance(), { route: "/brokerage" }),
+    timeAsync("route.brokerage.getBrokerageWithdrawals", () => getBrokerageWithdrawals(), { route: "/brokerage" }),
     timeAsync("route.brokerage.getAllBonusPayments", () => getAllBonusPayments(), { route: "/brokerage" }),
     timeAsync("route.brokerage.getInvestors", () => getInvestors(), { route: "/brokerage" }),
   ]);
 
-  const brokerageProfitLoss = parseFloat(brokeragePnlRes.rows[0]?.brokerage_profit_loss || "0");
-  const withdrawalBrokerageEarned = parseFloat(withdrawalFeesRes?.rows[0]?.total || "0");
-
-  const brokerageFeeEarned = withdrawalBrokerageEarned;
-
-  const fixedSavingsLiability = calculateFixedSavingsLiability(fsRows.rows as any[], undefined, fixedSavingsRates);
+  const brokerageProfitLoss = pot.platformProfitLoss;
+  const brokerageFeeEarned = pot.performanceFees;
   // Cumulative, not outstanding: interest already paid out in cash has still
   // been borne by the pot, so netting it back would overstate what is left.
-  const totalInterestOwed = fixedSavingsLiability.totalAccruedInterest;
+  const totalInterestOwed = pot.savingsInterest;
 
   const sortedBonusPayments = sortRows(bonusPayments, sortState, {
     investor: (bonus: any) => bonus.investor_name,
@@ -93,9 +64,10 @@ export default async function BrokeragePage({
     amount: (bonus: any) => bonus.amount,
   });
   const bonusPagination = paginateRows(sortedBonusPayments, resolvedSearchParams);
-  const totalBonusPaid = bonusPayments.reduce((sum: number, b: any) => sum + parseFloat(b.amount), 0);
+  const totalBonusPaid = pot.bonuses;
 
-  const netCommission = brokerageProfitLoss + brokerageFeeEarned - totalInterestOwed - totalBonusPaid;
+  const netCommission = pot.balance;
+  const totalWithdrawn = pot.withdrawals;
 
   const fmt = formatMoney;
 
@@ -136,11 +108,16 @@ export default async function BrokeragePage({
               </div>
               <p className="text-xs text-muted-foreground mt-1">Brokerage P&L + fees - accrued interest - investor bonuses.</p>
             </div>
-            <div className="text-right">
-              <div className={`${metricValueClass} ${netCommission >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                {netCommission >= 0 ? "+" : ""}{fmt(netCommission)}
+            <div className="flex items-start gap-4">
+              <div className="text-right">
+                <div className={`${metricValueClass} ${netCommission >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                  {netCommission >= 0 ? "+" : ""}{fmt(netCommission)}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {netCommission > 0 ? "Available to withdraw" : "Nothing to withdraw"}
+                </p>
               </div>
-              <p className="text-xs text-muted-foreground mt-1">Net available</p>
+              <BrokerageWithdrawalForm available={netCommission} />
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -185,14 +162,65 @@ export default async function BrokeragePage({
                 </div>
                 <p className="text-[10px] text-muted-foreground mt-2">Equity and fixed-savings bonus adjustments.</p>
               </div>
+              <div className="rounded-md border border-border/50 bg-background/40 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Banknote className="h-4 w-4 text-sky-400" />
+                    Cash Withdrawn
+                  </div>
+                  <span className="font-semibold text-sky-400">-{fmt(totalWithdrawn)}</span>
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-2">Already paid out of the fund&apos;s bank account.</p>
+              </div>
             </div>
 
             <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-              Formula: {fmt(brokerageProfitLoss)} + {fmt(brokerageFeeEarned)} - {fmt(totalInterestOwed)} - {fmt(totalBonusPaid)}
+              Formula: {fmt(brokerageProfitLoss)} + {fmt(brokerageFeeEarned)} - {fmt(totalInterestOwed)} - {fmt(totalBonusPaid)} - {fmt(totalWithdrawn)}
             </div>
           </CardContent>
         </Card>
       </div>
+
+      <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Banknote className="h-4 w-4 text-primary" />
+            <CardTitle className="text-base">Brokerage Withdrawals</CardTitle>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            Cash taken out of the pot. Each one also reduced the fund&apos;s recorded bank balance.
+          </p>
+        </CardHeader>
+        <CardContent className="p-0">
+          <Table className="table-fixed">
+            <TableHeader>
+              <TableRow className="border-b border-border/50 hover:bg-transparent">
+                <TableHead className="w-[140px] pl-6">Date</TableHead>
+                <TableHead className="w-[160px] text-right">Amount</TableHead>
+                <TableHead className="pr-6">Notes</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {brokerageWithdrawals.map((withdrawal: any) => (
+                <TableRow key={withdrawal.id} className="hover:bg-muted/20 transition-colors border-border/30">
+                  <TableCell className="pl-6 text-sm text-muted-foreground">{withdrawal.date}</TableCell>
+                  <TableCell className="text-right font-bold tabular-nums text-sm text-sky-400">
+                    -{fmt(parseFloat(withdrawal.amount))}
+                  </TableCell>
+                  <NotesTableCell value={withdrawal.notes} className="pr-6" />
+                </TableRow>
+              ))}
+              {brokerageWithdrawals.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={3} className="text-center text-muted-foreground py-12 text-sm">
+                    No withdrawals yet. Profit stays in the pot until it is taken out.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
 
       <Card className="bg-card/50 backdrop-blur-sm border-border/50 shadow-sm">
         <CardHeader className="flex flex-row items-center justify-between">

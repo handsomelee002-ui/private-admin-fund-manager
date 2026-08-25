@@ -14,6 +14,7 @@ import { NotesTableCell } from "@/components/NotesTableCell";
 import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { Badge } from "@/components/ui/badge";
+import { getFundCashAvailability } from "@/lib/fundDb";
 import { formatMoney } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { calculatePlatformPerformance } from "@/lib/platformPerformance";
@@ -45,11 +46,17 @@ export default async function PlatformDetailsPage({
   const platform = await getPlatform(platformId);
   if (!platform) return notFound();
 
-  const [transactions, snapshots, capitalAllocation] = await Promise.all([
+  const [transactions, snapshots, capitalAllocation, cashAvailability] = await Promise.all([
     getPlatformTransactions(platformId),
     getPlatformNavSnapshots(platformId),
     getPlatformCapitalAllocation(platformId),
+    getFundCashAvailability(),
   ]);
+  const availableBySource = {
+    equity: cashAvailability.equity.available,
+    fixed_savings: cashAvailability.fixedSavings.available,
+    brokerage: cashAvailability.brokerage.available,
+  };
   const performance = calculatePlatformPerformance(transactions, snapshots);
   const netInvested = performance.netInvested;
   const realizedProfit = performance.realizedProfit;
@@ -207,6 +214,8 @@ export default async function PlatformDetailsPage({
                 platformId={platformId}
                 automaticAllocationBasis={capitalAllocation.automaticBasis}
                 platformAllocationBalances={capitalAllocation.platformBalances}
+                availableBySource={availableBySource}
+                fundCashRecorded={cashAvailability.fundCashSource !== "NEVER_RECORDED"}
               />
             </TabsContent>
           </div>

@@ -233,6 +233,63 @@ async function firstInvestor(name) {
     assert.equal(full.brokerageFee, 35);
   });
 
+  await check("brokerage withdrawal is capped, writes both legs, and agrees across screens", async () => {
+    // Every screen must quote the same pot. This is the whole point of the
+    // shared balance function - the three implementations had drifted apart.
+    const pot = await fundDb.getBrokerageBalance();
+    const basis = await trading.getPlatformCapitalAllocation((await one(await sql`SELECT id FROM platforms LIMIT 1`)).id);
+    const availability = await fundDb.getFundCashAvailability();
+    assert.equal(availability.brokerage.claim, pot.balance);
+    // getCapitalAllocationBasis clamps at zero, so it can only be compared when
+    // the pot is in credit and has nothing deployed against it.
+    assert.equal(typeof basis.automaticBasis.brokerage, "number");
+
+    // A pot in deficit must refuse, not pay out of the bank.
+    if (pot.balance <= 0) {
+      await assert.rejects(
+        () => fundDb.recordBrokerageWithdrawal({ date: "2026-07-04", amount: 1, notes: "should refuse" }),
+        /holds nothing to withdraw/i,
+      );
+    }
+
+    // Put the pot in credit so the paying path is genuinely exercised rather
+    // than only ever testing the refusal branch.
+    await sql`INSERT INTO brokerage_withdrawals (date, amount, notes) VALUES ('2026-07-01', -50000, 'test credit')`;
+    const funded = await fundDb.getBrokerageBalance();
+    assert.equal(funded.balance > 0, true, `expected a positive pot, got ${funded.balance}`);
+
+    await assert.rejects(
+      () => fundDb.recordBrokerageWithdrawal({ date: "2026-07-04", amount: funded.balance + 1000 }),
+      /exceeds the brokerage balance/i,
+    );
+    await assert.rejects(
+      () => fundDb.recordBrokerageWithdrawal({ date: "2026-07-04", amount: -5 }),
+      /must be a positive number/i,
+    );
+
+    const cashBefore = (await fundDb.getFundCashAsOf("2026-07-04")).balance;
+    const take = Math.min(500, funded.balance);
+    const result = await fundDb.recordBrokerageWithdrawal({ date: "2026-07-04", amount: take, notes: "feature test" });
+    assert.equal(result.amount, take);
+
+    // Both legs, or equity silently absorbs the difference.
+    const potAfter = await fundDb.getBrokerageBalance();
+    assert.equal(money(potAfter.balance), money(funded.balance - take));
+    assert.equal(money(potAfter.withdrawals), money(funded.withdrawals + take));
+    const cashAfter = (await fundDb.getFundCashAsOf("2026-07-04")).balance;
+    assert.equal(money(cashAfter), money(cashBefore - take));
+
+    // The availability card still reconciles to the bank after the withdrawal.
+    const after = await fundDb.getFundCashAvailability("2026-07-04");
+    const summed = after.equity.available + after.fixedSavings.available + after.brokerage.available;
+    assert.equal(money(summed), money(after.bankBalance));
+
+    const listed = await fundDb.getBrokerageWithdrawals();
+    assert.equal(listed.some((row) => row.date === "2026-07-04" && Number(row.amount) === take), true);
+
+    await sql`DELETE FROM brokerage_withdrawals WHERE notes IN ('test credit', 'feature test')`;
+  });
+
   await check("equity withdrawal rejects an overdraw instead of silently under-filling", async () => {
     // Alice holds units; an investor with none hits the earlier "no units" guard.
     const alice = await firstInvestor("Alice Tan");

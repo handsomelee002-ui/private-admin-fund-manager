@@ -4,14 +4,15 @@ import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { NoPrefetchLink } from "@/components/NoPrefetchLink";
 import { NotesTableCell } from "@/components/NotesTableCell";
 import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestorStatementByPortalAccessId } from "@/lib/fundDb";
-import { formatMoney, formatUnits } from "@/lib/formatting";
+import { formatMoney, formatPercent, formatUnits } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { Banknote, Percent, TrendingUp, Wallet } from "lucide-react";
+import { Banknote, LayoutDashboard, Percent, TrendingUp, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,12 @@ const activitySorts = ["date", "ledger", "type", "units", "nav", "amount"] as co
 const metricHeaderClass = "flex min-h-12 flex-row items-start justify-between gap-3 pb-2";
 const metricTitleClass = "text-sm leading-5 text-muted-foreground";
 const metricValueClass = "text-[1.625rem] leading-8 font-bold whitespace-nowrap tabular-nums tracking-normal";
+
+// Mirrors the admin statement view so the same investor sees the same figure in
+// both places. Kept identical to src/app/(admin)/investors/[id]/page.tsx.
+function signedMoney(value: number) {
+  return `${value > 0 ? "+" : ""}${formatMoney(value)}`;
+}
 
 export default async function InvestorPortalPage({
   params,
@@ -51,9 +58,18 @@ export default async function InvestorPortalPage({
   return (
     <div className="min-h-screen bg-background p-8">
       <div className="mx-auto max-w-7xl space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">{statement.investor.name}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Investor activity, units, cash movements, bonuses, and fixed savings.</p>
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">{statement.investor.name}</h1>
+            <p className="mt-1 text-sm text-muted-foreground">Investor activity, units, cash movements, bonuses, and fixed savings.</p>
+          </div>
+          <NoPrefetchLink
+            href={`/portal/${portal_access_id}/dashboard`}
+            className="inline-flex h-9 items-center justify-center gap-2 whitespace-nowrap rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow transition-colors hover:bg-primary/90"
+          >
+            <LayoutDashboard className="h-4 w-4" />
+            Dashboard
+          </NoPrefetchLink>
         </div>
 
         <div className="grid gap-4 md:grid-cols-5">
@@ -69,7 +85,15 @@ export default async function InvestorPortalPage({
               <CardTitle className={metricTitleClass}>Market Value</CardTitle>
               <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
             </CardHeader>
-            <CardContent><div className={metricValueClass}>{formatMoney(statement.marketValue)}</div></CardContent>
+            <CardContent>
+              <div className={metricValueClass}>{formatMoney(statement.marketValue)}</div>
+              <p
+                className={`text-xs mt-1 ${statement.equityPnlAmount >= 0 ? "text-emerald-400" : "text-red-400"}`}
+                title="Equity P&L equals current market value minus remaining equity cost basis."
+              >
+                {signedMoney(statement.equityPnlAmount)} | {formatPercent(statement.equityReturnPercent, { signed: true })}
+              </p>
+            </CardContent>
           </Card>
           <Card className="bg-card/50 border-border/50">
             <CardHeader className={metricHeaderClass}>

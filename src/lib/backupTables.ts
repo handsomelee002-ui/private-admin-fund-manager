@@ -1,9 +1,9 @@
-export const BACKUP_SCHEMA_VERSION = 4;
+export const BACKUP_SCHEMA_VERSION = 5;
 
 // Older backups predate tables added since. They restore fine — the missing
 // tables simply come back empty — so keep accepting them rather than stranding
 // existing backup files.
-export const SUPPORTED_BACKUP_SCHEMA_VERSIONS = [2, 3, 4] as const;
+export const SUPPORTED_BACKUP_SCHEMA_VERSIONS = [2, 3, 4, 5] as const;
 
 // Exact table order each schema version wrote, so an older backup still
 // validates against the order it was exported with.
@@ -30,6 +30,31 @@ export const BACKUP_TABLE_ORDER_BY_VERSION: Record<number, readonly string[]> = 
     "platform_performance",
     "trading_ledger",
     "cash_balances",
+    "audit_events",
+  ],
+  4: [
+    "investors",
+    "fund_config",
+    "platforms",
+    "platform_accounts",
+    "platform_assets",
+    "platform_valuations",
+    "fund_cash_valuations",
+    "nav_weeks",
+    "nav_week_platform_snapshots",
+    "investor_unit_ledger",
+    "cash_movements",
+    "fixed_savings_base_rates",
+    "fixed_savings_promotions",
+    "fixed_savings_accounts",
+    "fixed_savings_ledger",
+    "performance_fees",
+    "bonus_payments",
+    "investor_profit_claims",
+    "capital_ledger",
+    "platform_transactions",
+    "platform_transaction_allocations",
+    "trading_ledger",
     "audit_events",
   ],
   3: [
@@ -63,8 +88,9 @@ export const BACKUP_TABLE_ORDER_BY_VERSION: Record<number, readonly string[]> = 
 // not fail merely because these keys are absent, and v2's platform_performance
 // was never actually created by any migration, so it is ignored on restore.
 export const TABLES_MISSING_IN_VERSION: Record<number, readonly string[]> = {
-  2: ["platform_valuations", "platform_transaction_allocations", "fund_cash_valuations"],
-  3: ["fund_cash_valuations"],
+  2: ["platform_valuations", "platform_transaction_allocations", "fund_cash_valuations", "brokerage_withdrawals"],
+  3: ["fund_cash_valuations", "brokerage_withdrawals"],
+  4: ["brokerage_withdrawals"],
 };
 
 // platform_performance was never created by any migration, and cash_balances
@@ -96,6 +122,7 @@ export const BACKUP_TABLES = [
   "platform_transactions",
   "platform_transaction_allocations",
   "trading_ledger",
+  "brokerage_withdrawals",
   "audit_events",
 ] as const;
 

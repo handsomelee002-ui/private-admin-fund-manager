@@ -8,6 +8,7 @@ import {
   assertNotFutureDate,
   calculateFixedSavingsLiability,
   getFixedSavingsRateInputs,
+  recordBrokerageWithdrawal,
   withTransaction,
   writeAuditEvent,
 } from "@/lib/fundDb";
@@ -339,4 +340,32 @@ export async function deleteBonusPayment(_id: string) {
   await requireAdmin();
   void _id;
   return { error: "Financial bonus records cannot be deleted. Use Admin Logs revert instead." };
+}
+
+/** Take cash out of the brokerage pot, reducing the fund's bank balance with it. */
+export async function recordBrokerageWithdrawalAction(formData: FormData) {
+  try {
+    await requireAdmin();
+    const date = formData.get("date")?.toString();
+    if (!date) return { error: "Withdrawal date is required." };
+
+    const amount = Number(formData.get("amount"));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return { error: "Withdrawal amount must be a positive number." };
+    }
+
+    await recordBrokerageWithdrawal({
+      date,
+      amount,
+      notes: formData.get("notes")?.toString() || "",
+    });
+    revalidatePath("/brokerage");
+    revalidatePath("/");
+    revalidatePath("/nav");
+    revalidatePath("/trading");
+    return { success: true };
+  } catch (error) {
+    if (isRedirectError(error)) throw error;
+    return { error: error instanceof Error ? error.message : "Failed to record brokerage withdrawal." };
+  }
 }

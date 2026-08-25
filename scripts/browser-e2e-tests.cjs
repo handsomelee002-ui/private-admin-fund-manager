@@ -432,10 +432,146 @@ async function noHorizontalOverflow(page) {
       assert.equal(await bodyIncludes(page, "Activity Ledger"), true);
     });
 
+    // The portal and the admin statement read the same getInvestorStatement, so
+    // any difference here is a rendering gap rather than a data one - which is
+    // exactly how the equity P&L line went missing from the portal.
+    await check("portal shows the same equity P&L figure as the admin statement", async () => {
+      // Must be an investor with a real position. The investor this suite
+      // creates holds no units, so both pages would render "RM 0.00 | -" and
+      // match each other while proving nothing.
+      const holder = await sql`
+        SELECT investor_id, SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END) as units
+        FROM investor_unit_ledger
+        WHERE audit_status = 'active'
+        GROUP BY investor_id
+        HAVING SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END) > 0
+        ORDER BY units DESC
+        LIMIT 1
+      `;
+      assert.equal(holder.rows.length, 1, "no investor holds units, cannot compare statements");
+      const investorId = holder.rows[0].investor_id;
+      const portalId = `ui_portal_parity_${unique}`;
+      await sql`UPDATE investors SET portal_access_id = ${portalId}, portal_access_rotated_at = NOW() WHERE id = ${investorId}`;
+
+      const pnlSelector = 'document.querySelector(\'[title^="Equity P&L equals"]\')?.innerText?.trim() ?? null';
+
+      await navigate(page, `http://localhost:${TEST_PORT}/investors/${investorId}`);
+      await waitFor(page, `${pnlSelector} !== null`);
+      const adminPnl = await evalJs(page, pnlSelector);
+
+      await navigate(page, `http://localhost:${TEST_PORT}/portal/${portalId}`);
+      await waitFor(page, `${pnlSelector} !== null`);
+      const portalPnl = await evalJs(page, pnlSelector);
+
+      // Guard against both sides rendering a placeholder and "matching".
+      assert.match(adminPnl, /^[+-]?RM [\d,]+\.\d\d \| [+-]?[\d,.]+%$/, `admin statement P&L line looks wrong: ${adminPnl}`);
+      assert.equal(portalPnl, adminPnl);
+    });
+
+    await check("available cash pools open their detail on hover and on click", async () => {
+      await setViewport(page, 1366, 900);
+      await navigate(page, `http://localhost:${TEST_PORT}/`);
+      await waitFor(page, 'document.body.innerText.includes("Available Cash by Pool")');
+
+      const tiles = await evalJs(page, `
+        [...document.querySelectorAll("[data-slot=popover-trigger]")].length
+      `);
+      assert.equal(tiles, 3, `expected 3 pool tiles, found ${tiles}`);
+
+      // Hover is the primary affordance, so it has to actually open the popup.
+      const box = await evalJs(page, `(() => {
+        const rect = document.querySelectorAll("[data-slot=popover-trigger]")[0].getBoundingClientRect();
+        return JSON.stringify({ x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) });
+      })()`);
+      const point = JSON.parse(box);
+      await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, buttons: 0 });
+      await waitFor(page, 'document.querySelector("[data-slot=popover-content]")');
+      assert.equal(await bodyIncludes(page, "Deployed in platforms"), true);
+
+      // Hover alone is unreachable on touch, so clicking must work too.
+      await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5, buttons: 0 });
+      await waitFor(page, '!document.querySelector("[data-slot=popover-content]")');
+      await clickTriggerMouse(page, "Fixed Savings");
+      await waitFor(page, 'document.querySelector("[data-slot=popover-content]")');
+      assert.equal(await bodyIncludes(page, "Owned"), true);
+
+      // The brokerage figure is known-unreliable, so the tile must not present a
+      // number that reads as a balance.
+      const brokerageHeadline = await evalJs(page, `(() => {
+        const tile = [...document.querySelectorAll("[data-slot=popover-trigger]")]
+          .find((node) => node.innerText.includes("Brokerage"));
+        return tile ? tile.innerText : null;
+      })()`);
+      assert.equal(brokerageHeadline !== null, true, "no brokerage tile found");
+      assert.equal(
+        /RM\s*-?[\d,]+\.\d\d/.test(brokerageHeadline),
+        false,
+        `brokerage tile shows a figure it cannot stand behind: ${brokerageHeadline}`,
+      );
+    });
+
+    await check("investor dashboard renders, links both ways, and leaks no platform values", async () => {
+      const holder = await sql`
+        SELECT investor_id, SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END) as units
+        FROM investor_unit_ledger
+        WHERE audit_status = 'active'
+        GROUP BY investor_id
+        HAVING SUM(CASE WHEN type = 'UnitIssue' THEN units ELSE -units END) > 0
+        ORDER BY units DESC
+        LIMIT 1
+      `;
+      assert.equal(holder.rows.length, 1, "no investor holds units");
+      const portalId = `ui_portal_dash_${unique}`;
+      await sql`UPDATE investors SET portal_access_id = ${portalId}, portal_access_rotated_at = NOW() WHERE id = ${holder.rows[0].investor_id}`;
+
+      // Activity page -> dashboard.
+      await navigate(page, `http://localhost:${TEST_PORT}/portal/${portalId}`);
+      await waitFor(page, 'document.body.innerText.includes("Dashboard")');
+      await clickText(page, "Dashboard");
+      await waitFor(page, 'location.pathname.endsWith("/dashboard")');
+      await waitFor(page, 'document.body.innerText.includes("Where the Fund Is Invested")');
+      assert.equal(await bodyIncludes(page, "Your Value Over Time"), true);
+      assert.equal(await bodyIncludes(page, "Fund NAV per Unit"), true);
+
+      // The platform names the investor is told about must actually be the
+      // fund's platforms, each shown as a percentage.
+      const platforms = await sql`
+        WITH latest_nav AS (SELECT id FROM nav_weeks WHERE status = 'locked' ORDER BY week_ending DESC LIMIT 1)
+        SELECT p.name, nwps.total_value::float AS total_value
+        FROM nav_week_platform_snapshots nwps
+        JOIN platforms p ON p.id = nwps.platform_id
+        WHERE nwps.nav_week_id = (SELECT id FROM latest_nav) AND nwps.total_value > 0
+      `;
+      assert.equal(platforms.rows.length > 0, true, "no platforms in the latest locked NAV");
+      for (const platform of platforms.rows) {
+        assert.equal(await bodyIncludes(page, platform.name), true, `dashboard omits platform ${platform.name}`);
+      }
+
+      // Hiding an RM figure in the markup is not enough - a server component
+      // ships its props to the browser, so the value would still be readable in
+      // the page payload. Assert against the whole document, not the text.
+      const html = await evalJs(page, "document.documentElement.outerHTML");
+      for (const platform of platforms.rows) {
+        const value = Number(platform.total_value);
+        for (const rendering of [value.toFixed(2), value.toFixed(0), String(value)]) {
+          assert.equal(
+            html.includes(rendering),
+            false,
+            `portal dashboard leaks platform value ${rendering} for ${platform.name}`,
+          );
+        }
+      }
+
+      // Dashboard -> activity page.
+      await clickText(page, "Activity Ledger");
+      await waitFor(page, 'document.body.innerText.includes("Activity Ledger")');
+      await waitFor(page, '!location.pathname.endsWith("/dashboard")');
+    });
+
     await check("tablet and mobile smoke tests avoid horizontal overflow on dense admin pages", async () => {
       for (const [width, height] of [[768, 1024], [390, 844]]) {
         await setViewport(page, width, height);
-        for (const route of ["/investors", "/capital", "/fixed-savings", "/claims", "/nav", "/trading"]) {
+        for (const route of ["/", "/investors", "/capital", "/fixed-savings", "/claims", "/nav", "/trading"]) {
           await navigate(page, `http://localhost:${TEST_PORT}${route}`);
           await waitFor(page, "document.body.innerText.length > 0");
           assert.equal(await noHorizontalOverflow(page), true, `${route} overflows at ${width}px`);

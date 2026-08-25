@@ -1,6 +1,7 @@
 import { createClient, sql, type QueryResult, type QueryResultRow } from "@vercel/postgres";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  allocateSharePercentages,
   calculateBrokerageFundingAllocation,
   calculateEquityFundCash,
   calculateNavPerUnit,
@@ -9,6 +10,7 @@ import {
   redeemUnitsForWithdrawal,
   roundMoney,
   roundUnits,
+  splitPoolAvailability,
 } from "@/lib/accounting";
 import { requireAdmin } from "@/lib/auth";
 import { BACKUP_TABLES, assertBackupTableName } from "@/lib/backupTables";
@@ -359,6 +361,20 @@ async function ensureAuditColumnsUncached() {
   await sql`ALTER TABLE performance_fees ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE performance_fees ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
   await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
+  // Cash the operator has taken out of the brokerage pot. Created here as well
+  // as in ensureFreshFundSchema: a table defined in only one of the two is how
+  // settled_gross_amount broke every fresh install.
+  await sql`
+    CREATE TABLE IF NOT EXISTS brokerage_withdrawals (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      date DATE NOT NULL,
+      amount NUMERIC(15, 4) NOT NULL,
+      notes TEXT,
+      audit_status TEXT NOT NULL DEFAULT 'active',
+      reversal_of_id UUID,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `;
   await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
@@ -1202,6 +1218,18 @@ export async function ensureFreshFundSchema() {
   `;
   await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS source_id UUID`;
   await sql`
+    CREATE TABLE IF NOT EXISTS brokerage_withdrawals (
+      id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+      date DATE NOT NULL,
+      amount NUMERIC(15, 4) NOT NULL,
+      notes TEXT,
+      audit_status TEXT NOT NULL DEFAULT 'active',
+      reversal_of_id UUID,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `;
+  await sql`CREATE INDEX IF NOT EXISTS brokerage_withdrawals_date_idx ON brokerage_withdrawals (date DESC)`;
+  await sql`
     CREATE TABLE IF NOT EXISTS audit_events (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
       actor_id TEXT NOT NULL,
@@ -1543,6 +1571,190 @@ export type FundCashAttribution = {
   brokerageClaim: number;
   equity: number;
 };
+
+/** Savers' total claim on a date: principal plus interest accrued to it. */
+export async function getFixedSavingsLiabilityAsOf(asOfDate?: string) {
+  // Two statements rather than an interpolated WHERE clause: the tagged template
+  // parameterises values, not SQL fragments, so a nested template is passed as an
+  // object and rejected.
+  const [rows, rateInput] = await Promise.all([
+    asOfDate
+      ? sql`
+          SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
+          FROM fixed_savings_ledger
+          WHERE audit_status = 'active' AND date <= ${asOfDate}
+          ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
+        `
+      : sql`
+          SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
+          FROM fixed_savings_ledger
+          WHERE audit_status = 'active'
+          ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
+        `,
+    getFixedSavingsRateInputs(),
+  ]);
+  return calculateFixedSavingsLiability(rows.rows as FixedSavingsLedgerRow[], asOfDate, rateInput);
+}
+
+/**
+ * The brokerage pot's balance: the operator's own side of the book.
+ *
+ * It earns performance fees and the spread on non-equity money - savers are
+ * promised a fixed rate, their capital earns whatever it earns, and the
+ * difference belongs to the operator. It owes savings interest and investor
+ * bonuses, and is reduced by cash already withdrawn.
+ *
+ * Platform P&L is taken from the latest **locked** NAV snapshot, not recomputed
+ * from today's marks. That is the house convention - it is how the fund prices
+ * itself and how every other locked figure on screen is derived - and this
+ * function exists so the convention is applied in exactly one place. The number
+ * was previously computed independently on /brokerage, in
+ * getCapitalAllocationBasis and inside the NAV attribution, and the three
+ * drifted apart by the platform P&L term.
+ *
+ * Fees, bonuses and interest are cumulative to today rather than to the locked
+ * week: an obligation already settled in cash has still been borne by the pot,
+ * so netting it back would hand the money over twice.
+ */
+export async function getBrokerageBalance() {
+  await ensureAuditColumns();
+  const [totals, savingsRows, rateInput] = await Promise.all([
+    sql`
+      WITH latest_nav AS (
+        SELECT id FROM nav_weeks WHERE status = 'locked' ORDER BY week_ending DESC LIMIT 1
+      )
+      SELECT
+        COALESCE((
+          SELECT SUM(nwps.brokerage_profit_loss)
+          FROM nav_week_platform_snapshots nwps
+          WHERE nwps.nav_week_id = (SELECT id FROM latest_nav)
+        ), 0) as platform_profit_loss,
+        COALESCE((
+          SELECT SUM(fee_amount) FROM performance_fees WHERE audit_status <> 'reverted'
+        ), 0) as performance_fees,
+        COALESCE((
+          SELECT SUM(amount) FROM bonus_payments
+          WHERE audit_status = 'active' AND ledger_type = 'equity'
+        ), 0) as equity_bonuses,
+        COALESCE((
+          SELECT SUM(amount) FROM bonus_payments
+          WHERE audit_status = 'active' AND ledger_type = 'fixed_savings'
+        ), 0) as fixed_savings_bonuses,
+        COALESCE((
+          SELECT SUM(amount) FROM brokerage_withdrawals WHERE audit_status = 'active'
+        ), 0) as withdrawals
+    `,
+    sql`
+      SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
+      FROM fixed_savings_ledger
+      WHERE audit_status = 'active'
+      ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
+    `,
+    getFixedSavingsRateInputs(),
+  ]);
+
+  const row = totals.rows[0] ?? {};
+  const savings = calculateFixedSavingsLiability(savingsRows.rows as FixedSavingsLedgerRow[], undefined, rateInput);
+  const platformProfitLoss = parseFloat(row.platform_profit_loss || "0");
+  const performanceFees = parseFloat(row.performance_fees || "0");
+  const savingsInterest = savings.totalAccruedInterest;
+  const bonuses = roundMoney(parseFloat(row.equity_bonuses || "0") + parseFloat(row.fixed_savings_bonuses || "0"));
+  const withdrawals = parseFloat(row.withdrawals || "0");
+
+  return {
+    platformProfitLoss: roundMoney(platformProfitLoss),
+    performanceFees: roundMoney(performanceFees),
+    savingsInterest: roundMoney(savingsInterest),
+    bonuses,
+    withdrawals: roundMoney(withdrawals),
+    balance: roundMoney(platformProfitLoss + performanceFees - savingsInterest - bonuses - withdrawals),
+  };
+}
+
+/**
+ * Take cash out of the brokerage pot.
+ *
+ * Money genuinely leaves the fund, so both legs are written: the pot is reduced
+ * and the recorded bank balance falls by the same amount. Writing only the pot
+ * leg would leave the bank holding cash nobody claims, and equity - the residual
+ * owner - would silently absorb it.
+ */
+export async function recordBrokerageWithdrawal(input: { date: string; amount: number; notes?: string }) {
+  await requireAdmin();
+  await ensureAuditColumns();
+  assertNotFutureDate(input.date, "Withdrawal date");
+
+  const amount = roundMoney(input.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("Withdrawal amount must be a positive number.");
+  }
+
+  const pot = await getBrokerageBalance();
+  if (pot.balance <= 0) {
+    throw new Error(
+      `The brokerage pot holds nothing to withdraw. Its balance is RM ${pot.balance.toFixed(2)}.`,
+    );
+  }
+  if (amount > pot.balance) {
+    throw new Error(
+      `Withdrawal of RM ${amount.toFixed(2)} exceeds the brokerage balance of RM ${pot.balance.toFixed(2)}.`,
+    );
+  }
+
+  const cash = await getFundCashAsOf(input.date);
+  const nextBalance = roundMoney(cash.balance - amount);
+  if (nextBalance < 0) {
+    throw new Error(
+      `The fund's bank balance on ${input.date} is RM ${cash.balance.toFixed(2)}, which cannot cover a withdrawal of RM ${amount.toFixed(2)}.`,
+    );
+  }
+
+  // The two legs cannot share a transaction, because recordFundCash runs its own
+  // guards and audit writes on the pooled connection. So the condition that
+  // actually rejects it - a locked NAV at or after this date - is checked before
+  // either leg is written. Without this the pot leg commits and the cash leg
+  // throws, which is precisely how the pot and the bank drift apart.
+  const blockingLock = await sql`
+    SELECT TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending
+    FROM nav_weeks
+    WHERE status = 'locked' AND week_ending >= ${input.date}
+    ORDER BY week_ending ASC
+    LIMIT 1
+  `;
+  if (blockingLock.rows.length > 0) {
+    throw new Error(
+      `NAV week ${blockingLock.rows[0].week_ending} is locked and already priced this period. Date the withdrawal after it.`,
+    );
+  }
+
+  await withTransaction(async (db) => {
+    await db`
+      INSERT INTO brokerage_withdrawals (date, amount, notes)
+      VALUES (${input.date}, ${amount}, ${input.notes || ""})
+    `;
+  });
+  // Outside the transaction: recordFundCash runs its own locked-week checks and
+  // audit writes, and throws with a message the operator can act on.
+  await recordFundCash({
+    asOfDate: input.date,
+    balance: nextBalance,
+    notes: `Brokerage withdrawal of RM ${amount.toFixed(2)}`,
+  });
+
+  return { amount, balanceAfter: roundMoney(pot.balance - amount) };
+}
+
+export async function getBrokerageWithdrawals() {
+  await requireAdmin();
+  await ensureAuditColumns();
+  const res = await sql`
+    SELECT id, TO_CHAR(date, 'YYYY-MM-DD') as date, amount, notes, created_at
+    FROM brokerage_withdrawals
+    WHERE audit_status = 'active'
+    ORDER BY date DESC, created_at DESC
+  `;
+  return res.rows;
+}
 
 export async function getFundCashAttribution(input: {
   asOfDate: string;
@@ -1896,6 +2108,70 @@ export function splitNavPlatformValue(snapshots: ReturnType<typeof summarizeNavP
     nonEquityPlatformProfitLoss: roundMoney(
       snapshots.reduce((sum, snapshot) => sum + snapshot.allocation.brokerageProfitLoss, 0),
     ),
+    // Savers' principal only. Their share of the platform's profit is not theirs
+    // - the pot carries it, which is why the whole non-equity profit above goes
+    // into the brokerage claim. Used to charge each pool for what it deployed.
+    fixedSavingsPrincipalInPlatforms: roundMoney(
+      snapshots.reduce((sum, snapshot) => sum + snapshot.allocation.fixedSavingsNetInvested, 0),
+    ),
+    // Principal deployed under the brokerage funding source. calculateEquityFundCash
+    // builds the brokerage claim from earnings alone and has no term for principal
+    // the pot contributed, so this amount is deployed with nothing crediting it -
+    // equity silently absorbs it as residual owner. Reported so the availability
+    // view can say the brokerage figure is unreliable and by exactly how much,
+    // rather than presenting the shortfall as a real overdraft.
+    brokeragePrincipalInPlatforms: roundMoney(
+      snapshots.reduce((sum, snapshot) => sum + snapshot.allocation.brokerageNetInvested, 0),
+    ),
+  };
+}
+
+/**
+ * How much cash each pool has free to deploy right now.
+ *
+ * `getFundCashAttribution` answers who owns the bank balance; this answers
+ * whether the money is actually spendable, by charging each pool for the capital
+ * it already has sitting in a platform. Shown before funding a platform so the
+ * operator is not allocating from a pool that has nothing left.
+ */
+export async function getFundCashAvailability(asOfDate?: string) {
+  await requireAdmin();
+  const date = asOfDate ?? todayIso();
+  const [preview, fundCash] = await Promise.all([
+    buildNavPlatformPreview(date),
+    getFundCashAsOf(date),
+  ]);
+  const valueSplit = splitNavPlatformValue(summarizeNavPlatformPreview(preview));
+  // The pot's balance comes from the shared function on the locked-NAV basis, so
+  // this card, /brokerage and the funding dialog all quote the same number.
+  const [savings, pot] = await Promise.all([
+    getFixedSavingsLiabilityAsOf(date),
+    getBrokerageBalance(),
+  ]);
+
+  const availability = splitPoolAvailability({
+    bankBalance: fundCash.balance,
+    equityValueInPlatforms: valueSplit.equityPlatformValue,
+    fixedSavingsLiability: savings.totalLiability,
+    fixedSavingsPrincipalInPlatforms: valueSplit.fixedSavingsPrincipalInPlatforms,
+    brokerageBalance: pot.balance,
+    brokerageDeployedInPlatforms: roundMoney(
+      valueSplit.nonEquityValueInPlatforms - valueSplit.fixedSavingsPrincipalInPlatforms,
+    ),
+  });
+
+  return {
+    asOfDate: date,
+    // Carries NEVER_RECORDED through so the UI can say the balance is unknown
+    // rather than presenting an unrecorded zero as a real one.
+    fundCashSource: fundCash.source,
+    ...availability,
+    brokerage: {
+      ...availability.brokerage,
+      // Non-zero means the brokerage available figure cannot be trusted: this
+      // much principal is deployed with no matching claim behind it.
+      unbackedPrincipal: valueSplit.brokeragePrincipalInPlatforms,
+    },
   };
 }
 
@@ -2678,6 +2954,101 @@ export async function getInvestorStatementByPortalAccessId(portalAccessId: strin
   return investorId ? getInvestorStatement(investorId) : null;
 }
 
+/**
+ * Statement plus dashboard data for one portal link.
+ *
+ * Exists so the dashboard route cannot reach the fund data without going through
+ * the portal access check first - the check, the rate limit and the audit write
+ * all live in getInvestorStatementByPortalAccessId.
+ */
+export async function getInvestorDashboardByPortalAccessId(portalAccessId: string, meta?: PortalAccessMeta) {
+  const statement = await getInvestorStatementByPortalAccessId(portalAccessId, meta);
+  if (!statement) return null;
+  const dashboard = await getInvestorPortalDashboard(statement.investor.id);
+  return { statement, ...dashboard };
+}
+
+/**
+ * Fund and position data for the investor dashboard.
+ *
+ * Deliberately not admin-gated: the portal proves identity through
+ * getInvestorStatementByPortalAccessId, which enforces the rate limit and writes
+ * the access audit event. Call this only after that has succeeded.
+ *
+ * Platform allocation is returned as percentages and nothing else. Handing the
+ * page RM values and merely hiding them would still ship them to the browser in
+ * the server-component payload, where anyone with the portal link could read
+ * them - so the values never leave this function.
+ */
+export async function getInvestorPortalDashboard(investorId: string) {
+  await ensureAuditColumns();
+  const [weeks, unitLedger, allocation] = await Promise.all([
+    sql`
+      SELECT id, TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending, nav_per_unit
+      FROM nav_weeks
+      WHERE status = 'locked'
+      ORDER BY week_ending ASC
+    `,
+    sql`
+      SELECT iul.id, iul.type, iul.units, iul.gross_amount, iul.created_at,
+        TO_CHAR(iul.date, 'YYYY-MM-DD') as date,
+        CASE WHEN bp.id IS NULL THEN false ELSE true END as is_bonus
+      FROM investor_unit_ledger iul
+      LEFT JOIN bonus_payments bp ON bp.source_id = iul.id AND bp.ledger_type = 'equity'
+      WHERE iul.investor_id = ${investorId}
+        AND iul.audit_status = 'active'
+      ORDER BY iul.date ASC, iul.created_at ASC
+    `,
+    sql`
+      WITH latest_nav AS (
+        SELECT id FROM nav_weeks WHERE status = 'locked' ORDER BY week_ending DESC LIMIT 1
+      )
+      SELECT p.name, nwps.total_value
+      FROM nav_week_platform_snapshots nwps
+      JOIN platforms p ON p.id = nwps.platform_id
+      WHERE nwps.nav_week_id = (SELECT id FROM latest_nav)
+        AND nwps.total_value > 0
+      ORDER BY nwps.total_value DESC
+    `,
+  ]);
+
+  const rows = unitLedger.rows as EquityUnitLedgerRow[];
+  // Replayed through the same function the statement uses, so a point on this
+  // chart and the headline figure can never disagree about cost basis.
+  const valueHistory = weeks.rows.map((week: Record<string, unknown>) => {
+    const weekEnding = String(week.week_ending);
+    const navPerUnit = parseFloat(String(week.nav_per_unit || "1"));
+    const position = calculateEquityCapitalPosition(
+      rows.filter((row) => String(row.date) <= weekEnding),
+    );
+    return {
+      weekEnding,
+      navPerUnit,
+      marketValue: roundMoney(position.units * navPerUnit),
+      netInvested: position.investedCapital,
+    };
+  // Weeks before the investor joined would draw a flat zero run-in that reads
+  // as a loss of value rather than an absence of one.
+  }).filter((point) => point.marketValue > 0 || point.netInvested > 0);
+
+  const percentages = allocateSharePercentages(
+    allocation.rows.map((row: Record<string, unknown>) => parseFloat(String(row.total_value || "0"))),
+  );
+  const platformAllocation = allocation.rows.map((row: Record<string, unknown>, index: number) => ({
+    name: String(row.name),
+    percent: percentages[index],
+  }));
+
+  // The fund's own price series, not clipped to this investor's tenure - the
+  // card presents it as the fund's whole history, so it has to be that.
+  const navHistory = weeks.rows.map((week: Record<string, unknown>) => ({
+    weekEnding: String(week.week_ending),
+    navPerUnit: parseFloat(String(week.nav_per_unit || "1")),
+  }));
+
+  return { valueHistory, navHistory, platformAllocation };
+}
+
 export async function getFundSummaryMetrics() {
   await requireAdmin();
   await ensureAuditColumns();
@@ -3198,13 +3569,29 @@ export async function seedDummyData() {
         weekEnding,
         settlementDate: weekEnding,
         fundCash: roundMoney(Math.max(expectedCash, 0)),
+        // Demo data has to contain losses or it teaches nothing: with every
+        // platform up, there is no way to see whether attribution, NAV or the
+        // return columns actually handle a loss.
+        //
+        // The swing amplitude grows with the index rather than staying fixed, so
+        // it keeps outrunning the drift and the sine keeps crossing zero. The
+        // previous form - a fixed amplitude plus a linear drift - went
+        // permanently positive as soon as the drift overtook it, which is why
+        // every late week showed a gain.
+        //
+        // Binance is the structural loser: its drift is negative throughout, at
+        // a small enough slope that the loss stays far inside the platform's net
+        // invested and total value never approaches zero.
         platformSnapshots: [
-          { platformId: ibkr.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 4) * 4800 + index * 210) },
-          { platformId: moomoo.rows[0].id, unrealizedProfit: roundMoney(Math.cos(index / 5) * 2600 + index * 95) },
-          { platformId: binance.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 3) * 7200 + index * 150) },
+          { platformId: ibkr.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 4) * (3000 + index * 120) + index * 60) },
+          { platformId: moomoo.rows[0].id, unrealizedProfit: roundMoney(Math.cos(index / 5) * (2000 + index * 90) + index * 40) },
+          { platformId: binance.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 3) * (1500 + index * 70) - index * 260) },
           { platformId: maybank.rows[0].id, unrealizedProfit: roundMoney(Math.cos(index / 6) * 350) },
         ],
-        adjustments: 8000 + ((index * 425) % 22000),
+        // Was always positive, which handed the fund a free gain every single
+        // week on top of the platform marks. Centred on zero now so it cuts both
+        // ways.
+        adjustments: ((index * 425) % 22000) - 11000,
         notes: `Seed locked weekly NAV ${weekEnding}`,
       });
       await lockSeedNavWeek(weekEnding);

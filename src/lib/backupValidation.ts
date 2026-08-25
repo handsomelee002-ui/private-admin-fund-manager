@@ -55,6 +55,7 @@ const BACKUP_TABLE_COLUMN_ALLOWLIST: Record<BackupTableName, readonly string[]> 
   bonus_payments: ["id", "investor_id", "ledger_type", "source_id", "amount", "date", "notes", "created_at", "audit_status", "reversal_of_id"],
   investor_profit_claims: ["id", "investor_id", "locked_amount", "settled_amount", "settled_gross_amount", "brokerage_fee", "status", "claim_date", "settled_date", "notes", "created_at"],
   capital_ledger: ["id", "investor_id", "date", "type", "amount", "notes", "receipt_url", "created_at"],
+  brokerage_withdrawals: ["id", "date", "amount", "notes", "audit_status", "reversal_of_id", "created_at"],
   platform_transactions: [
     "id", "platform_id", "date", "type", "amount", "realized_profit", "notes", "created_at", "account_id", "asset_id", "currency", "base_currency",
     "base_amount", "fx_rate_to_base", "from_currency", "to_currency", "from_amount", "to_amount", "quantity", "price_per_unit", "gross_amount",

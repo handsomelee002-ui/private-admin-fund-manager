@@ -186,6 +186,94 @@ function calculateEquityFundCash({
   };
 }
 
+/**
+ * How much cash each pool still has free to deploy, as opposed to how much it
+ * owns in total.
+ *
+ * `calculateEquityFundCash` answers "who owns the bank balance". This answers
+ * the operator's question instead: if I fund a platform from fixed savings
+ * today, how much is actually there? A pool's claim includes capital already
+ * sitting in a platform, so available = claim - deployed.
+ *
+ * Savers are charged only their *principal* in platforms, not its profit share.
+ * Their claim is contractual - a fixed rate - so profit earned on their money
+ * accrues to the brokerage pot, which is why `calculateEquityFundCash` folds the
+ * whole non-equity profit into `brokerageClaim`. Charging savers for value they
+ * do not own would understate their free cash and overstate the pot's.
+ *
+ * Equity is computed as the **residual**, not independently: it is the residual
+ * claimant on the bank balance, so whatever the other two do not hold is its.
+ * Deriving it this way makes "the three add up to the bank balance" true by
+ * construction rather than by two formulas happening to agree - which they did
+ * not, once the pot's balance moved to the locked-NAV basis.
+ */
+function splitPoolAvailability({
+  bankBalance,
+  equityValueInPlatforms,
+  fixedSavingsLiability,
+  fixedSavingsPrincipalInPlatforms,
+  brokerageBalance,
+  brokerageDeployedInPlatforms,
+}) {
+  const bank = roundMoney(Number(bankBalance) || 0);
+  const equityDeployed = roundMoney(Number(equityValueInPlatforms) || 0);
+  const savers = roundMoney(Number(fixedSavingsLiability) || 0);
+  const saversDeployed = roundMoney(Number(fixedSavingsPrincipalInPlatforms) || 0);
+  const pot = roundMoney(Number(brokerageBalance) || 0);
+  const potDeployed = roundMoney(Number(brokerageDeployedInPlatforms) || 0);
+
+  const saversAvailable = roundMoney(savers - saversDeployed);
+  const potAvailable = roundMoney(pot - potDeployed);
+  const equityAvailable = roundMoney(bank - saversAvailable - potAvailable);
+
+  return {
+    bankBalance: bank,
+    equity: {
+      claim: roundMoney(equityDeployed + equityAvailable),
+      deployed: equityDeployed,
+      available: equityAvailable,
+    },
+    fixedSavings: {
+      claim: savers,
+      deployed: saversDeployed,
+      available: saversAvailable,
+    },
+    brokerage: {
+      claim: pot,
+      deployed: potDeployed,
+      available: potAvailable,
+    },
+  };
+}
+
+/**
+ * Turn a list of amounts into percentage shares that add to exactly 100.
+ *
+ * Rounding each share independently lets the parts sum to 99.99 or 100.01, which
+ * looks like a bug in a pie chart legend. The last non-zero share carries the
+ * residual instead - the same trick calculateBrokerageFundingAllocation uses to
+ * keep split money summing to the whole.
+ *
+ * Returns all zeros when nothing has value, rather than dividing by zero.
+ * Negative amounts are treated as zero: a share of a total cannot be negative.
+ */
+function allocateSharePercentages(values) {
+  const amounts = values.map((value) => Math.max(0, Number(value) || 0));
+  const total = amounts.reduce((sum, amount) => sum + amount, 0);
+  if (total <= 0) return amounts.map(() => 0);
+
+  const lastNonZero = amounts.reduce((last, amount, index) => (amount > 0 ? index : last), -1);
+  let allocated = 0;
+  return amounts.map((amount, index) => {
+    if (amount <= 0) return 0;
+    const percent = index === lastNonZero
+      ? roundMoney(100 - allocated)
+      : roundMoney((amount / total) * 100);
+    allocated = roundMoney(allocated + percent);
+    return percent;
+  });
+}
+
 function allocateFixedSavingsWithdrawal({ accounts, amount, interestBalance }) {
   const requested = roundMoney(Number(amount) || 0);
   if (!Number.isFinite(requested) || requested <= 0) {
@@ -240,6 +328,8 @@ function accrueDailyCompoundInterest({ principal, annualRatePercent, startDate, 
 module.exports = {
   accrueDailyCompoundInterest,
   calculateEquityFundCash,
+  splitPoolAvailability,
+  allocateSharePercentages,
   allocateFixedSavingsWithdrawal,
   calculateBrokerageFundingAllocation,
   calculateNavPerUnit,

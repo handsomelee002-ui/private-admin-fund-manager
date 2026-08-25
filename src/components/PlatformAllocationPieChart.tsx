@@ -14,6 +14,13 @@ interface PlatformSlice {
   value: number;
 }
 
+/**
+ * How the tooltip reads the slice value. The investor portal passes percentages
+ * and must never be handed RM figures - hiding them in the tooltip would not
+ * help, since the numbers still ship to the browser in the page payload.
+ */
+export type AllocationValueMode = "money" | "percent";
+
 const COLORS = [
   "#6366f1", // indigo
   "#10b981", // emerald
@@ -54,7 +61,15 @@ function CustomLabel({
   );
 }
 
-export function PlatformAllocationPieChart({ data }: { data: PlatformSlice[] }) {
+export function PlatformAllocationPieChart({
+  data,
+  valueMode = "money",
+  valueLabel,
+}: {
+  data: PlatformSlice[];
+  valueMode?: AllocationValueMode;
+  valueLabel?: string;
+}) {
   if (!data || data.length === 0) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
@@ -87,11 +102,13 @@ export function PlatformAllocationPieChart({ data }: { data: PlatformSlice[] }) 
         </Pie>
         <Tooltip
           formatter={(value: any) => [
-            `RM ${Number(value).toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}`,
-            "Net Invested",
+            valueMode === "percent"
+              ? `${Number(value).toFixed(2)}%`
+              : `RM ${Number(value).toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}`,
+            valueLabel ?? (valueMode === "percent" ? "Allocation" : "Net Invested"),
           ]}
           contentStyle={{
             background: "oklch(0.15 0.02 250)",

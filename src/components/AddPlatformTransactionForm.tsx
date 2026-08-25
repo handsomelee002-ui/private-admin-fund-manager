@@ -45,10 +45,16 @@ export function AddPlatformTransactionForm({
   platformId,
   automaticAllocationBasis,
   platformAllocationBalances,
+  availableBySource,
+  fundCashRecorded = true,
 }: {
   platformId: string;
   automaticAllocationBasis: SourceBalances;
   platformAllocationBalances: SourceBalances;
+  /** Free cash per pool, from getFundCashAvailability. */
+  availableBySource: SourceBalances;
+  /** False when the fund's bank balance has never been recorded. */
+  fundCashRecorded?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -63,6 +69,19 @@ export function AddPlatformTransactionForm({
   const previewRatios = manualAllocation ? manualRatios : automaticRatios;
   const previewAmount = Number(baseAmount) || 0;
   const manualTotal = sourceMeta.reduce((sum, item) => sum + (Number(manualRatios[item.source]) || 0), 0);
+
+  // Only money going *in* spends the fund's cash. A withdrawal returns cash, so
+  // checking it against available balances would flag every withdrawal from a
+  // pool that is fully deployed - which is exactly when you would withdraw.
+  const isFunding = transactionType === "BROKER_DEPOSIT";
+  const overdrawn = sourceMeta
+    .filter((item) => {
+      if (!isFunding || previewAmount <= 0) return false;
+      const share = previewAmount * ((Number(previewRatios[item.source]) || 0) / 100);
+      // A sub-cent overshoot is rounding, not an overdraft.
+      return share > (availableBySource[item.source] ?? 0) + 0.005;
+    })
+    .map((item) => item.label);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -154,17 +173,37 @@ export function AddPlatformTransactionForm({
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
               {sourceMeta.map((item) => {
                 const ratio = Number(previewRatios[item.source]) || 0;
+                const share = previewAmount * (ratio / 100);
+                const available = availableBySource[item.source] ?? 0;
+                const short = isFunding && previewAmount > 0 && share > available + 0.005;
                 return (
                   <div key={item.source} className="rounded-md border border-border/50 bg-background/40 p-2">
                     <div className="flex items-center justify-between gap-2 text-xs">
                       <span className="text-muted-foreground">{item.label}</span>
                       <span className={`font-semibold ${item.color}`}>{ratio.toFixed(2)}%</span>
                     </div>
-                    <p className="mt-1 text-sm font-semibold">{formatRm(previewAmount * (ratio / 100))}</p>
+                    <p className="mt-1 text-sm font-semibold">{formatRm(share)}</p>
+                    <p className={`mt-1 text-[10px] ${short ? "text-red-400" : "text-muted-foreground"}`}>
+                      {formatRm(available)} available
+                    </p>
                   </div>
                 );
               })}
             </div>
+
+            {/* Deliberately a warning, not a block: backdated entries and
+                corrections legitimately allocate from a pool that looks short
+                today. */}
+            {overdrawn.length > 0 && (
+              <p className="text-xs text-red-400">
+                Over available cash in {overdrawn.join(" and ")}. You can still save this.
+              </p>
+            )}
+            {!fundCashRecorded && (
+              <p className="text-xs text-amber-400">
+                The fund&apos;s bank balance has never been recorded, so available cash is an estimate.
+              </p>
+            )}
 
             {manualAllocation && (
 
