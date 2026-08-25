@@ -5,7 +5,6 @@ import { AddPlatformForm } from "@/components/AddPlatformForm";
 import { DeleteButton } from "@/components/DeleteButton";
 import { EditNameDialog } from "@/components/EditNameDialog";
 import { PaginationControls } from "@/components/PaginationControls";
-import { RecordValuationForm } from "@/components/RecordValuationForm";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { formatMoney } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
@@ -202,13 +201,6 @@ export default async function TradingLedgerPage({
                     </TableCell>
                     <TableCell className="text-right pr-6">
                       <div className="flex justify-end gap-2">
-                        <RecordValuationForm
-                          compact
-                          platformId={platform.id}
-                          platformName={platform.name}
-                          currentValue={platform.totalValue}
-                          latestValuationDate={platform.latestValuationDate}
-                        />
                         <EditNameDialog id={platform.id} currentName={platform.name} title="Edit Platform Name" updateAction={updatePlatformName} />
                         <DeleteButton id={platform.id} deleteAction={deletePlatform} />
                       </div>

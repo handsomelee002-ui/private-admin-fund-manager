@@ -1,7 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { AddPlatformForm } from "@/components/AddPlatformForm";
 import { CreateNavWeekForm } from "@/components/CreateNavWeekForm";
 import { LockNavButton } from "@/components/LockNavButton";
 import { PaginationControls } from "@/components/PaginationControls";
@@ -58,7 +57,6 @@ export default async function NavPage({
           <h1 className="text-3xl font-bold tracking-tight">Valuations &amp; NAV</h1>
         </div>
         <div className="flex gap-2">
-          <AddPlatformForm />
           <CreateNavWeekForm />
         </div>
       </div>

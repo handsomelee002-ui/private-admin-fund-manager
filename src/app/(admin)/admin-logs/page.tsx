@@ -18,25 +18,46 @@ function truncateSummary(value: string) {
   return value.length > SUMMARY_PREVIEW_LENGTH ? `${value.slice(0, SUMMARY_PREVIEW_LENGTH)}...` : value;
 }
 
+// Ringgit reads as money at two decimals. toLocaleString on its own drops the
+// cents whenever a figure happens to land on a whole number, so RM 797,667.00
+// printed as RM 797,667 beside RM 1,038,612.17.
+function money(value: unknown) {
+  return `RM ${Number(value ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function describeLog(log: any) {
   const details = log.details ?? {};
   if (log.action === "platform_transaction.add") {
-    return `${details.type ?? "Transaction"} RM ${Number(details.amount ?? 0).toLocaleString()}${details.realizedProfit ? `, realized RM ${Number(details.realizedProfit).toLocaleString()}` : ""}`;
+    return `${details.type ?? "Transaction"} ${money(details.amount)}${details.realizedProfit ? `, realized ${money(details.realizedProfit)}` : ""}`;
   }
   if (log.action === "cash_movement.add") {
-    return `${details.type ?? "Movement"} RM ${Number(details.amount ?? 0).toLocaleString()}${details.units ? `, ${Number(details.units).toLocaleString()} units` : ""}`;
+    return `${details.type ?? "Movement"} ${money(details.amount)}${details.units ? `, ${Number(details.units).toLocaleString()} units` : ""}`;
   }
   if (log.action === "fixed_savings.add") {
-    return `${details.type ?? "Movement"} RM ${Number(details.amount ?? 0).toLocaleString()}`;
+    return `${details.type ?? "Movement"} ${money(details.amount)}`;
   }
   if (log.action === "bonus_payment.add") {
-    return `${details.ledgerType ?? "bonus"} RM ${Number(details.amount ?? 0).toLocaleString()}`;
+    return `${details.ledgerType ?? "bonus"} ${money(details.amount)}`;
+  }
+  if (log.action === "platform_valuation.record") {
+    const when = details.asOfDate ? ` on ${details.asOfDate}` : "";
+    const was = details.previousValue === null || details.previousValue === undefined
+      ? ""
+      : `, was ${money(details.previousValue)}`;
+    return `${details.platformName ?? "Platform"} ${money(details.totalValue)}${when}${was}`;
+  }
+  if (log.action === "fund_cash.record") {
+    // previousBalance is null when no balance was on file for that date, which
+    // is a first recording rather than a correction - worth telling apart.
+    const when = details.asOfDate ? ` on ${details.asOfDate}` : "";
+    const was = details.previousBalance === null || details.previousBalance === undefined
+      ? ""
+      : `, was ${money(details.previousBalance)}`;
+    return `Bank balance ${money(details.balance)}${when}${was}`;
   }
   if (log.action.startsWith("nav_week.")) {
     const week = details.weekEnding ? `Week ${details.weekEnding}` : "NAV week";
-    const gross = details.grossAssets !== undefined
-      ? `, gross RM ${Number(details.grossAssets).toLocaleString()}`
-      : "";
+    const gross = details.grossAssets !== undefined ? `, gross ${money(details.grossAssets)}` : "";
     const nav = details.navPerUnit !== undefined
       ? `, NAV ${Number(details.navPerUnit).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}/unit`
       : "";

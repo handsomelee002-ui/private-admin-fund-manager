@@ -2544,17 +2544,43 @@ export async function createNavWeek(input: NavWeekInput) {
   // gain this NAV recognised. recordPlatformValuation is bypassed on purpose:
   // its locked-NAV guard exists to stop history moving under a priced period,
   // and the NAV being written here is the authority for its own date.
+  //
+  // recordPlatformValuation is also where the audit event lives, so the event is
+  // written here too. Without it a value mark entered through the NAV screen was
+  // invisible to anyone filtering the log for valuation changes.
+  const platformNames = new Map(preview.map((row) => [row.platformId, row.platformName]));
   for (const snapshot of input.platformSnapshots ?? []) {
     if (snapshot.totalValue === undefined) continue;
-    await db`
+    const totalValue = roundMoney(snapshot.totalValue);
+    const existing = await db`
+      SELECT total_value FROM platform_valuations
+      WHERE platform_id = ${snapshot.platformId} AND as_of_date = ${input.weekEnding} AND audit_status = 'active'
+    `;
+    const previousValue = existing.rows[0] ? roundMoney(parseFloat(existing.rows[0].total_value)) : null;
+    const recorded = await db`
       INSERT INTO platform_valuations (platform_id, as_of_date, total_value, source, notes)
-      VALUES (${snapshot.platformId}, ${input.weekEnding}, ${roundMoney(snapshot.totalValue)}, 'NAV_REVIEW', 'Entered on the NAV review screen')
+      VALUES (${snapshot.platformId}, ${input.weekEnding}, ${totalValue}, 'NAV_REVIEW', 'Entered on the NAV review screen')
       ON CONFLICT (platform_id, as_of_date) DO UPDATE SET
         total_value = EXCLUDED.total_value,
         source = EXCLUDED.source,
         notes = EXCLUDED.notes,
         audit_status = 'active'
+      RETURNING id
     `;
+    await writeAuditEvent(
+      "platform_valuation.record",
+      "platform_valuations",
+      recorded.rows[0].id,
+      {
+        platformId: snapshot.platformId,
+        platformName: platformNames.get(snapshot.platformId) ?? "",
+        asOfDate: input.weekEnding,
+        totalValue,
+        previousValue,
+        source: "NAV_REVIEW",
+      },
+      db,
+    );
   }
   await db`DELETE FROM nav_week_platform_snapshots WHERE nav_week_id = ${navWeekId}`;
   for (const snapshot of platformSnapshots) {
