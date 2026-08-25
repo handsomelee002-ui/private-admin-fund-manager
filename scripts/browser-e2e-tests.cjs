@@ -507,48 +507,77 @@ async function noHorizontalOverflow(page) {
       assert.equal(portalPnl, adminPnl);
     });
 
-    await check("available cash pools open their detail on hover and on click", async () => {
+    await check("dashboard metric cards print their whole breakdown without interaction", async () => {
       await setViewport(page, 1366, 900);
       await navigate(page, `http://localhost:${TEST_PORT}/`);
-      await waitFor(page, 'document.body.innerText.includes("Available Cash by Pool")');
+      await waitFor(page, 'document.body.innerText.includes("Equity NAV")');
 
-      const tiles = await evalJs(page, `
+      const cards = await evalJs(page, `(() => {
+        const wanted = ["Equity NAV", "Fixed Savings Net Principal", "Investor Capital", "Available Cash"];
+        const out = {};
+        for (const title of wanted) {
+          const heading = [...document.querySelectorAll("[data-slot=card-title]")]
+            .find((node) => node.textContent.trim() === title);
+          out[title] = heading ? heading.closest("[data-slot=card]").innerText : null;
+        }
+        return JSON.stringify(out);
+      })()`);
+      const byTitle = JSON.parse(cards);
+      for (const [title, text] of Object.entries(byTitle)) {
+        assert.equal(text !== null, true, `metric card missing: ${title}`);
+      }
+
+      // The point of the redesign: no figure is behind a hover. Each card's
+      // rows have to be in the DOM on load.
+      assert.match(byTitle["Equity NAV"], /Invested capital/);
+      assert.match(byTitle["Equity NAV"], /NAV \/ unit/);
+      assert.match(byTitle["Equity NAV"], /Total units/);
+      // Principal is the headline; the rows reconcile it to the full liability
+      // so the two figures are never mistaken for each other.
+      assert.match(byTitle["Fixed Savings Net Principal"], /Accrued interest/);
+      assert.match(byTitle["Fixed Savings Net Principal"], /Bonuses payable/);
+      assert.match(byTitle["Fixed Savings Net Principal"], /Total liability/);
+      assert.match(byTitle["Investor Capital"], /Fixed savings liability/);
+      assert.match(byTitle["Available Cash"], /Deployed in platforms/);
+      assert.match(byTitle["Available Cash"], /Bank total/);
+      assert.equal(
+        /Equity/.test(byTitle["Available Cash"]) && /Fixed Savings/.test(byTitle["Available Cash"]),
+        true,
+      );
+      // The pot cannot fund a platform, so it has no line on a card about
+      // what the fund can still deploy.
+      assert.equal(
+        /Brokerage/i.test(byTitle["Available Cash"]),
+        false,
+        `brokerage is back on the card: ${byTitle["Available Cash"]}`,
+      );
+
+      // Available Cash is the only card with more to say than fits on it.
+      const popovers = await evalJs(page, `
         [...document.querySelectorAll("[data-slot=popover-trigger]")].length
       `);
-      // Two tiles, not three: the brokerage pot cannot fund a platform, so it
-      // has no place on a card about deployable cash.
-      assert.equal(tiles, 2, `expected 2 pool tiles, found ${tiles}`);
+      assert.equal(popovers, 1, `expected 1 popover trigger on the dashboard, found ${popovers}`);
 
-      // Hover is the primary affordance, so it has to actually open the popup.
+      // Hover is the primary affordance, so it has to actually open the panel.
       const box = await evalJs(page, `(() => {
-        const rect = document.querySelectorAll("[data-slot=popover-trigger]")[0].getBoundingClientRect();
+        const rect = document.querySelector("[data-slot=popover-trigger]").getBoundingClientRect();
         return JSON.stringify({ x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) });
       })()`);
       const point = JSON.parse(box);
       await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, buttons: 0 });
       await waitFor(page, 'document.querySelector("[data-slot=popover-content]")');
-      assert.equal(await bodyIncludes(page, "Deployed in platforms"), true);
+      const panel = await evalJs(page, 'document.querySelector("[data-slot=popover-content]").innerText');
+      assert.match(panel, /Owned/);
+      assert.match(panel, /Bank reconciliation/i);
+      // The reconciliation has to name the pot: it is the reason the bank total
+      // is larger than what the two fundable pools can deploy.
+      assert.match(panel, /Brokerage pot, undeployed/);
 
       // Hover alone is unreachable on touch, so clicking must work too.
       await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5, buttons: 0 });
       await waitFor(page, '!document.querySelector("[data-slot=popover-content]")');
-      await clickTriggerMouse(page, "Fixed Savings");
+      await clickTriggerMouse(page, "Available Cash");
       await waitFor(page, 'document.querySelector("[data-slot=popover-content]")');
-      assert.equal(await bodyIncludes(page, "Owned"), true);
-
-      // The card carries equity and fixed savings and nothing else. The bank
-      // balance is excluded on purpose - it holds the brokerage pot's earnings
-      // too, so quoting it here puts the pot's money back on a card that is
-      // meant to show only what can fund a platform.
-      const cardText = await evalJs(page, `(() => {
-        const heading = [...document.querySelectorAll("*")]
-          .find((node) => node.children.length === 0 && node.textContent.trim() === "Available Cash by Pool");
-        return heading ? heading.closest("[data-slot=card]").innerText : null;
-      })()`);
-      assert.equal(cardText !== null, true, "available cash card not found");
-      assert.equal(/Brokerage/i.test(cardText), false, `brokerage is back on the card: ${cardText}`);
-      assert.equal(/Bank balance/i.test(cardText), false, `bank balance is back on the card: ${cardText}`);
-      assert.equal(/Equity/.test(cardText) && /Fixed Savings/.test(cardText), true);
     });
 
     await check("investor dashboard renders, links both ways, and leaks no platform values", async () => {

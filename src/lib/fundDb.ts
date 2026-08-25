@@ -3483,6 +3483,10 @@ export async function getDashboardSummary() {
     fixedSavingsLiability: fixedSavings.totalLiability,
     fixedSavingsPrincipal: fixedSavings.principal,
     fixedSavingsInterest: fixedSavings.payableInterest,
+    // payableInterest fuses the two together. The dashboard names them apart so
+    // the principal headline can be reconciled to the full liability.
+    fixedSavingsAccruedInterest: fixedSavings.accruedInterest,
+    fixedSavingsBonus: fixedSavings.bonusPayable,
     totalEquityInvestedCapital,
     ...equityPerformance,
     totalInvestorCapital: roundMoney(currentEquityNav + fixedSavings.totalLiability),

@@ -1,7 +1,9 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { AvailableCashPools } from "@/components/AvailableCashPools";
+import { AvailableCashDetail } from "@/components/AvailableCashDetail";
+import { HoverDetail } from "@/components/HoverDetail";
+import { MetricCard } from "@/components/MetricCard";
 import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getDashboardSummary, getFundCashAvailability } from "@/lib/fundDb";
@@ -9,18 +11,11 @@ import { formatMoney, formatPercent, formatUnits } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { Activity, Banknote, Coins, Landmark, Percent, Users, Wallet } from "lucide-react";
+import { Activity, Banknote, Coins, Landmark, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
 const dashboardInvestorSorts = ["investor", "units", "ownership", "marketValue"] as const;
-const metricHeaderClass = "flex min-h-12 flex-row items-start justify-between gap-3 pb-2";
-const metricTitleClass = "text-sm leading-5 text-muted-foreground";
-const metricValueClass = "text-[1.625rem] leading-8 font-bold whitespace-nowrap tabular-nums tracking-normal";
-
-function signedMoney(value: number) {
-  return `${value > 0 ? "+" : ""}${formatMoney(value)}`;
-}
 
 export default async function Dashboard({
   searchParams,
@@ -34,18 +29,22 @@ export default async function Dashboard({
     timeAsync("route.dashboard.getFundCashAvailability", () => getFundCashAvailability(), { route: "/" }),
   ]);
   // Each pool's free cash, in the same order the funding forms show them. The
-  // brokerage pot is not here, and neither is the bank balance: this card
-  // answers what can be deployed into a platform, and the pot stopped being a
-  // funding source. The bank holds its earnings too, so quoting the bank here
-  // would reintroduce the pot's money by the back door. It lives on /brokerage.
+  // brokerage pot is not here: this answers what can be deployed into a
+  // platform, and the pot stopped being a funding source. It lives on
+  // /brokerage.
   const cashPools = [
-    { key: "equity", label: "Equity", ...cashAvailability.equity, text: "text-blue-400", bg: "bg-blue-400" },
-    { key: "fixed_savings", label: "Fixed Savings", ...cashAvailability.fixedSavings, text: "text-amber-400", bg: "bg-amber-400" },
+    { key: "equity", label: "Equity", ...cashAvailability.equity, text: "text-blue-400" },
+    { key: "fixed_savings", label: "Fixed Savings", ...cashAvailability.fixedSavings, text: "text-amber-400" },
   ];
-  // The headline is what these two pools can deploy, not what the bank holds:
-  // the bank also holds the brokerage pot's money, which cannot fund a platform.
-  // The bank total stays on as a caption so the page still reconciles to it.
+  // The total is what these two pools can deploy, not what the bank holds: the
+  // bank also holds the brokerage pot's money, which cannot fund a platform.
+  // The card footnote quotes the bank anyway and the hover panel reconciles it,
+  // subtracting the pot by name - which is what stops the bank total reading as
+  // if the pot's earnings were deployable.
   const totalAvailable = cashPools.reduce((sum, pool) => sum + pool.available, 0);
+  const cashAsOf = cashAvailability.fundCashSource === "NEVER_RECORDED"
+    ? "Fund cash never recorded"
+    : `As of ${cashAvailability.asOfDate}`;
 
   const sortedInvestors = sortRows(summary.investors, sortState, {
     investor: (investor: any) => investor.name,
@@ -64,92 +63,80 @@ export default async function Dashboard({
         <p className="text-muted-foreground mt-1 text-sm">Equity NAV, investor units, and fixed savings principal.</p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-5">
-        <Card className="bg-card/50 border-border/50">
-          <CardHeader className={metricHeaderClass}>
-            <CardTitle className={metricTitleClass}>Equity NAV</CardTitle>
-            <Wallet className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
-          </CardHeader>
-          <CardContent>
-            <div className={metricValueClass}>{formatMoney(summary.aum)}</div>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          title="Equity NAV"
+          icon={<Wallet className="mt-0.5 h-4 w-4 shrink-0 text-primary" />}
+          value={formatMoney(summary.aum)}
+          delta={
             <p
               className={`text-xs mt-1 ${summary.equityPnlAmount >= 0 ? "text-emerald-400" : "text-red-400"}`}
-              title="Equity P&L equals current equity NAV minus remaining investor equity cost basis."
+              title="Equity NAV minus invested capital: what the deployed money has gained or lost."
             >
-              {signedMoney(summary.equityPnlAmount)} | {formatPercent(summary.equityReturnPercent, { signed: true })}
+              ({formatMoney(summary.equityPnlAmount)} | {formatPercent(summary.equityReturnPercent, { signed: true })})
             </p>
-            <p className="text-xs text-muted-foreground mt-1">Excludes fixed savings funding</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-card/50 border-border/50">
-          <CardHeader className={metricHeaderClass}>
-            <CardTitle className={metricTitleClass}>Fixed Savings Liability</CardTitle>
-            <Banknote className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
-          </CardHeader>
-          <CardContent>
-            <div className={`${metricValueClass} text-amber-400`}>{formatMoney(summary.fixedSavingsLiability)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Principal, accrued interest, and bonuses</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-card/50 border-border/50">
-          <CardHeader className={metricHeaderClass}>
-            <CardTitle className={metricTitleClass}>Investor Capital</CardTitle>
-            <Landmark className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />
-          </CardHeader>
-          <CardContent>
-            <div className={metricValueClass}>{formatMoney(summary.totalInvestorCapital)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Equity NAV + fixed savings liability</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-card/50 border-border/50">
-          <CardHeader className={metricHeaderClass}>
-            <CardTitle className={metricTitleClass}>NAV / Unit</CardTitle>
-            <Percent className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
-          </CardHeader>
-          <CardContent>
-            <div className={`${metricValueClass} text-emerald-400`}>{navPerUnit.toFixed(6)}</div>
-            <p className="text-xs text-muted-foreground mt-1">{latestNav?.week_ending ?? "No locked NAV"}</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-card/50 border-border/50">
-          <CardHeader className={metricHeaderClass}>
-            <CardTitle className={metricTitleClass}>Total Units</CardTitle>
-            <Users className="mt-0.5 h-4 w-4 shrink-0 text-violet-400" />
-          </CardHeader>
-          <CardContent>
-            <div className={metricValueClass}>{formatUnits(summary.totalUnits)}</div>
-            <p className="text-xs text-muted-foreground mt-1">{summary.investors.length} investors</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card className="bg-card/50 border-border/50">
-        <CardHeader className="flex flex-row items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <Coins className="h-4 w-4 text-primary" />
-              <CardTitle className="text-base">Available Cash by Pool</CardTitle>
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              What each pool can still deploy, as opposed to what it owns.
-            </p>
-          </div>
-          <div className="text-right">
-            <div className={metricValueClass}>{formatMoney(totalAvailable)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Total available</p>
-            <p className="text-[10px] text-muted-foreground/70 mt-0.5">
-              Bank total {formatMoney(cashAvailability.bankBalance)}
-            </p>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <AvailableCashPools
-            pools={cashPools}
-            asOfDate={cashAvailability.asOfDate}
-            fundCashRecorded={cashAvailability.fundCashSource !== "NEVER_RECORDED"}
+          }
+          rows={[
+            {
+              label: "Invested capital",
+              value: formatMoney(summary.totalEquityInvestedCapital),
+              hint: "Cash investors paid in, less the basis released by redemptions. Bonus units add none, so they widen the gap to NAV without anyone paying in.",
+            },
+            { label: "NAV / unit", value: navPerUnit.toFixed(6), valueClassName: "text-emerald-400" },
+            { label: "Total units", value: formatUnits(summary.totalUnits) },
+          ]}
+          footnote={latestNav ? `Locked NAV ${latestNav.week_ending}` : "No locked NAV"}
+        />
+        <MetricCard
+          title="Fixed Savings Net Principal"
+          icon={<Banknote className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />}
+          value={formatMoney(summary.fixedSavingsPrincipal)}
+          valueClassName="text-amber-400"
+          rows={[
+            { label: "Total liability", value: formatMoney(summary.fixedSavingsLiability) },
+            { label: "Accrued interest", value: formatMoney(summary.fixedSavingsAccruedInterest) },
+            { label: "Bonuses payable", value: formatMoney(summary.fixedSavingsBonus) },
+          ]}
+        />
+        <MetricCard
+          title="Investor Capital"
+          icon={<Landmark className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />}
+          value={formatMoney(summary.totalInvestorCapital)}
+          rows={[
+            { label: "Equity NAV", value: formatMoney(summary.aum) },
+            { label: "Fixed savings liability", value: formatMoney(summary.fixedSavingsLiability) },
+            { label: "Investors", value: String(summary.investors.length) },
+          ]}
+          footnote="Equity NAV + fixed savings liability"
+        />
+        <HoverDetail
+          detailClassName="w-[26rem]"
+          detail={
+            <AvailableCashDetail
+              pools={cashPools}
+              bankBalance={cashAvailability.bankBalance}
+              brokerageAvailable={cashAvailability.brokerage.available}
+              asOf={cashAsOf}
+            />
+          }
+        >
+          <MetricCard
+            title="Available Cash"
+            icon={<Coins className="mt-0.5 h-4 w-4 shrink-0 text-primary" />}
+            value={formatMoney(totalAvailable)}
+            valueClassName={totalAvailable < 0 ? "text-red-400" : undefined}
+            rows={[
+              ...cashPools.map((pool) => ({
+                label: pool.label,
+                value: formatMoney(pool.available),
+                valueClassName: pool.available < 0 ? "text-red-400" : pool.text,
+              })),
+              { label: "Deployed in platforms", value: formatMoney(cashPools.reduce((sum, pool) => sum + pool.deployed, 0)) },
+            ]}
+            footnote={`Bank total ${formatMoney(cashAvailability.bankBalance)} - hover for the full breakdown`}
           />
-        </CardContent>
-      </Card>
+        </HoverDetail>
+      </div>
 
       <Card className="bg-card/50 border-border/50">
         <CardHeader>
