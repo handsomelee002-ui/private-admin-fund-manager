@@ -206,9 +206,9 @@ export async function getPlatforms() {
 
   const data = await sql`
     WITH latest_platform_snapshot AS (
-      SELECT platform_id, unrealized_profit, total_value, equity_net_invested, fixed_savings_net_invested, brokerage_net_invested, brokerage_profit_loss
+      SELECT platform_id, week_ending, unrealized_profit, total_value, equity_net_invested, fixed_savings_net_invested, brokerage_net_invested, brokerage_profit_loss
       FROM (
-        SELECT nwps.platform_id, nwps.unrealized_profit, nwps.total_value, nwps.equity_net_invested, nwps.fixed_savings_net_invested, nwps.brokerage_net_invested, nwps.brokerage_profit_loss,
+        SELECT nwps.platform_id, TO_CHAR(nw.week_ending, 'YYYY-MM-DD') as week_ending, nwps.unrealized_profit, nwps.total_value, nwps.equity_net_invested, nwps.fixed_savings_net_invested, nwps.brokerage_net_invested, nwps.brokerage_profit_loss,
                ROW_NUMBER() OVER(PARTITION BY nwps.platform_id ORDER BY nw.week_ending DESC) as rn
         FROM nav_week_platform_snapshots nwps
         JOIN nav_weeks nw ON nw.id = nwps.nav_week_id
@@ -266,6 +266,7 @@ export async function getPlatforms() {
       lv.total_value as latest_valuation_value,
       COALESCE(lps.unrealized_profit, 0) as unrealized_profit,
       COALESCE(lps.total_value, 0) as latest_total_value,
+      lps.week_ending as latest_snapshot_week,
       COALESCE(lps.brokerage_profit_loss, 0) as brokerage_profit_loss,
       COALESCE(SUM(tf.cash_flow), 0) as net_invested,
       COALESCE(SUM(tf.equity_cash_flow), 0) as equity_net_invested,
@@ -289,7 +290,7 @@ export async function getPlatforms() {
       LIMIT 1
     ) lv ON TRUE
     GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.closed_on, p.created_at,
-      lv.as_of_date, lv.total_value, lps.unrealized_profit, lps.total_value, lps.brokerage_profit_loss
+      lv.as_of_date, lv.total_value, lps.week_ending, lps.unrealized_profit, lps.total_value, lps.brokerage_profit_loss
     ORDER BY p.created_at DESC, p.name ASC
   `;
 
@@ -312,6 +313,10 @@ export async function getPlatforms() {
       : latestTotalValue > 0
         ? latestTotalValue
         : netInvested + unrealizedProfit;
+    // Which of those three branches produced the figure. Without it the panel
+    // labelled a platform "never valued" beside the value a locked NAV gave it.
+    const valueSource =
+      latestValuationValue !== null ? "VALUATION" : latestTotalValue > 0 ? "NAV_SNAPSHOT" : "COST";
     const simpleRoi = percentage(totalValue - Math.max(netInvested, 0), Math.max(netInvested, 0));
     return {
       id: row.id,
@@ -322,6 +327,8 @@ export async function getPlatforms() {
       createdAt: row.created_at,
       latestValuationDate: row.latest_valuation_date as string | null,
       latestValuationValue,
+      valueSource,
+      latestSnapshotWeek: (row.latest_snapshot_week as string | null) ?? null,
       valuationAgeDays: row.latest_valuation_date
         ? daysBetween(row.latest_valuation_date, today)
         : null,

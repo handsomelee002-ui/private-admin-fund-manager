@@ -1,11 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { deleteDraftNavWeekAction, lockNavWeekAction } from "@/actions/fund";
 import { Button } from "@/components/ui/button";
 import { Lock, Trash2 } from "lucide-react";
 
 export function LockNavButton({ id }: { id: string }) {
+  const router = useRouter();
   const [locking, setLocking] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -16,7 +18,14 @@ export function LockNavButton({ id }: { id: string }) {
     setLocking(true);
     const result = await lockNavWeekAction(formData);
     setLocking(false);
-    if (result?.error) alert(result.error);
+    if (result?.error) {
+      alert(result.error);
+      return;
+    }
+    // The action revalidates on the server, but this is called straight from a
+    // click rather than through a form, so the mounted tree keeps rendering the
+    // pre-lock payload until the router is told to refetch it.
+    router.refresh();
   }
 
   async function deleteDraft() {
@@ -26,7 +35,11 @@ export function LockNavButton({ id }: { id: string }) {
     setDeleting(true);
     const result = await deleteDraftNavWeekAction(formData);
     setDeleting(false);
-    if (result?.error) alert(result.error);
+    if (result?.error) {
+      alert(result.error);
+      return;
+    }
+    router.refresh();
   }
 
   return (

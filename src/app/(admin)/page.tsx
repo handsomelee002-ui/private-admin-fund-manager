@@ -88,9 +88,8 @@ export default async function Dashboard({
         />
         <MetricCard
           title="Fixed Savings Net Principal"
-          icon={<Banknote className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />}
+          icon={<Banknote className="mt-0.5 h-4 w-4 shrink-0 text-primary" />}
           value={formatMoney(summary.fixedSavingsPrincipal)}
-          valueClassName="text-amber-400"
           rows={[
             { label: "Total liability", value: formatMoney(summary.fixedSavingsLiability) },
             { label: "Accrued interest", value: formatMoney(summary.fixedSavingsAccruedInterest) },
@@ -99,7 +98,7 @@ export default async function Dashboard({
         />
         <MetricCard
           title="Investor Capital"
-          icon={<Landmark className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />}
+          icon={<Landmark className="mt-0.5 h-4 w-4 shrink-0 text-primary" />}
           value={formatMoney(summary.totalInvestorCapital)}
           rows={[
             { label: "Equity NAV", value: formatMoney(summary.aum) },

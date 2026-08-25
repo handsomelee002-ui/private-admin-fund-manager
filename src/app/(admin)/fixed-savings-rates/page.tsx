@@ -11,6 +11,19 @@ import { Percent, Tags } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * The stored status is a manual kill switch - only 'active' or 'disabled' - so
+ * on its own it calls a finished promotion active forever. The date window is
+ * what actually decides whether a promotion pays, in promotionForDate, so the
+ * badge is derived from both rather than from the column alone.
+ */
+function promotionState(promotion: { status: string; start_date: string; end_date: string }, today: string) {
+  if (promotion.status !== "active") return { label: promotion.status, variant: "outline" as const, live: false };
+  if (promotion.end_date < today) return { label: "ended", variant: "outline" as const, live: false };
+  if (promotion.start_date > today) return { label: "scheduled", variant: "outline" as const, live: true };
+  return { label: "active", variant: "default" as const, live: true };
+}
+
 const metricHeaderClass = "flex min-h-12 flex-row items-start justify-between gap-3 pb-2";
 const metricTitleClass = "text-sm leading-5 text-muted-foreground";
 const metricValueClass = "text-[1.625rem] leading-8 font-bold whitespace-nowrap tabular-nums tracking-normal";
@@ -21,6 +34,7 @@ export default async function FixedSavingsRatesPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const resolvedSearchParams = await searchParams;
+  const today = new Date().toISOString().slice(0, 10);
   const settings = await getFixedSavingsRateSettings();
   const baseRates = [...settings.baseRates].sort((a: any, b: any) => {
     const dateOrder = String(b.effective_date).localeCompare(String(a.effective_date));
@@ -103,20 +117,25 @@ export default async function FixedSavingsRatesPage({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {promotionPagination.pageRows.map((promotion: any) => (
-                <TableRow key={promotion.id}>
-                  <TableCell className="pl-6 font-medium">{promotion.name}</TableCell>
-                  <TableCell>{promotion.start_date} to {promotion.end_date}</TableCell>
-                  <TableCell className="text-right font-semibold">{Number(promotion.annual_rate_percent).toFixed(4)}%</TableCell>
-                  <TableCell className="text-right">{promotion.balance_cap ? formatMoney(promotion.balance_cap) : "-"}</TableCell>
-                  <TableCell>
-                    <Badge variant={promotion.status === "active" ? "default" : "outline"}>{promotion.status}</Badge>
-                  </TableCell>
-                  <TableCell className="pr-6 text-right">
-                    {promotion.status === "active" ? <DisablePromotionButton id={promotion.id} /> : null}
-                  </TableCell>
-                </TableRow>
-              ))}
+              {promotionPagination.pageRows.map((promotion: any) => {
+                const state = promotionState(promotion, today);
+                return (
+                  <TableRow key={promotion.id}>
+                    <TableCell className="pl-6 font-medium">{promotion.name}</TableCell>
+                    <TableCell>{promotion.start_date} to {promotion.end_date}</TableCell>
+                    <TableCell className="text-right font-semibold">{Number(promotion.annual_rate_percent).toFixed(4)}%</TableCell>
+                    <TableCell className="text-right">{promotion.balance_cap ? formatMoney(promotion.balance_cap) : "-"}</TableCell>
+                    <TableCell>
+                      <Badge variant={state.variant}>{state.label}</Badge>
+                    </TableCell>
+                    <TableCell className="pr-6 text-right">
+                      {/* Disabling an ended promotion changes nothing, so the
+                          control is offered only while one can still pay. */}
+                      {state.live ? <DisablePromotionButton id={promotion.id} /> : null}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
               {settings.promotions.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center text-muted-foreground py-12">No promotions configured.</TableCell>

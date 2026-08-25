@@ -32,6 +32,16 @@ function describeLog(log: any) {
   if (log.action === "bonus_payment.add") {
     return `${details.ledgerType ?? "bonus"} RM ${Number(details.amount ?? 0).toLocaleString()}`;
   }
+  if (log.action.startsWith("nav_week.")) {
+    const week = details.weekEnding ? `Week ${details.weekEnding}` : "NAV week";
+    const gross = details.grossAssets !== undefined
+      ? `, gross RM ${Number(details.grossAssets).toLocaleString()}`
+      : "";
+    const nav = details.navPerUnit !== undefined
+      ? `, NAV ${Number(details.navPerUnit).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}/unit`
+      : "";
+    return `${week}${gross}${nav}`;
+  }
   if (log.action.endsWith(".revert")) {
     return `Reverted audit log ${details.originalAuditEventId ?? "-"}`;
   }

@@ -164,3 +164,67 @@ test("a closed platform overrides a stale non-zero mark", () => {
   });
   assert.equal(resolved.totalValue, 0);
 });
+
+test("a platform with no mark of its own is carried at what the last locked NAV priced it", () => {
+  // The review screen writes a typed value into that NAV's snapshot. Before the
+  // snapshot fallback existed this platform dropped to cost and the next NAV
+  // silently gave back the whole gain the previous one recognised.
+  const resolved = resolvePlatformValue({
+    netInvested: 192900,
+    valuations: [],
+    asOfDate: "2026-08-25",
+    lastNavSnapshot: { weekEnding: "2026-06-25", totalValue: 300000 },
+  });
+  assert.equal(resolved.totalValue, 300000);
+  assert.equal(resolved.source, "NAV_SNAPSHOT");
+  assert.equal(resolved.valuationDate, "2026-06-25");
+  assert.equal(resolved.ageDays, 61);
+  assert.equal(resolved.isStale, true);
+});
+
+test("a mark of the platform's own beats the NAV snapshot", () => {
+  const resolved = resolvePlatformValue({
+    netInvested: 192900,
+    valuations: [{ asOfDate: "2026-08-20", totalValue: 210000 }],
+    asOfDate: "2026-08-25",
+    lastNavSnapshot: { weekEnding: "2026-06-25", totalValue: 300000 },
+  });
+  assert.equal(resolved.totalValue, 210000);
+  assert.equal(resolved.source, "CARRIED_FORWARD");
+});
+
+test("a NAV snapshot from after the valuation date never leaks backwards", () => {
+  // Same rule as selectValuationAsOf: pricing a historical NAV with a later
+  // NAV's numbers would rewrite the past.
+  const resolved = resolvePlatformValue({
+    netInvested: 192900,
+    valuations: [],
+    asOfDate: "2026-05-01",
+    lastNavSnapshot: { weekEnding: "2026-06-25", totalValue: 300000 },
+  });
+  assert.equal(resolved.totalValue, 192900);
+  assert.equal(resolved.source, "NET_INVESTED_FALLBACK");
+});
+
+test("a snapshot taken on the valuation date itself counts as recorded", () => {
+  const resolved = resolvePlatformValue({
+    netInvested: 192900,
+    valuations: [],
+    asOfDate: "2026-06-25",
+    lastNavSnapshot: { weekEnding: "2026-06-25", totalValue: 300000 },
+  });
+  assert.equal(resolved.source, "RECORDED");
+  assert.equal(resolved.isStale, false);
+});
+
+test("a closed platform is still worth nothing however the last NAV priced it", () => {
+  const resolved = resolvePlatformValue({
+    netInvested: 192900,
+    valuations: [],
+    asOfDate: "2026-08-25",
+    closed: true,
+    lastNavSnapshot: { weekEnding: "2026-06-25", totalValue: 300000 },
+  });
+  assert.equal(resolved.totalValue, 0);
+  assert.equal(resolved.source, "CLOSED");
+});

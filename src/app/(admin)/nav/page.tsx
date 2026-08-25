@@ -100,7 +100,11 @@ export default async function NavPage({
                       <p className="text-muted-foreground text-xs">
                         {formatMoney(platform.totalValue)}
                         {" · "}
-                        {platform.latestValuationDate ? `valued ${platform.latestValuationDate}` : "never valued"}
+                        {platform.latestValuationDate
+                          ? `valued ${platform.latestValuationDate}`
+                          : platform.valueSource === "NAV_SNAPSHOT" && platform.latestSnapshotWeek
+                            ? `from NAV ${platform.latestSnapshotWeek}`
+                            : "never valued"}
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">

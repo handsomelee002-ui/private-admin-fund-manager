@@ -36,10 +36,16 @@ type NavWeekInput = {
    */
   platformSnapshots?: PlatformSnapshotInput[];
   /**
-   * Override for the fund's own cash balance. Omit to carry the last recorded
-   * balance forward.
+   * The fund's own cash balance to price this NAV with. Omit to carry the last
+   * recorded balance forward.
    */
   fundCash?: number;
+  /**
+   * Whether fundCash is a balance the admin actually checked against the bank,
+   * rather than the ledger-derived figure the review screen pre-fills. Only a
+   * checked balance is worth recording as a new bank anchor.
+   */
+  fundCashConfirmed?: boolean;
   adjustments: number;
   notes?: string;
 };
@@ -55,7 +61,7 @@ type PlatformSnapshotInput = {
   unrealizedProfit?: number;
 };
 
-export type PlatformValuationSource = "MANUAL" | "STATEMENT" | "IMPORT";
+export type PlatformValuationSource = "MANUAL" | "STATEMENT" | "IMPORT" | "NAV_REVIEW";
 
 export type NavPlatformPreview = ResolvedValuation & {
   platformId: string;
@@ -1382,6 +1388,37 @@ async function getPlatformValuationsAsOf(asOfDate: string) {
 }
 
 /**
+ * What the newest locked NAV on or before a date priced each platform at.
+ *
+ * The NAV review screen accepts a value for a platform that has no mark of its
+ * own, and that value only ever reached the NAV's own snapshot. Without this
+ * the next NAV cannot see it and falls back to cost.
+ */
+async function getLastNavSnapshotsAsOf(asOfDate: string) {
+  const res = await sql`
+    SELECT platform_id, week_ending, total_value
+    FROM (
+      SELECT nwps.platform_id,
+             TO_CHAR(nw.week_ending, 'YYYY-MM-DD') as week_ending,
+             nwps.total_value,
+             ROW_NUMBER() OVER (PARTITION BY nwps.platform_id ORDER BY nw.week_ending DESC) as rn
+      FROM nav_week_platform_snapshots nwps
+      JOIN nav_weeks nw ON nw.id = nwps.nav_week_id
+      WHERE nw.status = 'locked' AND nw.week_ending <= ${asOfDate}
+    ) ranked
+    WHERE rn = 1
+  `;
+  const byPlatform = new Map<string, { weekEnding: string; totalValue: number }>();
+  for (const row of res.rows) {
+    byPlatform.set(row.platform_id, {
+      weekEnding: row.week_ending,
+      totalValue: parseFloat(row.total_value || "0"),
+    });
+  }
+  return byPlatform;
+}
+
+/**
  * Every platform valued for a NAV date, with staleness metadata. This is what
  * the NAV review screen renders and what createNavWeek persists.
  */
@@ -1389,10 +1426,11 @@ export async function buildNavPlatformPreview(
   asOfDate: string,
   overrides: Map<string, { totalValue?: number; unrealizedProfit?: number }> = new Map(),
 ): Promise<NavPlatformPreview[]> {
-  const [positions, valuations, fundCash] = await Promise.all([
+  const [positions, valuations, fundCash, navSnapshots] = await Promise.all([
     getPlatformFundingPositions(asOfDate),
     getPlatformValuationsAsOf(asOfDate),
     getFundCashAsOf(asOfDate),
+    getLastNavSnapshotsAsOf(asOfDate),
   ]);
 
   const resolved = positions.map((platform) => {
@@ -1418,6 +1456,7 @@ export async function buildNavPlatformPreview(
             valuations: valuations.get(platform.id) ?? [],
             asOfDate,
             closed: platform.closed,
+            lastNavSnapshot: navSnapshots.get(platform.id) ?? null,
           });
 
     return {
@@ -2443,7 +2482,12 @@ export async function createNavWeek(input: NavWeekInput) {
   // between the withdrawal and its redeployment.
   const fundCashPreview = await getFundCashAsOf(input.weekEnding);
   const fundCash = input.fundCash !== undefined ? roundMoney(input.fundCash) : fundCashPreview.balance;
-  if (input.fundCash !== undefined && input.fundCash !== fundCashPreview.balance) {
+  // The review screen pre-fills this box from the ledgers, so a submitted value
+  // is not by itself a claim about the bank. Recording every one of them made
+  // saving a NAV plant a cash anchor the admin never checked - one that
+  // survives deleting the draft, and that recordFundCash refuses outright when
+  // a later NAV is locked. Only a balance the admin actually edited is written.
+  if (input.fundCashConfirmed && input.fundCash !== undefined && input.fundCash !== fundCashPreview.balance) {
     await recordFundCash({
       asOfDate: input.weekEnding,
       balance: fundCash,
@@ -2494,6 +2538,24 @@ export async function createNavWeek(input: NavWeekInput) {
     RETURNING id
   `;
   const navWeekId = res.rows[0].id as string;
+  // A value typed into the review screen is a value mark, so it is recorded as
+  // one. Keeping it only in this NAV's snapshot meant the next NAV could not
+  // see it and dropped the platform back to cost, quietly discarding whatever
+  // gain this NAV recognised. recordPlatformValuation is bypassed on purpose:
+  // its locked-NAV guard exists to stop history moving under a priced period,
+  // and the NAV being written here is the authority for its own date.
+  for (const snapshot of input.platformSnapshots ?? []) {
+    if (snapshot.totalValue === undefined) continue;
+    await db`
+      INSERT INTO platform_valuations (platform_id, as_of_date, total_value, source, notes)
+      VALUES (${snapshot.platformId}, ${input.weekEnding}, ${roundMoney(snapshot.totalValue)}, 'NAV_REVIEW', 'Entered on the NAV review screen')
+      ON CONFLICT (platform_id, as_of_date) DO UPDATE SET
+        total_value = EXCLUDED.total_value,
+        source = EXCLUDED.source,
+        notes = EXCLUDED.notes,
+        audit_status = 'active'
+    `;
+  }
   await db`DELETE FROM nav_week_platform_snapshots WHERE nav_week_id = ${navWeekId}`;
   for (const snapshot of platformSnapshots) {
     await db`
@@ -2555,9 +2617,22 @@ export async function lockNavWeek(id: string) {
     throw new Error(`NAV week must be later than the latest locked NAV week (${latestWeekEnding}).`);
   }
 
-  const locked = await sql`UPDATE nav_weeks SET status = 'locked', locked_at = NOW() WHERE id = ${id} AND status = 'draft' RETURNING id`;
+  // Locking is what lets this NAV price real deposits and withdrawals, so the
+  // audit row carries the numbers it fixed rather than only the id.
+  const locked = await sql`
+    UPDATE nav_weeks SET status = 'locked', locked_at = NOW()
+    WHERE id = ${id} AND status = 'draft'
+    RETURNING gross_assets, net_asset_value, total_units, nav_per_unit
+  `;
   if (locked.rows.length === 0) throw new Error("Only draft NAV weeks can be locked.");
-  await writeAuditEvent("nav_week.lock", "nav_weeks", id);
+  const pricing = locked.rows[0];
+  await writeAuditEvent("nav_week.lock", "nav_weeks", id, {
+    weekEnding: draft.week_ending,
+    grossAssets: roundMoney(parseFloat(pricing.gross_assets || "0")),
+    netAssetValue: roundMoney(parseFloat(pricing.net_asset_value || "0")),
+    totalUnits: roundUnits(parseFloat(pricing.total_units || "0")),
+    navPerUnit: parseFloat(pricing.nav_per_unit || "0"),
+  });
   return { success: true };
 }
 
@@ -2571,9 +2646,20 @@ export async function deleteDraftNavWeek(id: string) {
   if (!draft) throw new Error("NAV week not found.");
   if (draft.status !== "draft") throw new Error("Locked NAV weeks are immutable and cannot be deleted.");
 
-  const deleted = await sql`DELETE FROM nav_weeks WHERE id = ${id} AND status = 'draft' RETURNING id`;
+  // The row is gone after this, so what it held is only recoverable from the
+  // audit event. Return it from the DELETE rather than re-reading it first.
+  const deleted = await sql`
+    DELETE FROM nav_weeks WHERE id = ${id} AND status = 'draft'
+    RETURNING TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending, gross_assets, net_asset_value, nav_per_unit
+  `;
   if (deleted.rows.length === 0) throw new Error("Only draft NAV weeks can be deleted.");
-  await writeAuditEvent("nav_week.delete_draft", "nav_weeks", id);
+  const removed = deleted.rows[0];
+  await writeAuditEvent("nav_week.delete_draft", "nav_weeks", id, {
+    weekEnding: removed.week_ending,
+    grossAssets: roundMoney(parseFloat(removed.gross_assets || "0")),
+    netAssetValue: roundMoney(parseFloat(removed.net_asset_value || "0")),
+    navPerUnit: parseFloat(removed.nav_per_unit || "0"),
+  });
   return { success: true };
 }
 
@@ -3826,6 +3912,10 @@ export async function seedDummyData() {
         weekEnding,
         settlementDate: weekEnding,
         fundCash: roundMoney(Math.max(expectedCash, 0)),
+        // The seed stands in for an admin who reconciled the bank every week.
+        // Without this the balance is never anchored and savers' undeployed
+        // cash reads as negative equity, which is what the note above warns of.
+        fundCashConfirmed: true,
         // Demo data has to contain losses or it teaches nothing: with every
         // platform up, there is no way to see whether attribution, NAV or the
         // return columns actually handle a loss.

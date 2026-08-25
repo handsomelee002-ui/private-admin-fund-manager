@@ -1,4 +1,15 @@
-export type ValuationSource = "RECORDED" | "CARRIED_FORWARD" | "NET_INVESTED_FALLBACK" | "CLOSED";
+export type ValuationSource =
+  | "RECORDED"
+  | "CARRIED_FORWARD"
+  | "NAV_SNAPSHOT"
+  | "NET_INVESTED_FALLBACK"
+  | "CLOSED";
+
+/** What a locked NAV last priced this platform at, when it has no mark of its own. */
+export type NavSnapshotValuation = {
+  weekEnding: string;
+  totalValue: number;
+};
 
 export type RecordedValuation = {
   asOfDate: string;
@@ -27,6 +38,8 @@ export function resolvePlatformValue(input: {
   asOfDate: string;
   /** The account is shut: worth nothing, and never stale. */
   closed?: boolean;
+  /** Fallback ahead of cost: the value the last locked NAV recorded. */
+  lastNavSnapshot?: NavSnapshotValuation | null;
 }): ResolvedValuation;
 export function blockingValuations<T extends ResolvedValuation>(
   resolved: T[],

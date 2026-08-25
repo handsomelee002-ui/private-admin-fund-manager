@@ -35,7 +35,7 @@ function selectValuationAsOf(valuations, asOfDate) {
  * Resolve one platform's value for a NAV date from its recorded value marks,
  * carried forward when the platform was not refreshed on the NAV date itself.
  */
-function resolvePlatformValue({ netInvested, valuations = [], asOfDate, closed = false }) {
+function resolvePlatformValue({ netInvested, valuations = [], asOfDate, closed = false, lastNavSnapshot = null }) {
   const invested = roundMoney(Number(netInvested) || 0);
   const recorded = selectValuationAsOf(valuations, asOfDate);
 
@@ -54,6 +54,23 @@ function resolvePlatformValue({ netInvested, valuations = [], asOfDate, closed =
   }
 
   if (!recorded) {
+    // A value typed into the NAV review screen lands in that NAV's platform
+    // snapshot, not in platform_valuations, so a platform can have been valued
+    // by a locked NAV and still have no mark of its own. Dropping to cost here
+    // silently discarded that valuation and understated the next NAV by the
+    // whole gain the previous one recognised.
+    const snapshot =
+      lastNavSnapshot && lastNavSnapshot.weekEnding <= asOfDate ? lastNavSnapshot : null;
+    if (snapshot) {
+      const snapshotAge = daysBetween(snapshot.weekEnding, asOfDate);
+      return {
+        totalValue: roundMoney(snapshot.totalValue),
+        source: snapshotAge === 0 ? "RECORDED" : "NAV_SNAPSHOT",
+        valuationDate: snapshot.weekEnding,
+        ageDays: snapshotAge,
+        isStale: snapshotAge > STALE_AFTER_DAYS,
+      };
+    }
     // No mark ever taken: assume flat rather than inventing a gain.
     return {
       totalValue: invested,

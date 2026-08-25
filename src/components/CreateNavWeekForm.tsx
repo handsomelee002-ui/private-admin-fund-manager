@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { createNavWeekAction, getNavPreviewAction } from "@/actions/fund";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { HoverDetail } from "@/components/HoverDetail";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AlertTriangle, Plus } from "lucide-react";
@@ -46,6 +48,7 @@ type CashAttribution = {
 const SOURCE_LABELS: Record<string, string> = {
   RECORDED: "recorded",
   CARRIED_FORWARD: "carried forward",
+  NAV_SNAPSHOT: "from last NAV",
   NET_INVESTED_FALLBACK: "never valued",
   NEVER_RECORDED: "never recorded",
 };
@@ -58,6 +61,28 @@ function formatMoney(value: number) {
   return `RM ${value.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/**
+ * Who owns the bank balance. Only equity's share prices the units, so this is
+ * what makes gross assets add up against the balance shown on the row.
+ */
+function CashAttributionDetail({ attribution }: { attribution: CashAttribution }) {
+  return (
+    <div className="space-y-1">
+      <p className="text-foreground text-sm font-medium">
+        Who owns the {formatMoney(attribution.bankBalance)} in the bank
+      </p>
+      <p className="text-muted-foreground text-xs">
+        Fixed-savings savers are owed {formatMoney(attribution.fixedSavingsLiability)} and the brokerage pot holds{" "}
+        {formatMoney(attribution.brokerageClaim)}
+        {attribution.nonEquityValueInPlatforms > 0.009
+          ? `, of which ${formatMoney(attribution.nonEquityValueInPlatforms)} sits inside platforms rather than in cash`
+          : ""}
+        . Equity owns the remaining {formatMoney(attribution.equity)}, and only that share prices the units.
+      </p>
+    </div>
+  );
+}
+
 function ageLabel(item: { ageDays: number | null }) {
   if (item.ageDays === null) return "never";
   if (item.ageDays === 0) return "today";
@@ -65,6 +90,7 @@ function ageLabel(item: { ageDays: number | null }) {
 }
 
 export function CreateNavWeekForm() {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -72,11 +98,19 @@ export function CreateNavWeekForm() {
   const [rows, setRows] = useState<PreviewRow[]>([]);
   const [fundCash, setFundCash] = useState<FundCash | null>(null);
   const [fundCashOverride, setFundCashOverride] = useState("");
+  // Set only by the admin typing in the box, never by the pre-fill. Saving
+  // records a new bank anchor only when this is true.
+  const [fundCashEdited, setFundCashEdited] = useState(false);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [attribution, setAttribution] = useState<CashAttribution | null>(null);
   const [equityPlatformValue, setEquityPlatformValue] = useState(0);
   const [grossAssets, setGrossAssets] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // The cash box is pre-filled with the expected balance once per valuation
+  // date. Seeding from inside the preview effect would otherwise re-trigger it
+  // forever, and a new date implies a new expected figure, so the seed is keyed
+  // on the date rather than fired once per dialog.
+  const seededDateRef = useRef<string | null>(null);
 
   const loadPreview = useCallback(async (
     date: string,
@@ -94,11 +128,19 @@ export function CreateNavWeekForm() {
     const result = await getNavPreviewAction(date, parsedOverrides, parsedCash);
     setPreviewLoading(false);
     if ("preview" in result && result.preview) {
+      const cash = (result.fundCash as FundCash) ?? null;
       setRows(result.preview as PreviewRow[]);
-      setFundCash((result.fundCash as FundCash) ?? null);
+      setFundCash(cash);
       setAttribution((result.attribution as CashAttribution) ?? null);
       setEquityPlatformValue(result.equityPlatformValue ?? 0);
       setGrossAssets(result.grossAssets ?? 0);
+      // A bank account cannot hold less than nothing and recordFundCash rejects
+      // a negative balance, so a ledger-implied overdraft seeds as zero.
+      if (cash && seededDateRef.current !== date) {
+        seededDateRef.current = date;
+        setFundCashOverride(Math.max(0, cash.expectedBalance).toFixed(2));
+        setFundCashEdited(false);
+      }
     } else {
       setRows([]);
       setFundCash(null);
@@ -112,7 +154,19 @@ export function CreateNavWeekForm() {
   // Overrides change what equity's share of the cash works out to, so the whole
   // preview is re-derived server-side rather than re-totalled in the browser.
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      // Preview state outlives the dialog, so without this a reopen paints the
+      // previous session's figures until the refetch lands.
+      seededDateRef.current = null;
+      setFundCashEdited(false);
+      setRows([]);
+      setFundCash(null);
+      setAttribution(null);
+      setEquityPlatformValue(0);
+      setGrossAssets(0);
+      return;
+    }
+    setPreviewLoading(true);
     const timer = setTimeout(() => {
       void loadPreview(asOfDate, overrides, fundCashOverride);
     }, 400);
@@ -130,6 +184,10 @@ export function CreateNavWeekForm() {
       setOpen(false);
       setOverrides({});
       setFundCashOverride("");
+      setFundCashEdited(false);
+      // Same as LockNavButton: an imperative action call leaves the NAV
+      // register and the platform panel rendering their pre-save payload.
+      router.refresh();
     } else {
       setError(result?.error || "Failed to save NAV.");
     }
@@ -153,6 +211,14 @@ export function CreateNavWeekForm() {
   })();
 
   const cashGap = fundCash ? Math.round((effectiveFundCash - fundCash.expectedBalance) * 100) / 100 : 0;
+  // The pre-filled figure is derived from the ledgers, not measured. This is the
+  // distance from the last balance actually confirmed against a bank statement.
+  const unconfirmedGap = fundCash ? Math.round((effectiveFundCash - fundCash.balance) * 100) / 100 : 0;
+  // With no savers' money and an empty pot the whole balance is equity's, so
+  // there is nothing to attribute and the row gets no popup.
+  const hasCashAttribution = Boolean(
+    attribution && (attribution.fixedSavingsLiability > 0.009 || Math.abs(attribution.brokerageClaim) > 0.009),
+  );
   const staleRows = rows.filter((row) => row.isStale);
   const blockingRows = staleRows.filter((row) => row.weightPercent >= 10);
 
@@ -214,7 +280,7 @@ export function CreateNavWeekForm() {
                   </tr>
                 </thead>
                 <tbody>
-                  {previewLoading && (
+                  {previewLoading && rows.length === 0 && (
                     <tr>
                       <td colSpan={6} className="text-muted-foreground px-3 py-8 text-center">
                         Loading platform values...
@@ -228,8 +294,10 @@ export function CreateNavWeekForm() {
                       </td>
                     </tr>
                   )}
-                  {!previewLoading &&
-                    rows.map((row) => {
+                  {/* Deliberately not gated on previewLoading. Unmounting these
+                      rows mid-refetch destroys the override input being typed
+                      into and takes focus with it. */}
+                  {rows.map((row) => {
                       const value = effectiveValue(row);
                       const profitLoss = value - row.netInvested;
                       return (
@@ -273,13 +341,27 @@ export function CreateNavWeekForm() {
                         </tr>
                       );
                     })}
-                  {!previewLoading && fundCash && (
+                  {fundCash && (
                     <tr className="border-border/40 bg-muted/20 border-t">
                       <td className="px-3 py-2">
-                        <div className="font-medium">Fund cash</div>
-                        <div className="text-muted-foreground text-xs">
-                          bank balance · {attribution ? `${formatMoney(attribution.equity)} is equity's` : "not in any platform"}
-                        </div>
+                        {attribution && hasCashAttribution ? (
+                          <HoverDetail
+                            detailClassName="w-[24rem]"
+                            detail={<CashAttributionDetail attribution={attribution} />}
+                          >
+                            <div className="font-medium underline decoration-dotted underline-offset-4">Fund cash</div>
+                            <div className="text-muted-foreground text-xs">
+                              bank balance · {formatMoney(attribution.equity)} is equity&apos;s
+                            </div>
+                          </HoverDetail>
+                        ) : (
+                          <>
+                            <div className="font-medium">Fund cash</div>
+                            <div className="text-muted-foreground text-xs">
+                              bank balance · {attribution ? `${formatMoney(attribution.equity)} is equity's` : "not in any platform"}
+                            </div>
+                          </>
+                        )}
                       </td>
                       <td className="text-muted-foreground px-3 py-2 text-right tabular-nums">—</td>
                       <td className="px-3 py-2 text-right font-medium tabular-nums">{formatMoney(effectiveFundCash)}</td>
@@ -301,8 +383,12 @@ export function CreateNavWeekForm() {
                           min="0"
                           placeholder="—"
                           value={fundCashOverride}
-                          onChange={(event) => setFundCashOverride(event.target.value)}
+                          onChange={(event) => {
+                            setFundCashOverride(event.target.value);
+                            setFundCashEdited(true);
+                          }}
                         />
+                        <input type="hidden" name="fund_cash_confirmed" value={fundCashEdited ? "1" : ""} />
                       </td>
                     </tr>
                   )}
@@ -325,17 +411,21 @@ export function CreateNavWeekForm() {
             </div>
           )}
 
-          {attribution && (attribution.fixedSavingsLiability > 0.009 || Math.abs(attribution.brokerageClaim) > 0.009) && (
-            <div className="border-border/50 bg-muted/20 text-muted-foreground rounded-md border p-3 text-xs">
-              <p className="text-foreground font-medium">Who owns the {formatMoney(attribution.bankBalance)} in the bank</p>
-              <p className="mt-1">
-                Fixed-savings savers are owed {formatMoney(attribution.fixedSavingsLiability)} and the brokerage pot holds{" "}
-                {formatMoney(attribution.brokerageClaim)}
-                {attribution.nonEquityValueInPlatforms > 0.009
-                  ? `, of which ${formatMoney(attribution.nonEquityValueInPlatforms)} sits inside platforms rather than in cash`
-                  : ""}
-                . Equity owns the remaining {formatMoney(attribution.equity)}, and only that share prices the units.
-              </p>
+          {fundCash && Math.abs(unconfirmedGap) > 0.009 && (
+            <div className="flex gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-medium">
+                  This NAV will record {formatMoney(effectiveFundCash)} as the bank balance
+                </p>
+                <p className="mt-0.5">
+                  {fundCash.asOfDate
+                    ? `You last confirmed ${formatMoney(fundCash.balance)} on ${fundCash.asOfDate}.`
+                    : "You have never confirmed a bank balance."}{" "}
+                  This figure is derived from your ledgers, not measured against the bank &mdash; check the statement,
+                  or type the real balance.
+                </p>
+              </div>
             </div>
           )}
 
@@ -357,13 +447,45 @@ export function CreateNavWeekForm() {
           </div>
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-sm">
-              <span className="text-muted-foreground">Equity gross assets </span>
-              <span className="font-semibold tabular-nums">{formatMoney(grossAssets)}</span>
-              <span className="text-muted-foreground ml-2 text-xs">
-                ({formatMoney(equityPlatformValue)} equity share of platforms + {formatMoney(attribution?.equity ?? 0)} equity
-                share of cash{staleRows.length > 0 ? `, ${staleRows.length} carried forward` : ""})
-              </span>
+            <div>
+              <HoverDetail
+                detailClassName="w-[22rem]"
+                detail={
+                  <div className="space-y-1.5">
+                    <p className="text-foreground text-sm font-medium">Equity gross assets</p>
+                    <dl className="space-y-1 text-xs">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <dt className="text-muted-foreground">Equity share of platforms</dt>
+                        <dd className="tabular-nums">{formatMoney(equityPlatformValue)}</dd>
+                      </div>
+                      <div className="flex items-baseline justify-between gap-3">
+                        <dt className="text-muted-foreground">Equity share of cash</dt>
+                        <dd className="tabular-nums">{formatMoney(attribution?.equity ?? 0)}</dd>
+                      </div>
+                    </dl>
+                    {staleRows.length > 0 && (
+                      <p className="text-muted-foreground text-xs">
+                        {staleRows.length} platform{staleRows.length === 1 ? "" : "s"} carried forward.
+                      </p>
+                    )}
+                  </div>
+                }
+              >
+                <div className="text-sm">
+                  <span className="text-muted-foreground">Equity gross assets </span>
+                  <span className="font-semibold tabular-nums underline decoration-dotted underline-offset-4">
+                    {formatMoney(grossAssets)}
+                  </span>
+                  {/* The total and the weights are what the round-trip is
+                      re-deriving, so the wait is reported on them rather than
+                      by blanking the table the admin is typing into. */}
+                  {previewLoading && rows.length > 0 && (
+                    <span className="text-muted-foreground ml-2 text-xs" aria-live="polite">
+                      updating&hellip;
+                    </span>
+                  )}
+                </div>
+              </HoverDetail>
             </div>
             <Button type="submit" disabled={loading || rows.length === 0}>
               {loading ? "Saving..." : "Save draft"}

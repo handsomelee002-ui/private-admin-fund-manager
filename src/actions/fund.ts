@@ -84,6 +84,7 @@ export async function createNavWeekAction(formData: FormData) {
       weekEnding,
       platformSnapshots,
       fundCash,
+      fundCashConfirmed: formData.get("fund_cash_confirmed")?.toString() === "1",
       adjustments: parseMoney(formData.get("adjustments"), "Adjustments"),
       notes: formData.get("notes")?.toString() || "",
     });
