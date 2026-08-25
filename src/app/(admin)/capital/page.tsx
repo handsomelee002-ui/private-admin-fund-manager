@@ -42,7 +42,6 @@ export default async function CapitalLedgerPage({
       <div className="flex items-end justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Capital</h1>
-          <p className="text-muted-foreground mt-1 text-sm">Deposits issue units and withdrawals redeem units at the latest locked weekly NAV.</p>
         </div>
         <div className="flex items-center gap-2">
           <AddCashMovementForm investors={investors} />

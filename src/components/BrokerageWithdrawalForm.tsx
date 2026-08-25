@@ -105,9 +105,6 @@ export function BrokerageWithdrawalForm({
             <Label htmlFor="withdrawal_notes">Notes</Label>
             <Input id="withdrawal_notes" name="notes" placeholder="Bank reference or reason" />
           </div>
-          <p className="text-[11px] text-muted-foreground">
-            This reduces the fund&apos;s recorded bank balance by the same amount, so the pot and the bank stay in step.
-          </p>
           <div className="flex justify-end pt-2">
             <Button type="submit" disabled={loading || overCap || entered <= 0}>
               {loading ? "Saving..." : "Record Withdrawal"}

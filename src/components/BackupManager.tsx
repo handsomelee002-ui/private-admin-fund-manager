@@ -119,10 +119,6 @@ export function BackupManager({ adminPassword, onProtectedActionSuccess }: Backu
           <AlertTriangle className="h-4 w-4 text-amber-500" />
           <CardTitle className="text-base">Manual Database Backup</CardTitle>
         </div>
-        <div className="space-y-1 text-xs text-muted-foreground">
-          <p>Backup files contain full financial records, investor names, locked NAV snapshots, and audit logs.</p>
-          <p>Export before releases or major data changes; restore only when replacing the current database is intentional.</p>
-        </div>
       </CardHeader>
       <CardContent className="space-y-5">
         {!adminPassword && (

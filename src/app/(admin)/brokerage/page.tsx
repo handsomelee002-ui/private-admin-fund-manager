@@ -115,9 +115,6 @@ export default async function BrokeragePage({
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Brokerage</h1>
-        <p className="text-muted-foreground mt-1 text-sm">
-          Configure withdrawal fees and reconcile brokerage account liabilities.
-        </p>
       </div>
 
       <div className="grid gap-4 grid-cols-1 lg:grid-cols-3">
@@ -127,15 +124,9 @@ export default async function BrokeragePage({
               <Percent className="h-4 w-4 text-primary" />
               <CardTitle className="text-base">Brokerage Fee Rate</CardTitle>
             </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              Charged only on NAV-based equity withdrawal/redemption profit. Click the edit icon to update.
-            </p>
           </CardHeader>
           <CardContent>
             <BrokerageFeeConfig initialRate={brokerageFeeRate} />
-            <p className="text-[10px] text-muted-foreground mt-3">
-              Platform realized-profit fees and claim fees are disabled to prevent double charging.
-            </p>
           </CardContent>
         </Card>
 
@@ -226,11 +217,6 @@ export default async function BrokeragePage({
             )}
 
 
-            <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-              Balance: {fmt(pot.realisedPot)} realised + {fmt(pot.unrealisedPot)} unrealised = {fmt(netCommission)}.
-              Withdrawals are capped at the lower of realised profit and the total balance, so no cash leaves against a
-              mark that has since gone underwater.
-            </div>
           </CardContent>
         </Card>
       </div>
@@ -241,9 +227,6 @@ export default async function BrokeragePage({
             <Banknote className="h-4 w-4 text-primary" />
             <CardTitle className="text-base">Brokerage Withdrawals</CardTitle>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">
-            Cash taken out of the pot. Each row moved the fund&apos;s recorded bank balance by the same amount.
-          </p>
         </CardHeader>
         <CardContent className="p-0">
           <Table className="table-fixed">
@@ -283,9 +266,6 @@ export default async function BrokeragePage({
               <Gift className="h-4 w-4 text-primary" />
               <CardTitle className="text-base">Special Bonus Payments</CardTitle>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              One-time positive or negative bonuses to specific investors or all investors proportionally.
-            </p>
           </div>
           <AddBonusForm investors={investors.map((i: any) => ({ id: i.id, name: i.name }))} />
         </CardHeader>

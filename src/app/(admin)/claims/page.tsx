@@ -77,9 +77,6 @@ export default async function ClaimsPage({
         <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
           Profit Claims
         </h1>
-        <p className="text-muted-foreground mt-1 text-sm">
-          Track investor profit IOUs — locked unrealized profit pending settlement.
-        </p>
       </div>
 
       {/* ── Summary Cards ───────────────────────────────────────────────────── */}
@@ -125,21 +122,6 @@ export default async function ClaimsPage({
             <p className="text-xs text-muted-foreground mt-1.5">All-time IOU created</p>
           </CardContent>
         </Card>
-      </div>
-
-      {/* ── How it works ────────────────────────────────────────────────────── */}
-      <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4 text-sm">
-        <div className="flex items-start gap-3">
-          <Handshake className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
-          <div className="space-y-1">
-            <p className="font-medium text-amber-400">How Profit Claims Work</p>
-            <p className="text-muted-foreground text-xs leading-relaxed">
-              When an investor withdraws their capital while the fund has unrealized profits, their share of that profit is &quot;locked in&quot; as a pending IOU.
-              The platform&apos;s unrealized profit remains untouched (it&apos;s a manual snapshot). When you eventually pay the investor their locked profit,
-              click <strong>Settle</strong> to mark it as paid. Partial settlements are supported.
-            </p>
-          </div>
-        </div>
       </div>
 
       {/* ── Claims Table ─────────────────────────────────────────────────────── */}

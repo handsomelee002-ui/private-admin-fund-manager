@@ -45,9 +45,6 @@ export function AddProfitClaimForm({ investorId, investorName, defaultAmount }: 
         <DialogHeader>
           <DialogTitle>Lock Profit Claim — {investorName}</DialogTitle>
         </DialogHeader>
-        <p className="text-xs text-muted-foreground -mt-2">
-          This records an IOU for the investor&apos;s unrealized profit share at the time of their capital withdrawal. The claim stays pending until you manually settle it.
-        </p>
         <form onSubmit={handleSubmit} className="space-y-4 pt-2">
           <div className="space-y-2">
             <Label>Claim Date (Withdrawal Date)</Label>

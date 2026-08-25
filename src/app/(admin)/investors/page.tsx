@@ -45,7 +45,6 @@ export default async function InvestorsPage({
       <div className="flex items-end justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Investors</h1>
-          <p className="text-muted-foreground mt-1 text-sm">Unit balances and ownership from the fresh weekly NAV model.</p>
         </div>
         <AddInvestorForm />
       </div>

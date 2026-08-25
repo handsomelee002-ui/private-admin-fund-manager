@@ -112,11 +112,6 @@ export default async function PlatformDetailsPage({
                 </Badge>
               )}
             </div>
-            <p className="text-muted-foreground mt-1 text-sm">
-              {platform.closed_on
-                ? `Closed on ${platform.closed_on} and marked at zero. History since ${platform.created_at}.`
-                : `Details and history since ${platform.created_at}`}
-            </p>
           </div>
         </div>
         <ClosePlatformControl
@@ -200,7 +195,6 @@ export default async function PlatformDetailsPage({
             <PieChart className="h-4 w-4 text-primary" />
             <CardTitle className="text-base">Capital Allocation</CardTitle>
           </div>
-          <p className="text-xs text-muted-foreground mt-1">Current platform source ownership used for P&L attribution.</p>
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 md:grid-cols-3">

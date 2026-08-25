@@ -90,10 +90,6 @@ export function AvailableCashDetail({
         </dl>
       </div>
 
-      <p className="text-[11px] leading-relaxed text-muted-foreground">
-        The bank is fully spoken for: every ringgit in it belongs to one of these three. Equity available is whatever
-        is left once the savers&apos; and the pot&apos;s undeployed cash is set aside.
-      </p>
       <p className="text-[10px] text-muted-foreground/70">{asOf}</p>
     </div>
   );

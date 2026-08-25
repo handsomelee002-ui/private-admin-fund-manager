@@ -117,7 +117,7 @@ export function SettleClaimDialog({ claim }: Props) {
               max={remaining}
             />
             <p className="text-[10px] text-muted-foreground">
-              Partial settlement supported — remaining balance stays pending. Max: {fmt(remaining)}
+              Max: {fmt(remaining)}
             </p>
           </div>
           <div className="space-y-2">

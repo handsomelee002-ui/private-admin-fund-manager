@@ -19,9 +19,6 @@ export function SettingsProtectedTools() {
               <KeyRound className="h-4 w-4 text-primary" />
               <p className="text-sm font-semibold">Protected action password</p>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Enter your admin login password once. It applies to backup and database actions below.
-            </p>
           </div>
           <div className="w-full space-y-1.5 lg:max-w-sm">
             <Label htmlFor="settings_admin_password">Admin login password</Label>

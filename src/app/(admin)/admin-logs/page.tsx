@@ -92,7 +92,6 @@ export default async function AdminLogsPage({
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Admin Logs</h1>
-          <p className="text-muted-foreground mt-1 text-sm">Immutable financial activity log with controlled transaction revert.</p>
         </div>
       </div>
 

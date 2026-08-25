@@ -41,7 +41,6 @@ export default async function FixedSavingsPage({
       <div className="flex items-end justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Fixed Savings</h1>
-          <p className="text-muted-foreground mt-1 text-sm">Liability book excluded from equity unit NAV.</p>
         </div>
         <div className="flex items-center gap-2">
           <AddFixedSavingsMovementForm investors={investors} />

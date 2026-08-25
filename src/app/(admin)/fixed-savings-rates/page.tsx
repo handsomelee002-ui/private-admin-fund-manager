@@ -7,7 +7,7 @@ import { PaginationControls } from "@/components/PaginationControls";
 import { getFixedSavingsRateSettings } from "@/lib/fundDb";
 import { formatMoney } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
-import { CalendarClock, Percent, Tags } from "lucide-react";
+import { Percent, Tags } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -35,7 +35,6 @@ export default async function FixedSavingsRatesPage({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Fixed Savings Rates</h1>
-          <p className="text-muted-foreground mt-1 text-sm">Nominal p.a. daily compounding rates and promotion periods.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <AddBaseRateForm />
@@ -52,17 +51,6 @@ export default async function FixedSavingsRatesPage({
           <CardContent>
             <div className={metricValueClass}>{Number(settings.currentBaseRate).toFixed(4)}%</div>
             <p className="text-xs text-muted-foreground mt-1">Nominal p.a., credited daily</p>
-          </CardContent>
-        </Card>
-        <Card className="bg-card/50 border-border/50 md:col-span-2">
-          <CardHeader className={metricHeaderClass}>
-            <CardTitle className={metricTitleClass}>Rate Rule</CardTitle>
-            <CalendarClock className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              Active promotions override the base rate for their date range. If a promotion has a cap, excess balance earns the base rate.
-            </p>
           </CardContent>
         </Card>
       </div>

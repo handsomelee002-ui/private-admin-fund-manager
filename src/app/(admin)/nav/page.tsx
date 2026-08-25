@@ -56,10 +56,6 @@ export default async function NavPage({
       <div className="flex items-end justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Valuations &amp; NAV</h1>
-          <p className="text-muted-foreground mt-1 text-sm">
-            Record what each platform is worth as statements arrive. Those values only reach unit prices, the dashboard
-            and investor reports once you create and lock a NAV from them.
-          </p>
         </div>
         <div className="flex gap-2">
           <AddPlatformForm />

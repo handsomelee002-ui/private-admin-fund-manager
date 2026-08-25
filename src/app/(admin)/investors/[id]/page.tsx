@@ -91,7 +91,6 @@ export default async function InvestorDetailPage({
             </NoPrefetchLink>
             <h1 className="text-3xl font-bold tracking-tight">{statement.investor.name}</h1>
           </div>
-          <p className="text-muted-foreground mt-1 text-sm ml-14">Investor activity, units, cash movements, bonuses, and fixed savings.</p>
         </div>
         <div className="flex gap-2">
           <AddCashMovementForm investors={investors} defaultInvestorId={id} />

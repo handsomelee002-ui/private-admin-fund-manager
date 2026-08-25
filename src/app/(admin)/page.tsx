@@ -60,7 +60,6 @@ export default async function Dashboard({
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground mt-1 text-sm">Equity NAV, investor units, and fixed savings principal.</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -133,7 +132,7 @@ export default async function Dashboard({
               })),
               { label: "Deployed in platforms", value: formatMoney(cashPools.reduce((sum, pool) => sum + pool.deployed, 0)) },
             ]}
-            footnote={`Bank total ${formatMoney(cashAvailability.bankBalance)} - hover for the full breakdown`}
+            footnote="Hover for the full breakdown"
           />
         </HoverDetail>
       </div>

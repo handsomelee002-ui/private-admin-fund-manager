@@ -61,9 +61,6 @@ export function AddBonusForm({ investors }: Props) {
         <DialogHeader>
           <DialogTitle>Special Bonus Payment</DialogTitle>
         </DialogHeader>
-        <p className="text-xs text-muted-foreground -mt-2">
-          Distribute a one-time positive or negative bonus to a specific investor or all investors proportionally.
-        </p>
         <form onSubmit={handleSubmit} className="space-y-4 pt-2">
           {/* Target Type */}
           <div className="space-y-2">
