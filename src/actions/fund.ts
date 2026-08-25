@@ -8,12 +8,11 @@ import {
   createNavWeek,
   getFundCashAsOf,
   getFundCashAttribution,
+  getDraftNavOverrides,
   deleteDraftNavWeek,
   lockNavWeek,
   recordCashMovement,
   recordFixedSavings,
-  recordFundCash,
-  recordPlatformValuation,
   splitNavPlatformValue,
   summarizeNavPlatformPreview,
 } from "@/lib/fundDb";
@@ -117,9 +116,12 @@ export async function getNavPreviewAction(
         .filter((override) => Number.isFinite(override.totalValue) && override.totalValue >= 0)
         .map((override) => [override.platformId, { totalValue: override.totalValue }]),
     );
-    const [preview, fundCash] = await Promise.all([
+    const [preview, fundCash, draftOverrides] = await Promise.all([
       buildNavPlatformPreview(asOfDate, overrideMap),
       getFundCashAsOf(asOfDate),
+      // What a draft already saved for this date holds, so reopening the screen
+      // resumes it instead of starting from carried forward values.
+      getDraftNavOverrides(asOfDate),
     ]);
     const bankBalance =
       fundCashOverride !== undefined && Number.isFinite(fundCashOverride)
@@ -138,6 +140,7 @@ export async function getNavPreviewAction(
       success: true as const,
       preview,
       fundCash,
+      draftOverrides,
       attribution,
       equityPlatformValue: valueSplit.equityPlatformValue,
       grossAssets: Math.round((valueSplit.equityPlatformValue + attribution.equity) * 100) / 100,
@@ -145,59 +148,6 @@ export async function getNavPreviewAction(
   } catch (error) {
     if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Failed to build NAV preview." };
-  }
-}
-
-/** Record the fund's own cash balance, outside the NAV cycle. */
-export async function recordFundCashAction(formData: FormData) {
-  try {
-    await requireAdmin();
-    const asOfDate = formData.get("as_of_date")?.toString();
-    if (!asOfDate) return { error: "As-of date is required." };
-    assertNotFutureDate(asOfDate, "Fund cash date");
-
-    const balance = Number(formData.get("balance"));
-    if (!Number.isFinite(balance) || balance < 0) {
-      return { error: "Fund cash balance must be zero or a positive number." };
-    }
-
-    await recordFundCash({ asOfDate, balance, notes: formData.get("notes")?.toString() || "" });
-    revalidateFundViews();
-    revalidatePath("/trading");
-    return { success: true };
-  } catch (error) {
-    if (isRedirectError(error)) throw error;
-    return { error: error instanceof Error ? error.message : "Failed to record fund cash." };
-  }
-}
-
-/** Log what a platform is worth today, outside the NAV cycle. */
-export async function recordPlatformValuationAction(formData: FormData) {
-  try {
-    await requireAdmin();
-    const platformId = formData.get("platform_id")?.toString();
-    const asOfDate = formData.get("as_of_date")?.toString();
-    if (!platformId || !asOfDate) return { error: "Platform and valuation date are required." };
-
-    const totalValue = Number(formData.get("total_value"));
-    if (!Number.isFinite(totalValue) || totalValue < 0) {
-      return { error: "Platform value must be zero or a positive number." };
-    }
-
-    await recordPlatformValuation({
-      platformId,
-      asOfDate,
-      totalValue,
-      source: "MANUAL",
-      notes: formData.get("notes")?.toString() || "",
-    });
-    revalidateFundViews();
-    revalidatePath("/trading");
-    revalidatePath(`/trading/${platformId}`);
-    return { success: true };
-  } catch (error) {
-    if (isRedirectError(error)) throw error;
-    return { error: error instanceof Error ? error.message : "Failed to record platform valuation." };
   }
 }
 

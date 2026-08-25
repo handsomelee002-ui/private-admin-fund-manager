@@ -111,6 +111,10 @@ export function CreateNavWeekForm() {
   // forever, and a new date implies a new expected figure, so the seed is keyed
   // on the date rather than fired once per dialog.
   const seededDateRef = useRef<string | null>(null);
+  // A draft's overrides are seeded the same way and for the same reason: once
+  // per date, never from inside the refetch the seeding itself triggers, and
+  // never over a box the admin is currently typing into.
+  const seededDraftDateRef = useRef<string | null>(null);
 
   const loadPreview = useCallback(async (
     date: string,
@@ -141,6 +145,25 @@ export function CreateNavWeekForm() {
         setFundCashOverride(Math.max(0, cash.expectedBalance).toFixed(2));
         setFundCashEdited(false);
       }
+      // Resume a draft already saved for this date. Its overrides are not value
+      // marks any more, so without this the Override column comes back empty and
+      // the next Save draft recomputes the week from carried forward values,
+      // throwing away what was typed.
+      const saved = (result.draftOverrides as { platformId: string; totalValue: number }[]) ?? [];
+      if (seededDraftDateRef.current !== date) {
+        seededDraftDateRef.current = date;
+        if (saved.length > 0) {
+          setOverrides((current) => {
+            const seeded = { ...current };
+            for (const item of saved) {
+              if (seeded[item.platformId] === undefined) {
+                seeded[item.platformId] = item.totalValue.toFixed(2);
+              }
+            }
+            return seeded;
+          });
+        }
+      }
     } else {
       setRows([]);
       setFundCash(null);
@@ -158,6 +181,7 @@ export function CreateNavWeekForm() {
       // Preview state outlives the dialog, so without this a reopen paints the
       // previous session's figures until the refetch lands.
       seededDateRef.current = null;
+      seededDraftDateRef.current = null;
       setFundCashEdited(false);
       setRows([]);
       setFundCash(null);
@@ -185,6 +209,7 @@ export function CreateNavWeekForm() {
       setOverrides({});
       setFundCashOverride("");
       setFundCashEdited(false);
+      seededDraftDateRef.current = null;
       // Same as LockNavButton: an imperative action call leaves the NAV
       // register and the platform panel rendering their pre-save payload.
       router.refresh();

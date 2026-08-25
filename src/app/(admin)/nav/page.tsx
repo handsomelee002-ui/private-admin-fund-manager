@@ -4,16 +4,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { CreateNavWeekForm } from "@/components/CreateNavWeekForm";
 import { LockNavButton } from "@/components/LockNavButton";
 import { PaginationControls } from "@/components/PaginationControls";
-import { RecordFundCashForm } from "@/components/RecordFundCashForm";
-import { RecordValuationForm } from "@/components/RecordValuationForm";
 import { SortableTableHead } from "@/components/SortableTableHead";
-import { getPlatforms } from "@/actions/trading";
-import { getFundCashAsOf, getNavWeeks } from "@/lib/fundDb";
+import { getNavWeeks } from "@/lib/fundDb";
 import { formatMoney, formatUnits } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { CalendarClock, LineChart } from "lucide-react";
+import { CalendarClock } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -26,20 +23,7 @@ export default async function NavPage({
 }) {
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, navSorts, { sort: "week", dir: "desc" });
-  const today = new Date().toISOString().slice(0, 10);
-  const [navWeeks, platforms, fundCash] = await Promise.all([
-    timeAsync("route.nav.getNavWeeks", () => getNavWeeks(), { route: "/nav" }),
-    timeAsync("route.nav.getPlatforms", () => getPlatforms(), { route: "/nav" }),
-    timeAsync("route.nav.getFundCash", () => getFundCashAsOf(today), { route: "/nav" }),
-  ]);
-  const lastNav = navWeeks.find((week: any) => week.status === "locked") ?? navWeeks[0] ?? null;
-  const lastNavDate: string | null = lastNav ? lastNav.week_ending : null;
-  // A value recorded after the last NAV has not reached anyone's unit price
-  // yet. Saying so is the difference between "nothing happened" and "a NAV is
-  // due".
-  const updatedSinceNav = platforms.filter(
-    (platform: any) => platform.latestValuationDate && (!lastNavDate || platform.latestValuationDate > lastNavDate),
-  ).length;
+  const navWeeks = await timeAsync("route.nav.getNavWeeks", () => getNavWeeks(), { route: "/nav" });
   const sortedNavWeeks = sortRows(navWeeks, sortState, {
     week: (week: any) => week.week_ending,
     grossAssets: (week: any) => week.gross_assets,
@@ -60,90 +44,6 @@ export default async function NavPage({
           <CreateNavWeekForm />
         </div>
       </div>
-
-      <Card className="bg-card/50 border-border/50">
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <LineChart className="h-4 w-4 text-primary" />
-              <CardTitle className="text-base">Platform Values</CardTitle>
-              <span className="text-muted-foreground text-xs font-normal">input for the next NAV</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-muted-foreground">
-                {lastNavDate ? `Last NAV ${lastNavDate}` : "No NAV yet"}
-              </span>
-              {updatedSinceNav > 0 && (
-                <Badge variant="default" className="text-[10px]">
-                  {updatedSinceNav} updated since — NAV due
-                </Badge>
-              )}
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {platforms.length === 0 ? (
-            <p className="text-muted-foreground text-sm">Add a platform to start recording values.</p>
-          ) : (
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {platforms.map((platform: any) => {
-                const isStale = platform.isValuationStale;
-                return (
-                  <div
-                    key={platform.id}
-                    className="border-border/50 flex items-center justify-between gap-3 rounded-md border px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{platform.name}</p>
-                      <p className="text-muted-foreground text-xs">
-                        {formatMoney(platform.totalValue)}
-                        {" · "}
-                        {platform.latestValuationDate
-                          ? `valued ${platform.latestValuationDate}`
-                          : platform.valueSource === "NAV_SNAPSHOT" && platform.latestSnapshotWeek
-                            ? `from NAV ${platform.latestSnapshotWeek}`
-                            : "never valued"}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      {isStale && <Badge variant="destructive" className="text-[10px]">stale</Badge>}
-                      <RecordValuationForm
-                        compact
-                        platformId={platform.id}
-                        platformName={platform.name}
-                        currentValue={platform.totalValue}
-                        latestValuationDate={platform.latestValuationDate}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-              <div className="border-border/50 bg-muted/20 flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">Fund cash</p>
-                  <p className="text-muted-foreground text-xs">
-                    {formatMoney(fundCash.balance)}
-                    {" · "}
-                    {fundCash.asOfDate ? `recorded ${fundCash.asOfDate}` : "never recorded"}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  {Math.abs(fundCash.balance - fundCash.expectedBalance) > 0.009 && (
-                    <Badge variant="destructive" className="text-[10px]">
-                      off by {formatMoney(Math.abs(fundCash.balance - fundCash.expectedBalance))}
-                    </Badge>
-                  )}
-                  <RecordFundCashForm
-                    currentBalance={fundCash.balance}
-                    expectedBalance={fundCash.expectedBalance}
-                    latestDate={fundCash.asOfDate}
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
 
       <Card className="bg-card/50 border-border/50">
         <CardHeader>

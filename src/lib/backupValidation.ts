@@ -43,7 +43,7 @@ const BACKUP_TABLE_COLUMN_ALLOWLIST: Record<BackupTableName, readonly string[]> 
   nav_week_platform_snapshots: [
     "id", "nav_week_id", "platform_id", "net_invested", "unrealized_profit", "total_value", "equity_net_invested",
     "fixed_savings_net_invested", "brokerage_net_invested", "equity_unrealized_profit", "brokerage_profit_loss", "created_at",
-    "valuation_date", "valuation_source", "valuation_age_days", "weight_percent",
+    "valuation_date", "valuation_source", "valuation_age_days", "weight_percent", "is_override",
   ],
   investor_unit_ledger: ["id", "investor_id", "nav_week_id", "date", "type", "units", "nav_per_unit", "gross_amount", "notes", "created_at", "audit_status", "reversal_of_id"],
   cash_movements: ["id", "investor_id", "nav_week_id", "unit_ledger_id", "date", "type", "amount", "status", "notes", "created_at", "audit_status", "reversal_of_id"],
@@ -80,8 +80,12 @@ const BACKUP_ENUMS: Partial<Record<BackupTableName, Record<string, readonly stri
   investor_profit_claims: { status: ["pending", "partial", "settled"] },
   platform_accounts: { account_type: ["BANK", "WALLET", "BROKER_CASH", "BROKER_PORTFOLIO", "OTHER"] },
   platform_valuations: {
-    source: ["MANUAL", "STATEMENT", "IMPORT"],
-    audit_status: ["active", "reverted", "reversal"],
+    // NAV_REVIEW is written by createNavWeek for a value typed into the review
+    // screen, and voided is how deleting that draft withdraws the mark. Leaving
+    // either out meant a database where anyone had used the Override column
+    // exported fine and then refused to restore.
+    source: ["MANUAL", "STATEMENT", "IMPORT", "NAV_REVIEW"],
+    audit_status: ["active", "reverted", "reversal", "voided"],
   },
   fund_cash_valuations: { audit_status: ["active", "reverted", "reversal"] },
   platform_transaction_allocations: { funding_source: ["equity", "fixed_savings", "brokerage"] },

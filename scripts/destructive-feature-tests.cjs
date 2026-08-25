@@ -1033,6 +1033,111 @@ async function firstInvestor(name) {
     );
   });
 
+  await check("an unlocked NAV draft does not price a later NAV", async () => {
+    const created = await trading.addPlatform(formData({ name: "Rollback Broker", default_currency: "MYR" }));
+    assert.equal(created.success, true);
+    const platformId = created.id;
+    const account = await one(await sql`SELECT id FROM platform_accounts WHERE platform_id = ${platformId} LIMIT 1`);
+    assert.equal((await trading.addPlatformTransaction(formData({
+      platform_id: platformId,
+      account_id: account.id,
+      date: "2026-08-18",
+      type: "BROKER_DEPOSIT",
+      amount: "10000",
+      currency: "MYR",
+      base_amount: "10000",
+      status: "SETTLED",
+    }))).success, true);
+
+    // A fat-fingered override: an order of magnitude above what was deposited.
+    await fundDb.createNavWeek({
+      weekEnding: "2026-08-22",
+      platformSnapshots: [{ platformId, totalValue: 99000 }],
+      adjustments: 0,
+      notes: "rollback test",
+    });
+
+    const mark = await one(await sql`
+      SELECT total_value FROM platform_valuations
+      WHERE platform_id = ${platformId} AND as_of_date = '2026-08-22' AND audit_status = 'active'
+    `);
+    assert.equal(mark, undefined, "a draft must not write a value mark");
+
+    // The bug this guards: a draft nobody locked used to price every NAV after it.
+    const later = await fundDb.buildNavPlatformPreview("2026-08-23");
+    const row = later.find((item) => item.platformId === platformId);
+    assert.equal(money(row.totalValue), 10000, "an unlocked draft must not price a later NAV");
+    assert.equal(row.source, "NET_INVESTED_FALLBACK");
+
+    // ...but the draft itself must still remember what was typed, or reopening
+    // the review screen would silently recompute the week without it.
+    const resumed = await fundDb.getDraftNavOverrides("2026-08-22");
+    assert.equal(resumed.length, 1);
+    assert.equal(resumed[0].platformId, platformId);
+    assert.equal(money(resumed[0].totalValue), 99000);
+  });
+
+  await check("locking a NAV turns its overrides into value marks", async () => {
+    const platform = await one(await sql`SELECT id FROM platforms WHERE name = 'Rollback Broker'`);
+    const draft = await one(await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-08-22'`);
+    await fundDb.lockNavWeek(draft.id);
+
+    const mark = await one(await sql`
+      SELECT total_value, source, audit_status FROM platform_valuations
+      WHERE platform_id = ${platform.id} AND as_of_date = '2026-08-22'
+    `);
+    assert.equal(money(mark.total_value), 99000, "locking must record what the override entered");
+    assert.equal(mark.source, "NAV_REVIEW");
+    assert.equal(mark.audit_status, "active");
+
+    // Only now may it reach a later NAV.
+    const later = await fundDb.buildNavPlatformPreview("2026-08-23");
+    const row = later.find((item) => item.platformId === platform.id);
+    assert.equal(money(row.totalValue), 99000);
+    assert.equal(row.source, "CARRIED_FORWARD");
+
+    const audit = await one(await sql`
+      SELECT details FROM audit_events WHERE action = 'platform_valuation.record' ORDER BY created_at DESC LIMIT 1
+    `);
+    const details = typeof audit.details === "string" ? JSON.parse(audit.details) : audit.details;
+    assert.equal(details.source, "NAV_REVIEW", "a value entered on the NAV screen must be auditable");
+  });
+
+  await check("deleting a draft still voids NAV_REVIEW marks left by older code", async () => {
+    const platform = await one(await sql`SELECT id FROM platforms WHERE name = 'Rollback Broker'`);
+    await fundDb.createNavWeek({
+      weekEnding: "2026-08-23",
+      platformSnapshots: [],
+      adjustments: 0,
+      notes: "legacy repair test",
+    });
+    // Written straight to the table on purpose: this is the shape a database
+    // carries from before drafts stopped writing marks, which no current code
+    // path can produce.
+    await sql`
+      INSERT INTO platform_valuations (platform_id, as_of_date, total_value, source, notes)
+      VALUES (${platform.id}, '2026-08-23', 123456, 'NAV_REVIEW', 'legacy draft mark')
+      ON CONFLICT (platform_id, as_of_date) DO UPDATE SET
+        total_value = EXCLUDED.total_value, source = EXCLUDED.source, audit_status = 'active'
+    `;
+
+    const draft = await one(await sql`SELECT id FROM nav_weeks WHERE week_ending = '2026-08-23'`);
+    await fundDb.deleteDraftNavWeek(draft.id);
+
+    const after = await one(await sql`
+      SELECT audit_status FROM platform_valuations
+      WHERE platform_id = ${platform.id} AND as_of_date = '2026-08-23'
+    `);
+    assert.equal(after.audit_status, "voided", "deleting the draft must take the stale mark back out");
+
+    const audit = await one(await sql`
+      SELECT details FROM audit_events WHERE action = 'nav_week.delete_draft' ORDER BY created_at DESC LIMIT 1
+    `);
+    const details = typeof audit.details === "string" ? JSON.parse(audit.details) : audit.details;
+    assert.equal(details.voidedValuations.length, 1, "the log must show what the delete took back");
+    assert.equal(details.voidedValuations[0].totalValue, 123456);
+  });
+
   const ok = report("feature tests");
   await sql.end?.();
   if (!ok) process.exitCode = 1;

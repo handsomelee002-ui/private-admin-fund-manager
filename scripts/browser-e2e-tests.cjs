@@ -403,6 +403,39 @@ async function noHorizontalOverflow(page) {
       await setViewport(page, 1280, 720);
     });
 
+    await check("reopening a saved NAV draft restores the values that were typed", async () => {
+      // A draft's overrides are no longer value marks, so nothing re-derives
+      // them when the dialog reopens. If the form does not restore them, the
+      // Override column comes back empty and the next Save draft silently
+      // recomputes the week without them.
+      await setViewport(page, 1280, 900);
+      await navigate(page, `http://localhost:${TEST_PORT}/nav`);
+      await waitFor(page, 'document.body.innerText.includes("New NAV")');
+      await clickTriggerMouse(page, "New NAV");
+      await waitFor(page, '!document.body.innerText.includes("Loading platform values")');
+
+      const firstOverride = await evalJs(page, `(() => {
+        const input = document.querySelector("[data-slot=dialog-content] input[name^=platform_value_]");
+        return input ? input.name : null;
+      })()`);
+      assert.ok(firstOverride, "the review screen must offer an override input");
+
+      await setValue(page, `input[name=${firstOverride}]`, "4242.42");
+      await waitFor(page, '!document.body.innerText.includes("updating")');
+      await clickText(page, "Save draft");
+      await waitFor(page, '!document.body.innerText.includes("Review & create NAV")');
+
+      // Reopen for the same date and the typed figure must still be there.
+      await clickTriggerMouse(page, "New NAV");
+      await waitFor(page, '!document.body.innerText.includes("Loading platform values")');
+      await waitFor(page, `(() => {
+        const input = document.querySelector("input[name=${firstOverride}]");
+        return Boolean(input && Number(input.value) === 4242.42);
+      })()`);
+      const restored = await evalJs(page, `document.querySelector("input[name=${firstOverride}]").value`);
+      assert.equal(Number(restored), 4242.42, "the draft's override must be restored");
+    });
+
     await check("add trading platform form submits and detail transaction form opens", async () => {
       await navigate(page, `http://localhost:${TEST_PORT}/trading`);
       await waitFor(page, 'document.body.innerText.includes("Add Platform")');

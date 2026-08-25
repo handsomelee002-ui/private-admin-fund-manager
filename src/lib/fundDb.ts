@@ -396,6 +396,11 @@ async function ensureAuditColumnsUncached() {
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS brokerage_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS equity_unrealized_profit NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS brokerage_profit_loss NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  // Which rows carry a value the admin typed into the Override column. That is
+  // what lockNavWeek turns into real value marks, and it cannot be inferred from
+  // valuation_source: an override and a mark already recorded on the NAV date
+  // both read RECORDED.
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS is_override BOOLEAN NOT NULL DEFAULT FALSE`;
   // fund_cash is the whole bank balance; equity_fund_cash is the slice of it
   // that priced the units, so gross_assets can be re-derived from stored
   // columns instead of being an opaque number.
@@ -1120,6 +1125,7 @@ export async function ensureFreshFundSchema() {
       valuation_source TEXT NOT NULL DEFAULT 'RECORDED',
       valuation_age_days INTEGER NOT NULL DEFAULT 0,
       weight_percent NUMERIC(10, 4) NOT NULL DEFAULT 0,
+      is_override BOOLEAN NOT NULL DEFAULT FALSE,
       UNIQUE(nav_week_id, platform_id)
     );
   `;
@@ -1133,6 +1139,11 @@ export async function ensureFreshFundSchema() {
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS brokerage_net_invested NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS equity_unrealized_profit NUMERIC(15, 4) NOT NULL DEFAULT 0`;
   await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS brokerage_profit_loss NUMERIC(15, 4) NOT NULL DEFAULT 0`;
+  // Which rows carry a value the admin typed into the Override column. That is
+  // what lockNavWeek turns into real value marks, and it cannot be inferred from
+  // valuation_source: an override and a mark already recorded on the NAV date
+  // both read RECORDED.
+  await sql`ALTER TABLE nav_week_platform_snapshots ADD COLUMN IF NOT EXISTS is_override BOOLEAN NOT NULL DEFAULT FALSE`;
   await sql`
     CREATE TABLE IF NOT EXISTS platform_transactions (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -2458,6 +2469,27 @@ export async function getFundCashAvailability(asOfDate?: string) {
   };
 }
 
+/**
+ * The values an unsaved-over draft already holds for its own overrides.
+ *
+ * A draft's overrides are no longer value marks, so reopening the review screen
+ * cannot find them by pricing the date again. Without this the Override column
+ * comes back empty and the next Save draft recomputes the week from carried
+ * forward values, silently discarding what was typed.
+ */
+export async function getDraftNavOverrides(weekEnding: string) {
+  const res = await sql`
+    SELECT nwps.platform_id, nwps.total_value
+    FROM nav_week_platform_snapshots nwps
+    JOIN nav_weeks nw ON nw.id = nwps.nav_week_id
+    WHERE nw.week_ending = ${weekEnding} AND nw.status = 'draft' AND nwps.is_override = TRUE
+  `;
+  return res.rows.map((row) => ({
+    platformId: row.platform_id as string,
+    totalValue: roundMoney(parseFloat(row.total_value || "0")),
+  }));
+}
+
 export async function createNavWeek(input: NavWeekInput) {
   const existingWeek = await sql`SELECT status FROM nav_weeks WHERE week_ending = ${input.weekEnding}`;
   if (existingWeek.rows[0]?.status === "locked") {
@@ -2538,50 +2570,17 @@ export async function createNavWeek(input: NavWeekInput) {
     RETURNING id
   `;
   const navWeekId = res.rows[0].id as string;
-  // A value typed into the review screen is a value mark, so it is recorded as
-  // one. Keeping it only in this NAV's snapshot meant the next NAV could not
-  // see it and dropped the platform back to cost, quietly discarding whatever
-  // gain this NAV recognised. recordPlatformValuation is bypassed on purpose:
-  // its locked-NAV guard exists to stop history moving under a priced period,
-  // and the NAV being written here is the authority for its own date.
-  //
-  // recordPlatformValuation is also where the audit event lives, so the event is
-  // written here too. Without it a value mark entered through the NAV screen was
-  // invisible to anyone filtering the log for valuation changes.
-  const platformNames = new Map(preview.map((row) => [row.platformId, row.platformName]));
-  for (const snapshot of input.platformSnapshots ?? []) {
-    if (snapshot.totalValue === undefined) continue;
-    const totalValue = roundMoney(snapshot.totalValue);
-    const existing = await db`
-      SELECT total_value FROM platform_valuations
-      WHERE platform_id = ${snapshot.platformId} AND as_of_date = ${input.weekEnding} AND audit_status = 'active'
-    `;
-    const previousValue = existing.rows[0] ? roundMoney(parseFloat(existing.rows[0].total_value)) : null;
-    const recorded = await db`
-      INSERT INTO platform_valuations (platform_id, as_of_date, total_value, source, notes)
-      VALUES (${snapshot.platformId}, ${input.weekEnding}, ${totalValue}, 'NAV_REVIEW', 'Entered on the NAV review screen')
-      ON CONFLICT (platform_id, as_of_date) DO UPDATE SET
-        total_value = EXCLUDED.total_value,
-        source = EXCLUDED.source,
-        notes = EXCLUDED.notes,
-        audit_status = 'active'
-      RETURNING id
-    `;
-    await writeAuditEvent(
-      "platform_valuation.record",
-      "platform_valuations",
-      recorded.rows[0].id,
-      {
-        platformId: snapshot.platformId,
-        platformName: platformNames.get(snapshot.platformId) ?? "",
-        asOfDate: input.weekEnding,
-        totalValue,
-        previousValue,
-        source: "NAV_REVIEW",
-      },
-      db,
-    );
-  }
+  // A value typed into the review screen is only a proposal until the NAV is
+  // locked. Recording it as a real value mark here meant an unlocked draft -
+  // one nobody had committed to, and one Delete Draft was supposed to undo -
+  // immediately priced every later NAV. lockNavWeek writes the marks instead,
+  // because that is the point at which this NAV becomes the authority for its
+  // own date. All this has to do is remember which rows the admin typed.
+  const overriddenPlatformIds = new Set(
+    (input.platformSnapshots ?? [])
+      .filter((snapshot) => snapshot.totalValue !== undefined)
+      .map((snapshot) => snapshot.platformId),
+  );
   await db`DELETE FROM nav_week_platform_snapshots WHERE nav_week_id = ${navWeekId}`;
   for (const snapshot of platformSnapshots) {
     await db`
@@ -2589,13 +2588,14 @@ export async function createNavWeek(input: NavWeekInput) {
         nav_week_id, platform_id, net_invested, unrealized_profit, total_value,
         equity_net_invested, fixed_savings_net_invested, brokerage_net_invested,
         equity_unrealized_profit, brokerage_profit_loss,
-        valuation_date, valuation_source, valuation_age_days, weight_percent
+        valuation_date, valuation_source, valuation_age_days, weight_percent, is_override
       )
       VALUES (
         ${navWeekId}, ${snapshot.platformId}, ${snapshot.netInvested}, ${snapshot.unrealizedProfit}, ${snapshot.totalValue},
         ${snapshot.allocation.equityNetInvested}, ${snapshot.allocation.fixedSavingsNetInvested}, ${snapshot.allocation.brokerageNetInvested},
         ${snapshot.allocation.equityProfitLoss}, ${snapshot.allocation.brokerageProfitLoss},
-        ${snapshot.valuationDate}, ${snapshot.valuationSource}, ${snapshot.valuationAgeDays}, ${snapshot.weightPercent}
+        ${snapshot.valuationDate}, ${snapshot.valuationSource}, ${snapshot.valuationAgeDays}, ${snapshot.weightPercent},
+        ${overriddenPlatformIds.has(snapshot.platformId)}
       )
     `;
   }
@@ -2643,21 +2643,81 @@ export async function lockNavWeek(id: string) {
     throw new Error(`NAV week must be later than the latest locked NAV week (${latestWeekEnding}).`);
   }
 
-  // Locking is what lets this NAV price real deposits and withdrawals, so the
-  // audit row carries the numbers it fixed rather than only the id.
-  const locked = await sql`
-    UPDATE nav_weeks SET status = 'locked', locked_at = NOW()
-    WHERE id = ${id} AND status = 'draft'
-    RETURNING gross_assets, net_asset_value, total_units, nav_per_unit
-  `;
-  if (locked.rows.length === 0) throw new Error("Only draft NAV weeks can be locked.");
-  const pricing = locked.rows[0];
+  // Locking is what turns a proposal into the record: it prices real deposits
+  // and withdrawals, and it is where the values typed into the Override column
+  // finally become value marks. Both happen together or neither does - a NAV
+  // locked without its marks would be the desync this whole mechanism exists to
+  // prevent, and marks written without the lock are what made an abandoned
+  // draft price the next NAV.
+  const { pricing, recordedMarks } = await withTransaction(async (db) => {
+    const locked = await db`
+      UPDATE nav_weeks SET status = 'locked', locked_at = NOW()
+      WHERE id = ${id} AND status = 'draft'
+      RETURNING gross_assets, net_asset_value, total_units, nav_per_unit
+    `;
+    if (locked.rows.length === 0) throw new Error("Only draft NAV weeks can be locked.");
+
+    // Only the rows the admin actually typed. Everything else on this NAV was
+    // resolved from marks that already exist, and re-stamping those as
+    // NAV_REVIEW would rewrite their provenance for no gain.
+    const overrides = await db`
+      SELECT nwps.platform_id, nwps.total_value, p.name as platform_name
+      FROM nav_week_platform_snapshots nwps
+      JOIN platforms p ON p.id = nwps.platform_id
+      WHERE nwps.nav_week_id = ${id} AND nwps.is_override = TRUE
+    `;
+
+    const marks = [];
+    for (const override of overrides.rows) {
+      const totalValue = roundMoney(parseFloat(override.total_value || "0"));
+      const existing = await db`
+        SELECT total_value FROM platform_valuations
+        WHERE platform_id = ${override.platform_id} AND as_of_date = ${draft.week_ending} AND audit_status = 'active'
+      `;
+      const previousValue = existing.rows[0] ? roundMoney(parseFloat(existing.rows[0].total_value)) : null;
+      // recordPlatformValuation is bypassed on purpose: its locked-NAV guard
+      // stops history moving under a priced period, and the NAV being locked
+      // here is the authority for its own date.
+      const recorded = await db`
+        INSERT INTO platform_valuations (platform_id, as_of_date, total_value, source, notes)
+        VALUES (${override.platform_id}, ${draft.week_ending}, ${totalValue}, 'NAV_REVIEW', 'Entered on the NAV review screen')
+        ON CONFLICT (platform_id, as_of_date) DO UPDATE SET
+          total_value = EXCLUDED.total_value,
+          source = EXCLUDED.source,
+          notes = EXCLUDED.notes,
+          audit_status = 'active'
+        RETURNING id
+      `;
+      // recordPlatformValuation is also where the audit event lives, so the
+      // event is written here too. Without it a value entered through the NAV
+      // screen is invisible to anyone filtering the log for valuation changes.
+      await writeAuditEvent(
+        "platform_valuation.record",
+        "platform_valuations",
+        recorded.rows[0].id,
+        {
+          platformId: override.platform_id,
+          platformName: override.platform_name,
+          asOfDate: draft.week_ending,
+          totalValue,
+          previousValue,
+          source: "NAV_REVIEW",
+        },
+        db,
+      );
+      marks.push({ platformId: override.platform_id, totalValue });
+    }
+    return { pricing: locked.rows[0], recordedMarks: marks };
+  });
+
+  // The audit row carries the numbers it fixed rather than only the id.
   await writeAuditEvent("nav_week.lock", "nav_weeks", id, {
     weekEnding: draft.week_ending,
     grossAssets: roundMoney(parseFloat(pricing.gross_assets || "0")),
     netAssetValue: roundMoney(parseFloat(pricing.net_asset_value || "0")),
     totalUnits: roundUnits(parseFloat(pricing.total_units || "0")),
     navPerUnit: parseFloat(pricing.nav_per_unit || "0"),
+    recordedValuations: recordedMarks,
   });
   return { success: true };
 }
@@ -2672,19 +2732,53 @@ export async function deleteDraftNavWeek(id: string) {
   if (!draft) throw new Error("NAV week not found.");
   if (draft.status !== "draft") throw new Error("Locked NAV weeks are immutable and cannot be deleted.");
 
-  // The row is gone after this, so what it held is only recoverable from the
-  // audit event. Return it from the DELETE rather than re-reading it first.
-  const deleted = await sql`
-    DELETE FROM nav_weeks WHERE id = ${id} AND status = 'draft'
-    RETURNING TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending, gross_assets, net_asset_value, nav_per_unit
-  `;
-  if (deleted.rows.length === 0) throw new Error("Only draft NAV weeks can be deleted.");
-  const removed = deleted.rows[0];
+  // Deleting the NAV row cascades its platform snapshots away, but value marks
+  // have no such link. Drafts no longer write any - lockNavWeek does - so for a
+  // draft created by the current code there is nothing here to void. This stays
+  // as a repair path: databases written before that change still hold NAV_REVIEW
+  // marks left behind by drafts, and deleting such a draft should still take its
+  // figures back out rather than let the next NAV carry them forward. Both
+  // halves are one transaction: a delete that only half-happened is exactly the
+  // state this guards against.
+  const { removed, voided } = await withTransaction(async (db) => {
+    // The row is gone after this, so what it held is only recoverable from the
+    // audit event. Return it from the DELETE rather than re-reading it first.
+    const deleted = await db`
+      DELETE FROM nav_weeks WHERE id = ${id} AND status = 'draft'
+      RETURNING TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending, gross_assets, net_asset_value, nav_per_unit
+    `;
+    if (deleted.rows.length === 0) throw new Error("Only draft NAV weeks can be deleted.");
+    const removedWeek = deleted.rows[0];
+
+    // Only marks this screen wrote for this date. A MANUAL mark on the same date
+    // was recorded on its own authority and is not this draft's to withdraw.
+    //
+    // Known gap: if the override overwrote a MANUAL mark on exactly this date,
+    // the upsert in createNavWeek already replaced it, so voiding here does not
+    // bring the old value back - it is only recoverable from the
+    // platform_valuation.record audit event's previousValue.
+    const reversed = await db`
+      UPDATE platform_valuations SET audit_status = 'voided'
+      WHERE as_of_date = ${removedWeek.week_ending}
+        AND source = 'NAV_REVIEW'
+        AND audit_status = 'active'
+      RETURNING platform_id, total_value
+    `;
+    return { removed: removedWeek, voided: reversed.rows };
+  });
+
   await writeAuditEvent("nav_week.delete_draft", "nav_weeks", id, {
     weekEnding: removed.week_ending,
     grossAssets: roundMoney(parseFloat(removed.gross_assets || "0")),
     netAssetValue: roundMoney(parseFloat(removed.net_asset_value || "0")),
     navPerUnit: parseFloat(removed.nav_per_unit || "0"),
+    // What the delete took back out of the valuation history. Without this the
+    // log shows a NAV disappearing and says nothing about the marks that went
+    // with it.
+    voidedValuations: voided.map((row) => ({
+      platformId: row.platform_id,
+      totalValue: roundMoney(parseFloat(row.total_value || "0")),
+    })),
   });
   return { success: true };
 }
