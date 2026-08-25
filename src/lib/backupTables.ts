@@ -1,9 +1,11 @@
-export const BACKUP_SCHEMA_VERSION = 5;
+export const BACKUP_SCHEMA_VERSION = 6;
 
 // Older backups predate tables added since. They restore fine — the missing
 // tables simply come back empty — so keep accepting them rather than stranding
-// existing backup files.
-export const SUPPORTED_BACKUP_SCHEMA_VERSIONS = [2, 3, 4, 5] as const;
+// existing backup files. v6 adds no table, only brokerage_withdrawals.type,
+// which defaults to CASH; every row a v5 backup holds was cash, so restoring one
+// is correct without a backfill and needs no entry below.
+export const SUPPORTED_BACKUP_SCHEMA_VERSIONS = [2, 3, 4, 5, 6] as const;
 
 // Exact table order each schema version wrote, so an older backup still
 // validates against the order it was exported with.

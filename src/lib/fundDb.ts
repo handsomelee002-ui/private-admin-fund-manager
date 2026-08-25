@@ -10,6 +10,7 @@ import {
   redeemUnitsForWithdrawal,
   roundMoney,
   roundUnits,
+  splitNonEquityProfit,
   splitPoolAvailability,
 } from "@/lib/accounting";
 import { requireAdmin } from "@/lib/auth";
@@ -369,12 +370,16 @@ async function ensureAuditColumnsUncached() {
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
       date DATE NOT NULL,
       amount NUMERIC(15, 4) NOT NULL,
+      type TEXT NOT NULL DEFAULT 'CASH',
       notes TEXT,
       audit_status TEXT NOT NULL DEFAULT 'active',
       reversal_of_id UUID,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `;
+  // Rows written before offsets existed are all real cash, so the default is
+  // correct for them and no backfill is needed.
+  await sql`ALTER TABLE brokerage_withdrawals ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'CASH'`;
   await sql`ALTER TABLE bonus_payments ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS audit_status TEXT NOT NULL DEFAULT 'active'`;
   await sql`ALTER TABLE platform_transactions ADD COLUMN IF NOT EXISTS reversal_of_id UUID`;
@@ -1021,6 +1026,13 @@ export async function ensureFreshFundSchema() {
   `;
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS base_currency TEXT NOT NULL DEFAULT 'MYR'`;
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS default_currency TEXT NOT NULL DEFAULT 'MYR'`;
+  // The date a broker account was shut. Null means live. Without it a dead
+  // account has no recorded mark, so resolvePlatformValue carries it at *cost* -
+  // gross assets keep value that no longer exists and NAV per unit is overstated
+  // until the account happens to be both stale and material enough to block a
+  // lock. It also tells the brokerage pot that the loss is realised rather than
+  // a mark that might still come back.
+  await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS closed_on DATE`;
   // Tracking modes were removed: every platform is valued the same way, from
   // recorded value marks. Drop the column so no stale mode can be read back.
   await sql`ALTER TABLE platforms DROP CONSTRAINT IF EXISTS platforms_tracking_mode_check`;
@@ -1222,12 +1234,16 @@ export async function ensureFreshFundSchema() {
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
       date DATE NOT NULL,
       amount NUMERIC(15, 4) NOT NULL,
+      type TEXT NOT NULL DEFAULT 'CASH',
       notes TEXT,
       audit_status TEXT NOT NULL DEFAULT 'active',
       reversal_of_id UUID,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `;
+  // Rows written before offsets existed are all real cash, so the default is
+  // correct for them and no backfill is needed.
+  await sql`ALTER TABLE brokerage_withdrawals ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'CASH'`;
   await sql`CREATE INDEX IF NOT EXISTS brokerage_withdrawals_date_idx ON brokerage_withdrawals (date DESC)`;
   await sql`
     CREATE TABLE IF NOT EXISTS audit_events (
@@ -1374,7 +1390,7 @@ export async function buildNavPlatformPreview(
   overrides: Map<string, { totalValue?: number; unrealizedProfit?: number }> = new Map(),
 ): Promise<NavPlatformPreview[]> {
   const [positions, valuations, fundCash] = await Promise.all([
-    getPlatformFundingPositions(),
+    getPlatformFundingPositions(asOfDate),
     getPlatformValuationsAsOf(asOfDate),
     getFundCashAsOf(asOfDate),
   ]);
@@ -1401,6 +1417,7 @@ export async function buildNavPlatformPreview(
             netInvested,
             valuations: valuations.get(platform.id) ?? [],
             asOfDate,
+            closed: platform.closed,
           });
 
     return {
@@ -1615,10 +1632,70 @@ export async function getFixedSavingsLiabilityAsOf(asOfDate?: string) {
  * Fees, bonuses and interest are cumulative to today rather than to the locked
  * week: an obligation already settled in cash has still been borne by the pot,
  * so netting it back would hand the money over twice.
+ *
+ * The pot is reported as two capital accounts - realised and unrealised - which
+ * sum to the same `balance` this function has always returned. Only the realised
+ * account may be withdrawn: the unrealised half is a mark on money still sitting
+ * at a broker and still being traded, so it is shown, never paid out.
  */
+/**
+ * Every non-equity cash flow, in date order, grouped by platform.
+ *
+ * `getPlatformFundingPositions` sums these into a net position, which is all NAV
+ * needs. Realisation needs the sequence instead: what matters is the lowest
+ * point net invested ever reached, and a sum cannot tell you that.
+ */
+async function getNonEquityCashFlowsByPlatform() {
+  const res = await sql`
+    WITH transaction_flows AS (
+      SELECT
+        pt.id,
+        pt.platform_id,
+        pt.date,
+        pt.created_at,
+        CASE
+          WHEN COALESCE(pt.audit_status, 'active') <> 'active' OR COALESCE(pt.status, 'SETTLED') <> 'SETTLED' THEN 0
+          WHEN COUNT(pta.id) > 0 THEN COALESCE(SUM(CASE WHEN pta.funding_source IN ('fixed_savings', 'brokerage') THEN pta.base_amount ELSE 0 END), 0)
+          WHEN COALESCE(pt.funding_source, 'equity') IN ('fixed_savings', 'brokerage') AND pt.type IN ('BROKER_DEPOSIT', 'Deposit') THEN COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          WHEN COALESCE(pt.funding_source, 'equity') IN ('fixed_savings', 'brokerage') AND pt.type IN ('BROKER_WITHDRAWAL', 'Withdraw') THEN -COALESCE(NULLIF(pt.base_amount, 0), pt.amount)
+          ELSE 0
+        END as non_equity_cash_flow
+      FROM platform_transactions pt
+      LEFT JOIN platform_transaction_allocations pta ON pta.transaction_id = pt.id
+      GROUP BY pt.id
+    )
+    SELECT platform_id, non_equity_cash_flow
+    FROM transaction_flows
+    WHERE non_equity_cash_flow <> 0
+    ORDER BY platform_id, date ASC, created_at ASC
+  `;
+
+  const byPlatform = new Map<string, number[]>();
+  for (const row of res.rows as { platform_id: string; non_equity_cash_flow: string }[]) {
+    const flows = byPlatform.get(row.platform_id) ?? [];
+    flows.push(parseFloat(row.non_equity_cash_flow || "0"));
+    byPlatform.set(row.platform_id, flows);
+  }
+  return byPlatform;
+}
+
+/**
+ * Platforms whose broker account has been shut.
+ *
+ * Read from an explicit flag rather than inferred from a zero mark: an unvalued
+ * platform and a dead one are indistinguishable by value alone, and guessing
+ * wrong in either direction is expensive. Guessing a live account is dead writes
+ * off money that is still there; guessing a dead one is live leaves its loss
+ * classified as a mark that might still recover, so the pot never realises it.
+ */
+async function getClosedPlatformIds() {
+  const res = await sql`SELECT id FROM platforms WHERE closed_on IS NOT NULL`;
+  return new Set((res.rows as { id: string }[]).map((row) => row.id));
+}
+
 export async function getBrokerageBalance() {
   await ensureAuditColumns();
-  const [totals, savingsRows, rateInput] = await Promise.all([
+  const [totals, savingsRows, rateInput, nonEquityFlows, closedPlatforms] = await Promise.all([
     sql`
       WITH latest_nav AS (
         SELECT id FROM nav_weeks WHERE status = 'locked' ORDER BY week_ending DESC LIMIT 1
@@ -1641,8 +1718,10 @@ export async function getBrokerageBalance() {
           WHERE audit_status = 'active' AND ledger_type = 'fixed_savings'
         ), 0) as fixed_savings_bonuses,
         COALESCE((
-          SELECT SUM(amount) FROM brokerage_withdrawals WHERE audit_status = 'active'
-        ), 0) as withdrawals
+          SELECT SUM(amount) FROM brokerage_withdrawals
+          WHERE audit_status = 'active' AND type = 'CASH'
+        ), 0) as withdrawals,
+        (SELECT id FROM latest_nav) IS NOT NULL as has_locked_nav
     `,
     sql`
       SELECT id, account_id, investor_id, withdrawal_batch_id, type, amount, annual_rate_percent, interest_rate, audit_status, TO_CHAR(date, 'YYYY-MM-DD') as date
@@ -1651,6 +1730,8 @@ export async function getBrokerageBalance() {
       ORDER BY fixed_savings_ledger.date ASC, fixed_savings_ledger.created_at ASC
     `,
     getFixedSavingsRateInputs(),
+    getNonEquityCashFlowsByPlatform(),
+    getClosedPlatformIds(),
   ]);
 
   const row = totals.rows[0] ?? {};
@@ -1661,13 +1742,57 @@ export async function getBrokerageBalance() {
   const bonuses = roundMoney(parseFloat(row.equity_bonuses || "0") + parseFloat(row.fixed_savings_bonuses || "0"));
   const withdrawals = parseFloat(row.withdrawals || "0");
 
+  // Realised comes from cash flows alone, so it is exact right now and needs no
+  // mark. The total it is split out of is on the locked-NAV basis, which is why
+  // unrealised is the residual rather than a second independent figure - the two
+  // must add back to the number NAV priced itself on. A sweep out of a broker
+  // moves value and net invested by the same amount, so it converts unrealised
+  // into realised without moving the total at all.
+  const profit = splitNonEquityProfit({
+    platforms: [...nonEquityFlows].map(([platformId, flows]) => ({
+      flows,
+      closed: closedPlatforms.has(platformId),
+    })),
+    totalProfitLoss: platformProfitLoss,
+  });
+
+  // Two capital accounts, not one balance with a memo line. Fees, interest,
+  // bonuses and cash out are all settled or accrued, so they all land on the
+  // realised side; only the mark is unrealised. The two still sum to exactly the
+  // balance this function has always returned, which is what keeps NAV, the
+  // brokerage claim and the availability card undisturbed.
+  const realisedPot = roundMoney(
+    profit.realised + performanceFees - savingsInterest - bonuses - withdrawals,
+  );
+  const unrealisedPot = profit.unrealised;
+  const balance = roundMoney(realisedPot + unrealisedPot);
+
   return {
-    platformProfitLoss: roundMoney(platformProfitLoss),
+    platformProfitLoss: profit.total,
+    platformProfitLossRealised: profit.realised,
+    platformProfitLossUnrealised: profit.unrealised,
     performanceFees: roundMoney(performanceFees),
     savingsInterest: roundMoney(savingsInterest),
     bonuses,
     withdrawals: roundMoney(withdrawals),
-    balance: roundMoney(platformProfitLoss + performanceFees - savingsInterest - bonuses - withdrawals),
+    /** Distributable: profit actually converted to cash, net of what is owed. */
+    realisedPot,
+    /** At risk, and shown for that reason. Never distributable. */
+    unrealisedPot,
+    /**
+     * No locked NAV means no mark, so the total is zero and unrealised is just
+     * the negative of realised. The arithmetic is still sound - the balance is
+     * exactly what it was before the split existed - but the split itself has
+     * nothing behind it, so the UI must not read anything into it.
+     */
+    hasLockedNav: Boolean(row.has_locked_nav),
+    balance,
+    /**
+     * The dual test. Cash out may exceed neither what has been realised nor what
+     * the pot is worth in total - the second limb is what stops a distribution
+     * out of a pot whose mark has since gone underwater.
+     */
+    withdrawable: Math.max(0, roundMoney(Math.min(realisedPot, balance))),
   };
 }
 
@@ -1678,8 +1803,15 @@ export async function getBrokerageBalance() {
  * and the recorded bank balance falls by the same amount. Writing only the pot
  * leg would leave the bank holding cash nobody claims, and equity - the residual
  * owner - would silently absorb it.
+ *
+ * Capped at realised profit. See `getBrokerageBalance` for why the unrealised
+ * half is shown but never paid out.
  */
-export async function recordBrokerageWithdrawal(input: { date: string; amount: number; notes?: string }) {
+export async function recordBrokerageWithdrawal(input: {
+  date: string;
+  amount: number;
+  notes?: string;
+}) {
   await requireAdmin();
   await ensureAuditColumns();
   assertNotFutureDate(input.date, "Withdrawal date");
@@ -1690,20 +1822,25 @@ export async function recordBrokerageWithdrawal(input: { date: string; amount: n
   }
 
   const pot = await getBrokerageBalance();
-  if (pot.balance <= 0) {
+  // Realised profit only. Unrealised profit is a mark on money still at a
+  // broker and still being traded, and paying it out would hand over cash the
+  // fund does not hold - equity, as residual claimant, would carry the gap.
+  if (pot.withdrawable <= 0) {
     throw new Error(
-      `The brokerage pot holds nothing to withdraw. Its balance is RM ${pot.balance.toFixed(2)}.`,
+      pot.realisedPot < 0
+        ? `The brokerage pot is in deficit by RM ${Math.abs(pot.realisedPot).toFixed(2)} against realised profit. It must be recovered before any further withdrawal.`
+        : `The brokerage pot holds no realised profit to withdraw. Realised is RM ${pot.realisedPot.toFixed(2)} and its total balance is RM ${pot.balance.toFixed(2)}.`,
     );
   }
-  if (amount > pot.balance) {
+  if (amount > pot.withdrawable) {
     throw new Error(
-      `Withdrawal of RM ${amount.toFixed(2)} exceeds the brokerage balance of RM ${pot.balance.toFixed(2)}.`,
+      `Withdrawal of RM ${amount.toFixed(2)} exceeds the RM ${pot.withdrawable.toFixed(2)} of realised profit available. Unrealised profit of RM ${pot.unrealisedPot.toFixed(2)} cannot be withdrawn.`,
     );
   }
 
   const cash = await getFundCashAsOf(input.date);
   const nextBalance = roundMoney(cash.balance - amount);
-  if (nextBalance < 0) {
+  if (cash && nextBalance < 0) {
     throw new Error(
       `The fund's bank balance on ${input.date} is RM ${cash.balance.toFixed(2)}, which cannot cover a withdrawal of RM ${amount.toFixed(2)}.`,
     );
@@ -1729,12 +1866,12 @@ export async function recordBrokerageWithdrawal(input: { date: string; amount: n
 
   await withTransaction(async (db) => {
     await db`
-      INSERT INTO brokerage_withdrawals (date, amount, notes)
-      VALUES (${input.date}, ${amount}, ${input.notes || ""})
+      INSERT INTO brokerage_withdrawals (date, amount, type, notes)
+      VALUES (${input.date}, ${amount}, 'CASH', ${input.notes || ""})
     `;
   });
-  // Outside the transaction: recordFundCash runs its own locked-week checks and
-  // audit writes, and throws with a message the operator can act on.
+  // Outside the transaction: recordFundCash runs its own locked-week checks
+  // and audit writes, and throws with a message the operator can act on.
   await recordFundCash({
     asOfDate: input.date,
     balance: nextBalance,
@@ -1748,7 +1885,7 @@ export async function getBrokerageWithdrawals() {
   await requireAdmin();
   await ensureAuditColumns();
   const res = await sql`
-    SELECT id, TO_CHAR(date, 'YYYY-MM-DD') as date, amount, notes, created_at
+    SELECT id, TO_CHAR(date, 'YYYY-MM-DD') as date, amount, type, notes, created_at
     FROM brokerage_withdrawals
     WHERE audit_status = 'active'
     ORDER BY date DESC, created_at DESC
@@ -1954,6 +2091,96 @@ export async function recordPlatformValuation(input: {
   return { success: true, id: res.rows[0].id as string };
 }
 
+/**
+ * Shut a broker account: mark it at zero on the closing date and stamp it closed.
+ *
+ * Both legs, in one transaction. The zero valuation is what every historical NAV
+ * on or after the date will read; the stamp is what tells the brokerage pot the
+ * loss is realised rather than a mark that might still recover, and what stops
+ * the account blocking NAV locks forever as a stale valuation nobody can refresh.
+ */
+export async function closePlatform(input: { platformId: string; asOfDate: string; notes?: string }) {
+  await requireAdmin();
+  await ensureAuditColumns();
+  assertNotFutureDate(input.asOfDate, "Closing date");
+
+  const platform = await sql`SELECT id, name, TO_CHAR(closed_on, 'YYYY-MM-DD') as closed_on FROM platforms WHERE id = ${input.platformId}`;
+  if (platform.rows.length === 0) throw new Error("Platform not found.");
+  if (platform.rows[0].closed_on) {
+    throw new Error(`${platform.rows[0].name} was already closed on ${platform.rows[0].closed_on}.`);
+  }
+
+  // Same rule as recording a valuation: a locked week has already priced this
+  // platform, and writing a zero beneath it would contradict an immutable record.
+  const blockingLock = await sql`
+    SELECT TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending
+    FROM nav_weeks
+    WHERE status = 'locked' AND week_ending >= ${input.asOfDate}
+    ORDER BY week_ending ASC
+    LIMIT 1
+  `;
+  if (blockingLock.rows.length > 0) {
+    throw new Error(
+      `NAV week ${blockingLock.rows[0].week_ending} is locked and already priced this platform. Close it with a later date.`,
+    );
+  }
+
+  await withTransaction(async (db) => {
+    await db`
+      INSERT INTO platform_valuations (platform_id, as_of_date, total_value, source, notes)
+      VALUES (${input.platformId}, ${input.asOfDate}, 0, 'MANUAL', ${input.notes || "Account closed"})
+      ON CONFLICT (platform_id, as_of_date) DO UPDATE SET
+        total_value = 0,
+        notes = EXCLUDED.notes,
+        audit_status = 'active'
+    `;
+    await db`UPDATE platforms SET closed_on = ${input.asOfDate} WHERE id = ${input.platformId}`;
+  });
+
+  await writeAuditEvent("platform.close", "platforms", input.platformId, {
+    platformName: platform.rows[0].name,
+    closedOn: input.asOfDate,
+    notes: input.notes || "",
+  });
+  return { success: true };
+}
+
+/**
+ * Undo a close. The zero valuation it wrote is left in place deliberately - it
+ * is a recorded mark like any other, and removing it would rewrite what the NAV
+ * weeks between the close and now were priced on. Record a fresh valuation to
+ * bring the platform back to a real value.
+ */
+export async function reopenPlatform(platformId: string) {
+  await requireAdmin();
+  await ensureAuditColumns();
+
+  const platform = await sql`SELECT id, name, TO_CHAR(closed_on, 'YYYY-MM-DD') as closed_on FROM platforms WHERE id = ${platformId}`;
+  if (platform.rows.length === 0) throw new Error("Platform not found.");
+  const closedOn = platform.rows[0].closed_on as string | null;
+  if (!closedOn) throw new Error(`${platform.rows[0].name} is not closed.`);
+
+  const blockingLock = await sql`
+    SELECT TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending
+    FROM nav_weeks
+    WHERE status = 'locked' AND week_ending >= ${closedOn}
+    ORDER BY week_ending ASC
+    LIMIT 1
+  `;
+  if (blockingLock.rows.length > 0) {
+    throw new Error(
+      `NAV week ${blockingLock.rows[0].week_ending} is locked and was priced with this platform closed. Reopening it now would contradict that record.`,
+    );
+  }
+
+  await sql`UPDATE platforms SET closed_on = NULL WHERE id = ${platformId}`;
+  await writeAuditEvent("platform.reopen", "platforms", platformId, {
+    platformName: platform.rows[0].name,
+    wasClosedOn: closedOn,
+  });
+  return { success: true };
+}
+
 export async function getPlatformValuations(platformId?: string) {
   await requireAdmin();
   await ensureAuditColumns();
@@ -1979,7 +2206,18 @@ export async function getPlatformValuations(platformId?: string) {
   return res.rows;
 }
 
-async function getPlatformFundingPositions() {
+/**
+ * Each platform's net invested capital, split by funding source.
+ *
+ * `asOfDate` is not optional in practice: valuations are always resolved as of a
+ * date, so summing transactions to *today* against a mark taken on the NAV week
+ * prices the difference as profit or loss that had not happened yet. Locking a
+ * week two days after it ended used to pick up every transaction booked in
+ * those two days, understating platform P&L by their net and with it NAV per
+ * unit. Both sides of `totalValue - netInvested` have to be struck on the same
+ * date or the subtraction means nothing.
+ */
+async function getPlatformFundingPositions(asOfDate: string) {
   const platforms = await sql`
     WITH transaction_flows AS (
       SELECT
@@ -2035,11 +2273,13 @@ async function getPlatformFundingPositions() {
         END as brokerage_contributed
       FROM platform_transactions pt
       LEFT JOIN platform_transaction_allocations pta ON pta.transaction_id = pt.id
+      WHERE pt.date <= ${asOfDate}
       GROUP BY pt.id
     )
     SELECT
       p.id,
       p.name,
+      TO_CHAR(p.closed_on, 'YYYY-MM-DD') as closed_on,
       COALESCE(SUM(tf.cash_flow), 0) as net_invested,
       COALESCE(SUM(tf.equity_cash_flow), 0) as equity_net_invested,
       COALESCE(SUM(tf.fixed_savings_cash_flow), 0) as fixed_savings_net_invested,
@@ -2049,13 +2289,17 @@ async function getPlatformFundingPositions() {
       COALESCE(SUM(tf.brokerage_contributed), 0) as brokerage_contributed
     FROM platforms p
     LEFT JOIN transaction_flows tf ON tf.platform_id = p.id
-    GROUP BY p.id, p.name
+    GROUP BY p.id, p.name, p.closed_on
     ORDER BY p.name
   `;
 
   return platforms.rows.map((platform: any) => ({
     id: platform.id as string,
     name: platform.name as string,
+    // A platform closed on or before the date is worth nothing on it. Closed
+    // later, it was still live then, so its marks still apply.
+    closed: Boolean(platform.closed_on) && platform.closed_on <= asOfDate,
+    closedOn: (platform.closed_on as string | null) ?? null,
     netInvested: roundMoney(parseFloat(platform.net_invested || "0")),
     equityNetInvested: roundMoney(parseFloat(platform.equity_net_invested || "0")),
     fixedSavingsNetInvested: roundMoney(parseFloat(platform.fixed_savings_net_invested || "0")),
@@ -3464,7 +3708,12 @@ export async function seedDummyData() {
       const eventDate = isoDate(addDays(date, -2));
       const investor = investors[index % investors.length];
       const platform = platforms[index % platforms.length];
-      const baseFlow = 4500 + ((index * 1375) % 18500);
+      // Sized against the capital the seed actually raises - about RM 1.03m
+      // across equity and savings - rather than against nothing. The previous
+      // figures deployed roughly 1.5x what came in, which only looked coherent
+      // while a third of it was labelled brokerage-funded and therefore did not
+      // count against either real pool.
+      const baseFlow = 2350 + ((index * 1375) % 9600);
 
       if (index % 4 === 0) {
         await recordCashMovement({
@@ -3522,11 +3771,15 @@ export async function seedDummyData() {
         fxRateToBase: platform.fx,
         reference: `SEED-${platform.name.toUpperCase()}-FLOW-${String(index + 1).padStart(3, "0")}`,
         notes: `Seed ${platform.name} funding flow ${index + 1}`,
+        // 75/25 tracks the real pool sizes - roughly RM 797k of equity against
+        // RM 249k of savings - so both pools end up similarly deployed with
+        // headroom left. A larger savings share would deploy savers beyond what
+        // they placed, which is the same inversion brokerage funding produced.
         allocations: index % 11 === 0
           ? [{ fundingSource: "equity", ratioPercent: 100, baseAmount: -baseFlow }]
           : [
-              { fundingSource: "equity", ratioPercent: 70, baseAmount: roundMoney(baseFlow * 0.7) },
-              { fundingSource: index % 3 === 0 ? "fixed_savings" : "brokerage", ratioPercent: 30, baseAmount: roundMoney(baseFlow * 0.3) },
+              { fundingSource: "equity", ratioPercent: 75, baseAmount: roundMoney(baseFlow * 0.75) },
+              { fundingSource: "fixed_savings", ratioPercent: 25, baseAmount: roundMoney(baseFlow * 0.25) },
             ],
       });
 
@@ -3582,11 +3835,16 @@ export async function seedDummyData() {
         // Binance is the structural loser: its drift is negative throughout, at
         // a small enough slope that the loss stays far inside the platform's net
         // invested and total value never approaches zero.
+        //
+        // The winners' drift and amplitude are sized against the deployed book,
+        // not left at fixed figures. They used to be small enough that NAV per
+        // unit never cleared 1.01 once equity stopped being credited with profit
+        // on capital it had not raised, which showed neither gains nor fees.
         platformSnapshots: [
-          { platformId: ibkr.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 4) * (3000 + index * 120) + index * 60) },
-          { platformId: moomoo.rows[0].id, unrealizedProfit: roundMoney(Math.cos(index / 5) * (2000 + index * 90) + index * 40) },
-          { platformId: binance.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 3) * (1500 + index * 70) - index * 260) },
-          { platformId: maybank.rows[0].id, unrealizedProfit: roundMoney(Math.cos(index / 6) * 350) },
+          { platformId: ibkr.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 4) * (3000 + index * 2400) + index * 1800) },
+          { platformId: moomoo.rows[0].id, unrealizedProfit: roundMoney(Math.cos(index / 5) * (2000 + index * 1800) + index * 1100) },
+          { platformId: binance.rows[0].id, unrealizedProfit: roundMoney(Math.sin(index / 3) * (1500 + index * 70) - index * 400) },
+          { platformId: maybank.rows[0].id, unrealizedProfit: roundMoney(Math.cos(index / 6) * (350 + index * 180) + index * 150) },
         ],
         // Was always positive, which handed the fund a free gain every single
         // week on top of the platform marks. Centred on zero now so it cuts both
@@ -3829,8 +4087,7 @@ export async function seedDummyData() {
     reference: "SEED-RESERVE-FUNDING-002",
     notes: "Brokerage fee and realized gain reserve",
     allocations: [
-      { fundingSource: "brokerage", ratioPercent: 35, baseAmount: 3325 },
-      { fundingSource: "equity", ratioPercent: 65, baseAmount: 6175 },
+      { fundingSource: "equity", ratioPercent: 100, baseAmount: 9500 },
     ],
   });
 

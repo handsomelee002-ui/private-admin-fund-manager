@@ -19,7 +19,7 @@ import { formatMoney } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { timeAsync } from "@/lib/serverTiming";
 import { getSortState, sortRows } from "@/lib/tableSorting";
-import { Percent, Banknote, DollarSign, TrendingDown, TrendingUp, Gift, Wallet } from "lucide-react";
+import { Percent, Banknote, TrendingUp, Gift, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
@@ -51,10 +51,10 @@ export default async function BrokeragePage({
     timeAsync("route.brokerage.getInvestors", () => getInvestors(), { route: "/brokerage" }),
   ]);
 
-  const brokerageProfitLoss = pot.platformProfitLoss;
   const brokerageFeeEarned = pot.performanceFees;
-  // Cumulative, not outstanding: interest already paid out in cash has still
-  // been borne by the pot, so netting it back would overstate what is left.
+  // Interest credited since inception. Not "unpaid": interest already paid out
+  // in cash has still been borne by the pot, so netting that back would
+  // overstate what is left.
   const totalInterestOwed = pot.savingsInterest;
 
   const sortedBonusPayments = sortRows(bonusPayments, sortState, {
@@ -70,6 +70,46 @@ export default async function BrokeragePage({
   const totalWithdrawn = pot.withdrawals;
 
   const fmt = formatMoney;
+
+  // Every component lands in exactly one column. Fees, interest, bonuses and
+  // cash out are all settled or accrued, so they are realised; only the mark is
+  // unrealised. The two columns foot to the pot's balance, which is the figure
+  // NAV prices the pot at - so splitting it here cannot move anyone's money.
+  const statementRows = [
+    {
+      label: "Non-Equity Investment P&L",
+      hint: "Realised is cash swept back from brokers above the capital they were given. Unrealised is the mark on money still deployed and still being traded.",
+      realised: pot.platformProfitLossRealised,
+      unrealised: pot.platformProfitLossUnrealised,
+    },
+    {
+      label: "Profit Performance Fees",
+      hint: "Equity redemption fee income.",
+      realised: brokerageFeeEarned,
+      unrealised: null,
+    },
+    {
+      label: "Interest Credited",
+      hint: "All fixed-savings interest ever credited, paid or still owed.",
+      realised: -totalInterestOwed,
+      unrealised: null,
+    },
+    {
+      label: "Investor Bonuses",
+      hint: "Equity and fixed-savings bonus adjustments.",
+      realised: -totalBonusPaid,
+      unrealised: null,
+    },
+    {
+      label: "Cash Withdrawn",
+      hint: "Already paid out of the fund's bank account.",
+      realised: -totalWithdrawn,
+      unrealised: null,
+    },
+  ];
+
+  const amountClass = (value: number) =>
+    value > 0 ? "text-emerald-400" : value < 0 ? "text-red-400" : "text-muted-foreground";
 
   return (
     <div className="space-y-6">
@@ -114,68 +154,82 @@ export default async function BrokeragePage({
                   {netCommission >= 0 ? "+" : ""}{fmt(netCommission)}
                 </div>
                 <p className="text-xs text-muted-foreground mt-1">
-                  {netCommission > 0 ? "Available to withdraw" : "Nothing to withdraw"}
+                  {pot.withdrawable > 0
+                    ? `${fmt(pot.withdrawable)} available to withdraw`
+                    : "Nothing to withdraw"}
                 </p>
               </div>
-              <BrokerageWithdrawalForm available={netCommission} />
+              <BrokerageWithdrawalForm withdrawable={pot.withdrawable} unrealised={pot.unrealisedPot} />
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-md border border-border/50 bg-background/40 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <TrendingUp className="h-4 w-4 text-blue-400" />
-                    Non-Equity Investment P&L
-                  </div>
-                  <span className={`font-semibold ${brokerageProfitLoss >= 0 ? "text-blue-400" : "text-red-400"}`}>{fmt(brokerageProfitLoss)}</span>
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-2">Fixed-savings and brokerage-funded share from latest locked NAV.</p>
-              </div>
-              <div className="rounded-md border border-border/50 bg-background/40 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <DollarSign className="h-4 w-4 text-emerald-400" />
-                    Profit Performance Fees
-                  </div>
-                  <span className="font-semibold text-emerald-400">{fmt(brokerageFeeEarned)}</span>
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-2">Equity redemption fee income.</p>
-              </div>
-              <div className="rounded-md border border-border/50 bg-background/40 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <TrendingDown className="h-4 w-4 text-orange-400" />
-                    Interest Credited
-                  </div>
-                  <span className="font-semibold text-orange-400">-{fmt(totalInterestOwed)}</span>
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-2">All fixed-savings interest ever credited, paid or still owed.</p>
-              </div>
-              <div className="rounded-md border border-border/50 bg-background/40 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Gift className="h-4 w-4 text-violet-400" />
-                    Investor Bonuses
-                  </div>
-                  <span className="font-semibold text-violet-400">-{fmt(totalBonusPaid)}</span>
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-2">Equity and fixed-savings bonus adjustments.</p>
-              </div>
-              <div className="rounded-md border border-border/50 bg-background/40 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Banknote className="h-4 w-4 text-sky-400" />
-                    Cash Withdrawn
-                  </div>
-                  <span className="font-semibold text-sky-400">-{fmt(totalWithdrawn)}</span>
-                </div>
-                <p className="text-[10px] text-muted-foreground mt-2">Already paid out of the fund&apos;s bank account.</p>
-              </div>
+            <div className="overflow-x-auto rounded-md border border-border/50 bg-background/40">
+              <table className="w-full min-w-[520px] text-sm">
+                <thead>
+                  <tr className="border-b border-border/50 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    <th className="px-3 py-2 text-left font-medium">Component</th>
+                    <th className="px-3 py-2 text-right font-medium">Realised</th>
+                    <th className="px-3 py-2 text-right font-medium">Unrealised</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {statementRows.map((row) => (
+                    <tr key={row.label} className="border-b border-border/30 last:border-0 align-top">
+                      <td className="px-3 py-2">
+                        <div className="text-sm text-muted-foreground">{row.label}</div>
+                        <p className="text-[10px] text-muted-foreground/70 mt-0.5 max-w-md">{row.hint}</p>
+                      </td>
+                      <td className={`px-3 py-2 text-right font-semibold tabular-nums whitespace-nowrap ${amountClass(row.realised)}`}>
+                        {fmt(row.realised)}
+                      </td>
+                      <td className={`px-3 py-2 text-right font-semibold tabular-nums whitespace-nowrap ${row.unrealised === null ? "text-muted-foreground/40" : amountClass(row.unrealised)}`}>
+                        {row.unrealised === null ? "—" : fmt(row.unrealised)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-border/50 bg-muted/20">
+                    <td className="px-3 py-2 text-sm font-medium">Pot</td>
+                    <td className={`px-3 py-2 text-right font-bold tabular-nums whitespace-nowrap ${amountClass(pot.realisedPot)}`}>
+                      {fmt(pot.realisedPot)}
+                    </td>
+                    <td className={`px-3 py-2 text-right font-bold tabular-nums whitespace-nowrap ${amountClass(pot.unrealisedPot)}`}>
+                      {fmt(pot.unrealisedPot)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
             </div>
 
+            {pot.realisedPot < 0 && (
+              <div className="rounded-md border border-red-400/30 bg-red-400/5 px-3 py-2 text-[11px] leading-relaxed text-red-400/90">
+                The pot is in deficit by {fmt(Math.abs(pot.realisedPot))} against realised profit: more has been paid
+                out or accrued than has actually been earned in cash. Equity is carrying it as residual owner, and it
+                must be recovered before any further withdrawal.
+              </div>
+            )}
+
+            {!pot.hasLockedNav && (
+              <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                No NAV week has been locked yet, so there is no mark to split against. The balance is correct, but the
+                realised and unrealised columns only become meaningful after the first lock.
+              </div>
+            )}
+
+            {pot.hasLockedNav && pot.unrealisedPot < 0 && (
+              <div className="rounded-md border border-amber-400/30 bg-amber-400/5 px-3 py-2 text-[11px] leading-relaxed text-amber-400/90">
+                Unrealised is negative: the money still deployed is marked {fmt(Math.abs(pot.unrealisedPot))} below what
+                has already been realised out of it. Closing a broker account must be recorded as a zero valuation, or
+                its loss stays here instead of being realised.
+              </div>
+            )}
+
+
             <div className="rounded-md border border-border/50 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-              Formula: {fmt(brokerageProfitLoss)} + {fmt(brokerageFeeEarned)} - {fmt(totalInterestOwed)} - {fmt(totalBonusPaid)} - {fmt(totalWithdrawn)}
+              Balance: {fmt(pot.realisedPot)} realised + {fmt(pot.unrealisedPot)} unrealised = {fmt(netCommission)}.
+              Withdrawals are capped at the lower of realised profit and the total balance, so no cash leaves against a
+              mark that has since gone underwater.
             </div>
           </CardContent>
         </Card>
@@ -188,7 +242,7 @@ export default async function BrokeragePage({
             <CardTitle className="text-base">Brokerage Withdrawals</CardTitle>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            Cash taken out of the pot. Each one also reduced the fund&apos;s recorded bank balance.
+            Cash taken out of the pot. Each row moved the fund&apos;s recorded bank balance by the same amount.
           </p>
         </CardHeader>
         <CardContent className="p-0">
@@ -213,7 +267,7 @@ export default async function BrokeragePage({
               {brokerageWithdrawals.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={3} className="text-center text-muted-foreground py-12 text-sm">
-                    No withdrawals yet. Profit stays in the pot until it is taken out.
+                    Nothing yet. Realised profit stays in the pot until it is taken out.
                   </TableCell>
                 </TableRow>
               )}

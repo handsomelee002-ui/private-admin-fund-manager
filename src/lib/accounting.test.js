@@ -4,6 +4,8 @@ const test = require("node:test");
 const {
   accrueDailyCompoundInterest,
   calculateBrokerageFundingAllocation,
+  realisedNonEquityProfit,
+  splitNonEquityProfit,
   allocateFixedSavingsWithdrawal,
   calculateNavPerUnit,
   calculateOwnershipPercent,
@@ -304,4 +306,69 @@ test("profit shares are taken from exact fractions, not rounded percentages", ()
     ),
     1500000,
   );
+});
+
+test("sweeping less than principal realises nothing", () => {
+  // Capital comes back before profit does, so a partial sweep is return of
+  // capital however well the account is marked.
+  assert.equal(realisedNonEquityProfit({ flows: [100000, -60000] }), 0);
+});
+
+test("sweeping past principal realises the excess", () => {
+  assert.equal(realisedNonEquityProfit({ flows: [100000, -120000] }), 20000);
+});
+
+test("topping the account back up does not un-realise a past gain", () => {
+  // Net invested swings positive again, but the money was genuinely taken off
+  // the table. Measuring today's net rather than its low point would silently
+  // erase 20,000 of realised profit.
+  assert.equal(
+    realisedNonEquityProfit({ flows: [100000, -120000, 50000] }),
+    20000,
+  );
+});
+
+test("a shut account realises whatever capital never came back as a loss", () => {
+  assert.equal(
+    realisedNonEquityProfit({ flows: [100000, -60000], closed: true }),
+    -40000,
+  );
+});
+
+test("a shut account still realises profit taken out above capital", () => {
+  assert.equal(
+    realisedNonEquityProfit({ flows: [100000, -120000], closed: true }),
+    20000,
+  );
+});
+
+test("an open account at a loss realises nothing until it is shut", () => {
+  assert.equal(realisedNonEquityProfit({ flows: [100000] }), 0);
+});
+
+test("realised and unrealised always add back to total non-equity P&L", () => {
+  // The crash case: 20,000 swept out, then topped up and lost. Overall a
+  // 10,000 loss, of which 20,000 was banked and 30,000 went down with the mark.
+  const split = splitNonEquityProfit({
+    platforms: [{ flows: [100000, -120000, 50000] }],
+    totalProfitLoss: -10000,
+  });
+  assert.equal(split.realised, 20000);
+  assert.equal(split.unrealised, -30000);
+  assert.equal(roundMoney(split.realised + split.unrealised), split.total);
+});
+
+test("realised profit sums across platforms", () => {
+  const split = splitNonEquityProfit({
+    platforms: [
+      { flows: [50000, -70000] },
+      { flows: [30000, -10000] },
+      { flows: [20000, -5000], closed: true },
+    ],
+    totalProfitLoss: 25000,
+  });
+  // 20,000 swept past capital, nothing from the second, and the shut account
+  // never returned 15,000 of what it was given.
+  assert.equal(split.realised, 5000);
+  assert.equal(split.unrealised, 20000);
 });

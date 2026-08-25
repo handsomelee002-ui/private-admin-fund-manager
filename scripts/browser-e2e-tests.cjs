@@ -416,6 +416,45 @@ async function noHorizontalOverflow(page) {
       assert.equal((await sql`SELECT COUNT(*)::int count FROM platforms WHERE name = ${platformName}`).rows[0].count, 1);
     });
 
+    await check("funding dialog offers only live sources and brokerage splits realised from unrealised", async () => {
+      // The platform created by the previous test is still the current page.
+      await waitFor(page, 'document.body.innerText.includes("Add Transaction")');
+      await clickTriggerMouse(page, "Add Transaction");
+      await waitFor(page, 'document.querySelector("input[name=base_amount]")');
+      await waitFor(page, 'document.body.innerText.includes("Allocation Preview")');
+
+      const allocationPanel = await evalJs(page, `(() => {
+        const heading = [...document.querySelectorAll("p")].find((node) => node.innerText === "Allocation Preview");
+        return heading ? heading.closest("div.space-y-3").innerText : null;
+      })()`);
+      assert.equal(allocationPanel !== null, true, "allocation preview not found");
+      assert.equal(
+        /Brokerage/.test(allocationPanel),
+        false,
+        `funding dialog still offers brokerage: ${allocationPanel}`,
+      );
+      assert.equal(/Equity/.test(allocationPanel) && /Fixed Savings/.test(allocationPanel), true);
+
+      await page.send("Input.dispatchKeyEvent", { type: "rawKeyDown", windowsVirtualKeyCode: 27, key: "Escape" });
+      await page.send("Input.dispatchKeyEvent", { type: "keyUp", windowsVirtualKeyCode: 27, key: "Escape" });
+
+      // The pot is presented as two capital accounts. Only the realised one may
+      // be withdrawn, so both columns have to be on screen for the cap to make
+      // sense to whoever is reading it.
+      await navigate(page, `http://localhost:${TEST_PORT}/brokerage`);
+      await waitFor(page, 'document.body.innerText.includes("Interest Credited")');
+      assert.equal(await bodyIncludes(page, "Brokerage Account Balance"), true);
+      assert.equal(await bodyIncludes(page, "Realised"), true);
+      assert.equal(await bodyIncludes(page, "Unrealised"), true);
+      assert.equal(await bodyIncludes(page, "Non-Equity Investment P&L"), true);
+
+      // The offset module is gone: no second draw on the pot, and no interest
+      // discharged out of profit.
+      assert.equal(await bodyIncludes(page, "Offset Interest"), false, "the offset action should be gone");
+      assert.equal(await bodyIncludes(page, "Interest Offset"), false, "the offset tile should be gone");
+      assert.equal(await bodyIncludes(page, "earned back"), false, "the coverage split should be gone");
+    });
+
     await check("settings backup UI exposes export, validate, and restore controls after password gate", async () => {
       await navigate(page, `http://localhost:${TEST_PORT}/settings`);
       await waitFor(page, 'document.body.innerText.includes("Manual Database Backup")');
@@ -476,7 +515,9 @@ async function noHorizontalOverflow(page) {
       const tiles = await evalJs(page, `
         [...document.querySelectorAll("[data-slot=popover-trigger]")].length
       `);
-      assert.equal(tiles, 3, `expected 3 pool tiles, found ${tiles}`);
+      // Two tiles, not three: the brokerage pot cannot fund a platform, so it
+      // has no place on a card about deployable cash.
+      assert.equal(tiles, 2, `expected 2 pool tiles, found ${tiles}`);
 
       // Hover is the primary affordance, so it has to actually open the popup.
       const box = await evalJs(page, `(() => {
@@ -495,19 +536,19 @@ async function noHorizontalOverflow(page) {
       await waitFor(page, 'document.querySelector("[data-slot=popover-content]")');
       assert.equal(await bodyIncludes(page, "Owned"), true);
 
-      // The brokerage figure is known-unreliable, so the tile must not present a
-      // number that reads as a balance.
-      const brokerageHeadline = await evalJs(page, `(() => {
-        const tile = [...document.querySelectorAll("[data-slot=popover-trigger]")]
-          .find((node) => node.innerText.includes("Brokerage"));
-        return tile ? tile.innerText : null;
+      // The card carries equity and fixed savings and nothing else. The bank
+      // balance is excluded on purpose - it holds the brokerage pot's earnings
+      // too, so quoting it here puts the pot's money back on a card that is
+      // meant to show only what can fund a platform.
+      const cardText = await evalJs(page, `(() => {
+        const heading = [...document.querySelectorAll("*")]
+          .find((node) => node.children.length === 0 && node.textContent.trim() === "Available Cash by Pool");
+        return heading ? heading.closest("[data-slot=card]").innerText : null;
       })()`);
-      assert.equal(brokerageHeadline !== null, true, "no brokerage tile found");
-      assert.equal(
-        /RM\s*-?[\d,]+\.\d\d/.test(brokerageHeadline),
-        false,
-        `brokerage tile shows a figure it cannot stand behind: ${brokerageHeadline}`,
-      );
+      assert.equal(cardText !== null, true, "available cash card not found");
+      assert.equal(/Brokerage/i.test(cardText), false, `brokerage is back on the card: ${cardText}`);
+      assert.equal(/Bank balance/i.test(cardText), false, `bank balance is back on the card: ${cardText}`);
+      assert.equal(/Equity/.test(cardText) && /Fixed Savings/.test(cardText), true);
     });
 
     await check("investor dashboard renders, links both ways, and leaks no platform values", async () => {

@@ -23,7 +23,6 @@ export type CashPool = {
 
 export type CashPoolsProps = {
   pools: CashPool[];
-  bankBalance: number;
   asOfDate: string;
   fundCashRecorded: boolean;
 };
@@ -137,7 +136,7 @@ function PoolTile({ pool }: { pool: CashPool }) {
   );
 }
 
-export function AvailableCashPools({ pools, bankBalance, asOfDate, fundCashRecorded }: CashPoolsProps) {
+export function AvailableCashPools({ pools, asOfDate, fundCashRecorded }: CashPoolsProps) {
   // Sized only from pools that hold cash: a negative share cannot be a segment
   // of a positive bar, and a pool with no trustworthy figure has no share.
   const barPools = pools.filter((pool) => (pool.unbackedPrincipal ?? 0) === 0 && pool.available > 0);
@@ -147,10 +146,10 @@ export function AvailableCashPools({ pools, bankBalance, asOfDate, fundCashRecor
     <div className="space-y-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <p className="text-xs text-muted-foreground">
-          Available = owned &minus; deployed. Together they make up the bank balance.
+          Available = owned &minus; deployed, per pool that can fund a platform.
         </p>
         <p className="text-xs text-muted-foreground">
-          {fundCashRecorded ? `As of ${asOfDate}` : "Bank balance never recorded"}
+          {fundCashRecorded ? `As of ${asOfDate}` : "Fund cash never recorded"}
         </p>
       </div>
 
@@ -167,15 +166,13 @@ export function AvailableCashPools({ pools, bankBalance, asOfDate, fundCashRecor
         </div>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2">
         {pools.map((pool) => (
           <PoolTile key={pool.key} pool={pool} />
         ))}
       </div>
 
-      <p className="text-[11px] text-muted-foreground">
-        Bank balance {formatMoney(bankBalance)}. Hover or tap a pool for its breakdown.
-      </p>
+      <p className="text-[11px] text-muted-foreground">Hover or tap a pool for its breakdown.</p>
     </div>
   );
 }

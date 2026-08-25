@@ -33,12 +33,19 @@ export default async function Dashboard({
     timeAsync("route.dashboard.getDashboardSummary", () => getDashboardSummary(), { route: "/" }),
     timeAsync("route.dashboard.getFundCashAvailability", () => getFundCashAvailability(), { route: "/" }),
   ]);
-  // Each pool's free cash, in the same order the funding forms show them.
+  // Each pool's free cash, in the same order the funding forms show them. The
+  // brokerage pot is not here, and neither is the bank balance: this card
+  // answers what can be deployed into a platform, and the pot stopped being a
+  // funding source. The bank holds its earnings too, so quoting the bank here
+  // would reintroduce the pot's money by the back door. It lives on /brokerage.
   const cashPools = [
     { key: "equity", label: "Equity", ...cashAvailability.equity, text: "text-blue-400", bg: "bg-blue-400" },
     { key: "fixed_savings", label: "Fixed Savings", ...cashAvailability.fixedSavings, text: "text-amber-400", bg: "bg-amber-400" },
-    { key: "brokerage", label: "Brokerage", ...cashAvailability.brokerage, text: "text-emerald-400", bg: "bg-emerald-400" },
   ];
+  // The headline is what these two pools can deploy, not what the bank holds:
+  // the bank also holds the brokerage pot's money, which cannot fund a platform.
+  // The bank total stays on as a caption so the page still reconciles to it.
+  const totalAvailable = cashPools.reduce((sum, pool) => sum + pool.available, 0);
 
   const sortedInvestors = sortRows(summary.investors, sortState, {
     investor: (investor: any) => investor.name,
@@ -128,14 +135,16 @@ export default async function Dashboard({
             </p>
           </div>
           <div className="text-right">
-            <div className={metricValueClass}>{formatMoney(cashAvailability.bankBalance)}</div>
-            <p className="text-xs text-muted-foreground mt-1">Bank total</p>
+            <div className={metricValueClass}>{formatMoney(totalAvailable)}</div>
+            <p className="text-xs text-muted-foreground mt-1">Total available</p>
+            <p className="text-[10px] text-muted-foreground/70 mt-0.5">
+              Bank total {formatMoney(cashAvailability.bankBalance)}
+            </p>
           </div>
         </CardHeader>
         <CardContent>
           <AvailableCashPools
             pools={cashPools}
-            bankBalance={cashAvailability.bankBalance}
             asOfDate={cashAvailability.asOfDate}
             fundCashRecorded={cashAvailability.fundCashSource !== "NEVER_RECORDED"}
           />

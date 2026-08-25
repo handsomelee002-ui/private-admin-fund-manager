@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AddPlatformTransactionForm } from "@/components/AddPlatformTransactionForm";
+import { ClosePlatformControl } from "@/components/ClosePlatformControl";
 import { PlatformTransactionsChart, PlatformNavSnapshotChart } from "@/components/PlatformCharts";
 import { NotesTableCell } from "@/components/NotesTableCell";
 import { PaginationControls } from "@/components/PaginationControls";
@@ -101,12 +102,28 @@ export default async function PlatformDetailsPage({
             <ArrowLeft className="h-4 w-4" />
           </NoPrefetchLink>
           <div>
-            <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
-              {platform.name}
-            </h1>
-            <p className="text-muted-foreground mt-1 text-sm">Details and history since {platform.created_at}</p>
+            <div className="flex items-center gap-3">
+              <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
+                {platform.name}
+              </h1>
+              {platform.closed_on && (
+                <Badge variant="outline" className="text-[10px] h-5 px-1.5 text-muted-foreground border-border/60">
+                  Closed {platform.closed_on}
+                </Badge>
+              )}
+            </div>
+            <p className="text-muted-foreground mt-1 text-sm">
+              {platform.closed_on
+                ? `Closed on ${platform.closed_on} and marked at zero. History since ${platform.created_at}.`
+                : `Details and history since ${platform.created_at}`}
+            </p>
           </div>
         </div>
+        <ClosePlatformControl
+          platformId={platformId}
+          platformName={platform.name}
+          closedOn={platform.closed_on ?? null}
+        />
       </div>
 
       {/* ── Stat Cards ──────────────────────────────────────────────────────── */}

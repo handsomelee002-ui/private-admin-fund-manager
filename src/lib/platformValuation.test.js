@@ -128,3 +128,39 @@ test("a fresh platform never blocks regardless of weight", () => {
   assert.equal(blockingValuations([fresh]).length, 0);
   assert.equal(blockingValuations([fresh], 0).length, 0);
 });
+
+test("a closed platform is worth nothing, whatever it cost", () => {
+  // The fallback marks an unvalued platform at cost. For a shut account that
+  // keeps money in gross assets that is demonstrably gone.
+  const resolved = resolvePlatformValue({
+    netInvested: 40000,
+    valuations: [],
+    asOfDate: "2026-06-05",
+    closed: true,
+  });
+  assert.equal(resolved.totalValue, 0);
+  assert.equal(resolved.source, "CLOSED");
+});
+
+test("a closed platform is never stale, so it cannot block a NAV lock forever", () => {
+  // Nobody is going to refresh a dead account's valuation, so treating it as
+  // stale would wedge every future lock behind a mark that will never arrive.
+  const resolved = resolvePlatformValue({
+    netInvested: 40000,
+    valuations: [{ asOfDate: "2025-01-01", totalValue: 0 }],
+    asOfDate: "2026-06-05",
+    closed: true,
+  });
+  assert.equal(resolved.isStale, false);
+  assert.equal(resolved.totalValue, 0);
+});
+
+test("a closed platform overrides a stale non-zero mark", () => {
+  const resolved = resolvePlatformValue({
+    netInvested: 40000,
+    valuations: [{ asOfDate: "2026-06-01", totalValue: 38000 }],
+    asOfDate: "2026-06-05",
+    closed: true,
+  });
+  assert.equal(resolved.totalValue, 0);
+});

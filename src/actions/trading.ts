@@ -2,7 +2,7 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { assertNotFutureDate, calculateFixedSavingsLiability, ensureAuditColumns, getBrokerageBalance, getFixedSavingsRateInputs, withTransaction, writeAuditEvent } from "@/lib/fundDb";
+import { assertNotFutureDate, calculateFixedSavingsLiability, closePlatform, ensureAuditColumns, getFixedSavingsRateInputs, reopenPlatform, withTransaction, writeAuditEvent } from "@/lib/fundDb";
 import { isRedirectError, requireAdmin } from "@/lib/auth";
 import {
   BASE_CURRENCY,
@@ -15,8 +15,22 @@ import { calculatePlatformPerformance } from "@/lib/platformPerformance";
 
 const ACCOUNT_TYPES = ["BANK", "WALLET", "BROKER_CASH", "BROKER_PORTFOLIO", "OTHER"] as const;
 const STATUSES = ["PENDING", "SETTLED", "CANCELLED"] as const;
-const FUNDING_SOURCES = ["equity", "fixed_savings", "brokerage"] as const;
-type FundingSource = (typeof FUNDING_SOURCES)[number];
+/**
+ * Every funding source that can appear in stored data, retired ones included.
+ * Reads use this so historical rows and restored backups keep their money.
+ */
+const ALL_FUNDING_SOURCES = ["equity", "fixed_savings", "brokerage"] as const;
+/**
+ * Sources a *new* deposit may be funded from. `brokerage` is retired: the pot
+ * has no inflow of its own - its balance is earnings less costs - so funding a
+ * platform from it deployed principal that no claim recognised, and the pool
+ * read as permanently overdrawn.
+ *
+ * Withdrawals still allocate across ALL_FUNDING_SOURCES. Money that went in
+ * under the retired source must be able to come back out.
+ */
+const FUNDING_SOURCES = ["equity", "fixed_savings"] as const;
+type FundingSource = (typeof ALL_FUNDING_SOURCES)[number];
 type AllocationInput = { fundingSource: FundingSource; ratioPercent: number; baseAmount: number };
 let tradingSchemaPromise: Promise<void> | null = null;
 
@@ -51,27 +65,34 @@ function sourceLabel(source: FundingSource) {
   return "Equity";
 }
 
-function buildAllocationsFromRatios(cashFlow: number, ratios: Record<FundingSource, number>) {
-  const totalRatio = roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + ratios[source], 0));
+function buildAllocationsFromRatios(
+  cashFlow: number,
+  ratios: Partial<Record<FundingSource, number>>,
+  sources: readonly FundingSource[],
+) {
+  const totalRatio = roundMoney(sources.reduce((sum, source) => sum + (ratios[source] || 0), 0));
   if (Math.abs(totalRatio - 100) > 0.01) throw new Error("Allocation percentages must total 100%.");
 
   let allocated = 0;
-  return FUNDING_SOURCES.map((fundingSource, index) => {
-    const baseAmount = index === FUNDING_SOURCES.length - 1
+  return sources.map((fundingSource, index) => {
+    const baseAmount = index === sources.length - 1
       ? roundMoney(cashFlow - allocated)
-      : roundMoney(cashFlow * (ratios[fundingSource] / 100));
+      : roundMoney(cashFlow * ((ratios[fundingSource] || 0) / 100));
     allocated = roundMoney(allocated + baseAmount);
-    return { fundingSource, ratioPercent: roundMoney(ratios[fundingSource]), baseAmount };
+    return { fundingSource, ratioPercent: roundMoney(ratios[fundingSource] || 0), baseAmount };
   }).filter((allocation) => Math.abs(allocation.baseAmount) > 0.001);
 }
 
-function buildRatiosFromBalances(balances: Record<FundingSource, number>) {
-  const total = roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, balances[source] || 0), 0));
+function buildRatiosFromBalances(
+  balances: Partial<Record<FundingSource, number>>,
+  sources: readonly FundingSource[],
+) {
+  const total = roundMoney(sources.reduce((sum, source) => sum + Math.max(0, balances[source] || 0), 0));
   if (total <= 0) throw new Error("No available capital found for automatic allocation.");
 
   let allocated = 0;
-  return FUNDING_SOURCES.reduce((ratios, source, index) => {
-    const ratio = index === FUNDING_SOURCES.length - 1
+  return sources.reduce((ratios, source, index) => {
+    const ratio = index === sources.length - 1
       ? roundMoney(100 - allocated)
       : roundMoney((Math.max(0, balances[source] || 0) / total) * 100);
     allocated = roundMoney(allocated + ratio);
@@ -106,6 +127,9 @@ async function ensureTradingSchemaUncached() {
   await ensureAuditColumns();
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS base_currency TEXT NOT NULL DEFAULT 'MYR'`;
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS default_currency TEXT NOT NULL DEFAULT 'MYR'`;
+  // Mirrored from the fund schema, like the two above: the trading reads run
+  // through here and would query a column that does not exist yet otherwise.
+  await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS closed_on DATE`;
   await sql`
     CREATE TABLE IF NOT EXISTS platform_accounts (
       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -236,6 +260,7 @@ export async function getPlatforms() {
       p.name,
       p.base_currency,
       p.default_currency,
+      TO_CHAR(p.closed_on, 'YYYY-MM-DD') as closed_on,
       TO_CHAR(p.created_at, 'YYYY-MM-DD') as created_at,
       TO_CHAR(lv.as_of_date, 'YYYY-MM-DD') as latest_valuation_date,
       lv.total_value as latest_valuation_value,
@@ -263,7 +288,7 @@ export async function getPlatforms() {
       ORDER BY as_of_date DESC
       LIMIT 1
     ) lv ON TRUE
-    GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.created_at,
+    GROUP BY p.id, p.name, p.base_currency, p.default_currency, p.closed_on, p.created_at,
       lv.as_of_date, lv.total_value, lps.unrealized_profit, lps.total_value, lps.brokerage_profit_loss
     ORDER BY p.created_at DESC, p.name ASC
   `;
@@ -291,6 +316,7 @@ export async function getPlatforms() {
     return {
       id: row.id,
       name: row.name,
+      closedOn: (row.closed_on as string | null) ?? null,
       baseCurrency: row.base_currency,
       defaultCurrency: row.default_currency,
       createdAt: row.created_at,
@@ -324,7 +350,7 @@ export async function getPlatforms() {
  * the fixed-savings liability - which is what previously double-counted them.
  */
 async function getCapitalAllocationBasis() {
-  const [summary, savings, deployed, rateInput, pot] = await Promise.all([
+  const [summary, savings, deployed, rateInput] = await Promise.all([
     sql`
       SELECT COALESCE((
         SELECT equity_fund_cash FROM nav_weeks
@@ -339,22 +365,21 @@ async function getCapitalAllocationBasis() {
     `,
     getPlatformSourceBalances(),
     getFixedSavingsRateInputs(),
-    // One source for the pot's balance. This used to be recomputed here, and
-    // drifted from /brokerage and from the NAV attribution.
-    getBrokerageBalance(),
   ]);
 
   const fixedSavings = calculateFixedSavingsLiability(savings.rows as any[], undefined, rateInput);
   const row = summary.rows[0] ?? {};
-  const brokerageBalance = pot.balance;
 
+  // Capital a new deposit may be funded from. The brokerage pot is deliberately
+  // absent: its cash is earnings, not capital, and deploying it is what left the
+  // pool showing principal no claim recognised. To invest that money, withdraw
+  // it and deposit it as an investor so it is priced at NAV like anyone else's.
   return {
     // equity_fund_cash is already net of what equity has deployed, so unlike
-    // the other two it must not have `deployed` subtracted again.
+    // fixed savings it must not have `deployed` subtracted again.
     equity: Math.max(0, roundMoney(parseFloat(row.equity_fund_cash || "0"))),
     fixed_savings: Math.max(0, roundMoney(fixedSavings.totalLiability - deployed.fixed_savings)),
-    brokerage: Math.max(0, roundMoney(brokerageBalance - deployed.brokerage)),
-  } satisfies Record<FundingSource, number>;
+  } satisfies Record<(typeof FUNDING_SOURCES)[number], number>;
 }
 
 async function getPlatformSourceBalances(platformId?: string) {
@@ -456,9 +481,9 @@ async function getPlatformWithdrawalBasis(platformId: string, asOfDate: string) 
     `,
   ]);
 
-  const netTotal = roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, balances[source] || 0), 0));
+  const netTotal = roundMoney(ALL_FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, balances[source] || 0), 0));
   const contributedTotal = roundMoney(
-    FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, contributions[source] || 0), 0),
+    ALL_FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, contributions[source] || 0), 0),
   );
   const latestValue = valuation.rows[0] ? roundMoney(parseFloat(valuation.rows[0].total_value || "0")) : null;
 
@@ -492,7 +517,7 @@ async function getPlatformWithdrawalBasis(platformId: string, asOfDate: string) 
   const basis = netTotal > 0 ? balances : contributedTotal > 0 ? contributions : balances;
   const basisTotal = netTotal > 0 ? netTotal : contributedTotal;
 
-  const sourceCaps = FUNDING_SOURCES.reduce(
+  const sourceCaps = ALL_FUNDING_SOURCES.reduce(
     (caps, source) => {
       caps[source] = basisTotal > 0 ? roundMoney(cap * (Math.max(0, basis[source] || 0) / basisTotal)) : 0;
       return caps;
@@ -510,11 +535,15 @@ export async function getPlatformCapitalAllocation(platformId: string) {
     getPlatformSourceBalances(platformId),
     getCapitalAllocationBasis(),
   ]);
-  const total = roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + platformBalances[source], 0));
+  const total = roundMoney(ALL_FUNDING_SOURCES.reduce((sum, source) => sum + platformBalances[source], 0));
   return {
     automaticBasis,
     platformBalances,
-    platformAllocations: FUNDING_SOURCES.map((source) => ({
+    // Retired sources are reported when they still hold money, and dropped once
+    // they are empty, so a platform funded before the change still reconciles.
+    platformAllocations: ALL_FUNDING_SOURCES.filter(
+      (source) => (FUNDING_SOURCES as readonly FundingSource[]).includes(source) || platformBalances[source] !== 0,
+    ).map((source) => ({
       source,
       label: sourceLabel(source),
       baseAmount: platformBalances[source],
@@ -527,11 +556,55 @@ export async function getPlatform(id: string) {
   await requireAdmin();
   await ensureTradingSchema();
   const data = await sql`
-    SELECT id, name, base_currency, default_currency, TO_CHAR(created_at, 'YYYY-MM-DD') as created_at
+    SELECT id, name, base_currency, default_currency,
+      TO_CHAR(closed_on, 'YYYY-MM-DD') as closed_on,
+      TO_CHAR(created_at, 'YYYY-MM-DD') as created_at
     FROM platforms
     WHERE id = ${id}
   `;
   return data.rows[0] ?? null;
+}
+
+/**
+ * Shut a broker account, or undo a close.
+ *
+ * Closing writes a final zero valuation as well as the flag, so the platform
+ * stops carrying its net invested as if that money were still there. Until an
+ * account is closed, an unvalued platform is marked at cost - which keeps dead
+ * money in gross assets and overstates NAV per unit.
+ */
+export async function closePlatformAction(formData: FormData) {
+  try {
+    await requireAdmin();
+    const platformId = formData.get("platform_id")?.toString();
+    const asOfDate = formData.get("as_of_date")?.toString();
+    if (!platformId || !asOfDate) return { error: "Platform and closing date are required." };
+
+    await closePlatform({ platformId, asOfDate, notes: formData.get("notes")?.toString() || "" });
+    revalidateTrading(platformId);
+    revalidatePath("/brokerage");
+    revalidatePath("/nav");
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    if (isRedirectError(error)) throw error;
+    return { error: error instanceof Error ? error.message : "Failed to close the platform." };
+  }
+}
+
+export async function reopenPlatformAction(platformId: string) {
+  try {
+    await requireAdmin();
+    await reopenPlatform(platformId);
+    revalidateTrading(platformId);
+    revalidatePath("/brokerage");
+    revalidatePath("/nav");
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    if (isRedirectError(error)) throw error;
+    return { error: error instanceof Error ? error.message : "Failed to reopen the platform." };
+  }
 }
 
 export async function getPlatformAccounts(platformId: string) {
@@ -813,6 +886,16 @@ export async function addPlatformTransaction(formData: FormData) {
     if (isRedirectError(error)) throw error;
     return { error: error instanceof Error ? error.message : "Invalid transaction date." };
   }
+  // A closed account is marked at zero from its closing date, so money booked
+  // into it after that date would be deployed into something valued at nothing
+  // and read straight back as a loss.
+  const closedCheck = await sql`SELECT TO_CHAR(closed_on, 'YYYY-MM-DD') as closed_on, name FROM platforms WHERE id = ${platformId}`;
+  const closedOn = closedCheck.rows[0]?.closed_on as string | undefined;
+  if (closedOn && date >= closedOn) {
+    return {
+      error: `${closedCheck.rows[0].name} was closed on ${closedOn}. Reopen it before recording transactions on or after that date.`,
+    };
+  }
   // A locked NAV already priced this period from the platform values of the
   // time. Money moving in or out beneath it changes net invested that the
   // locked NAV was built on, so refuse rather than silently contradict it.
@@ -857,12 +940,17 @@ export async function addPlatformTransaction(formData: FormData) {
   try {
     if (cashFlow !== 0) {
       const moneyIn = cashFlow > 0;
+      // Money in may only be funded from live sources; money out has to be able
+      // to return capital that a retired source put in.
+      const sources: readonly FundingSource[] = moneyIn ? FUNDING_SOURCES : ALL_FUNDING_SOURCES;
       const withdrawal = moneyIn ? null : await getPlatformWithdrawalBasis(platformId, date);
-      const basis = moneyIn ? await getCapitalAllocationBasis() : withdrawal!.basis;
+      const basis: Partial<Record<FundingSource, number>> = moneyIn
+        ? await getCapitalAllocationBasis()
+        : withdrawal!.basis;
       const totalCap = moneyIn
-        ? roundMoney(FUNDING_SOURCES.reduce((sum, source) => sum + Math.max(0, basis[source] || 0), 0))
+        ? roundMoney(sources.reduce((sum, source) => sum + Math.max(0, basis[source] || 0), 0))
         : withdrawal!.cap;
-      const sourceCaps = moneyIn ? basis : withdrawal!.sourceCaps;
+      const sourceCaps: Partial<Record<FundingSource, number>> = moneyIn ? basis : withdrawal!.sourceCaps;
 
       if (Math.abs(cashFlow) > totalCap + 0.001) {
         return {
@@ -874,19 +962,23 @@ export async function addPlatformTransaction(formData: FormData) {
         };
       }
       if (allocationMode === "manual") {
-        const ratios = {
+        const ratios: Partial<Record<FundingSource, number>> = {
           equity: parseNumber(formData.get("allocation_equity_pct"), "Equity allocation"),
           fixed_savings: parseNumber(formData.get("allocation_fixed_savings_pct"), "Fixed savings allocation"),
-          brokerage: parseNumber(formData.get("allocation_brokerage_pct"), "Brokerage allocation"),
-        } satisfies Record<FundingSource, number>;
-        if (FUNDING_SOURCES.some((source) => ratios[source] < 0)) return { error: "Allocation percentages cannot be negative." };
-        allocations = buildAllocationsFromRatios(cashFlow, ratios);
-        const exceededSource = allocations.find((allocation) => Math.abs(allocation.baseAmount) > Math.max(0, sourceCaps[allocation.fundingSource]) + 0.001);
+        };
+        if (!moneyIn) {
+          ratios.brokerage = parseNumber(formData.get("allocation_brokerage_pct"), "Brokerage allocation");
+        } else if (parseNumber(formData.get("allocation_brokerage_pct"), "Brokerage allocation") !== 0) {
+          return { error: "Brokerage is no longer a funding source. Fund the platform from equity or fixed savings." };
+        }
+        if (sources.some((source) => (ratios[source] || 0) < 0)) return { error: "Allocation percentages cannot be negative." };
+        allocations = buildAllocationsFromRatios(cashFlow, ratios, sources);
+        const exceededSource = allocations.find((allocation) => Math.abs(allocation.baseAmount) > Math.max(0, sourceCaps[allocation.fundingSource] || 0) + 0.001);
         if (exceededSource) {
           return { error: `${sourceLabel(exceededSource.fundingSource)} allocation exceeds available balance.` };
         }
       } else {
-        allocations = buildAllocationsFromRatios(cashFlow, buildRatiosFromBalances(basis));
+        allocations = buildAllocationsFromRatios(cashFlow, buildRatiosFromBalances(basis, sources), sources);
       }
     }
   } catch (error) {

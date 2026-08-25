@@ -14,7 +14,8 @@ const transactionTypes = [
 ];
 
 type FundingSource = "equity" | "fixed_savings" | "brokerage";
-type SourceBalances = Record<FundingSource, number>;
+/** Brokerage is retired, so the server no longer sends a balance for it. */
+type SourceBalances = Partial<Record<FundingSource, number>> & { equity: number; fixed_savings: number };
 
 const sourceMeta: { source: FundingSource; label: string; shortLabel: string; color: string }[] = [
   { source: "equity", label: "Equity", shortLabel: "E", color: "text-blue-400" },
@@ -26,19 +27,19 @@ function formatRm(value: number) {
   return `RM ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function ratiosFromBalances(balances: SourceBalances) {
-  const total = sourceMeta.reduce((sum, item) => sum + Math.max(0, balances[item.source] || 0), 0);
+function ratiosFromBalances(balances: SourceBalances, sources: FundingSource[]) {
+  const total = sources.reduce((sum, source) => sum + Math.max(0, balances[source] || 0), 0);
   if (total <= 0) return { equity: 0, fixed_savings: 0, brokerage: 0 } satisfies SourceBalances;
 
   let allocated = 0;
-  return sourceMeta.reduce((ratios, item, index) => {
-    const ratio = index === sourceMeta.length - 1
+  return sources.reduce((ratios, source, index) => {
+    const ratio = index === sources.length - 1
       ? Math.round((100 - allocated) * 100) / 100
-      : Math.round((Math.max(0, balances[item.source] || 0) / total) * 10000) / 100;
+      : Math.round((Math.max(0, balances[source] || 0) / total) * 10000) / 100;
     allocated = Math.round((allocated + ratio) * 100) / 100;
-    ratios[item.source] = ratio;
+    ratios[source] = ratio;
     return ratios;
-  }, {} as SourceBalances);
+  }, { equity: 0, fixed_savings: 0, brokerage: 0 } as SourceBalances);
 }
 
 export function AddPlatformTransactionForm({
@@ -62,19 +63,34 @@ export function AddPlatformTransactionForm({
   const [baseAmount, setBaseAmount] = useState("");
   const [manualAllocation, setManualAllocation] = useState(false);
   const [manualRatios, setManualRatios] = useState<SourceBalances>({ equity: 100, fixed_savings: 0, brokerage: 0 });
-  const automaticRatios = useMemo(
-    () => ratiosFromBalances(transactionType === "BROKER_WITHDRAWAL" ? platformAllocationBalances : automaticAllocationBasis),
-    [automaticAllocationBasis, platformAllocationBalances, transactionType],
-  );
-  const previewRatios = manualAllocation ? manualRatios : automaticRatios;
-  const previewAmount = Number(baseAmount) || 0;
-  const manualTotal = sourceMeta.reduce((sum, item) => sum + (Number(manualRatios[item.source]) || 0), 0);
-
   // Only money going *in* spends the fund's cash. A withdrawal returns cash, so
   // checking it against available balances would flag every withdrawal from a
   // pool that is fully deployed - which is exactly when you would withdraw.
   const isFunding = transactionType === "BROKER_DEPOSIT";
-  const overdrawn = sourceMeta
+
+  // Brokerage is retired as a funding source, so it is offered only to take
+  // money back out of a platform funded from it before the change. Once such a
+  // platform is emptied the row disappears for good.
+  const visibleSources = useMemo(
+    () => sourceMeta.filter((item) =>
+      item.source !== "brokerage" || (!isFunding && Math.abs(platformAllocationBalances.brokerage || 0) > 0.005),
+    ),
+    [isFunding, platformAllocationBalances],
+  );
+  const sourceKeys = useMemo(() => visibleSources.map((item) => item.source), [visibleSources]);
+
+  const automaticRatios = useMemo(
+    () => ratiosFromBalances(
+      transactionType === "BROKER_WITHDRAWAL" ? platformAllocationBalances : automaticAllocationBasis,
+      sourceKeys,
+    ),
+    [automaticAllocationBasis, platformAllocationBalances, sourceKeys, transactionType],
+  );
+  const previewRatios = manualAllocation ? manualRatios : automaticRatios;
+  const previewAmount = Number(baseAmount) || 0;
+  const manualTotal = visibleSources.reduce((sum, item) => sum + (Number(manualRatios[item.source]) || 0), 0);
+
+  const overdrawn = visibleSources
     .filter((item) => {
       if (!isFunding || previewAmount <= 0) return false;
       const share = previewAmount * ((Number(previewRatios[item.source]) || 0) / 100);
@@ -171,7 +187,7 @@ export function AddPlatformTransactionForm({
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              {sourceMeta.map((item) => {
+              {visibleSources.map((item) => {
                 const ratio = Number(previewRatios[item.source]) || 0;
                 const share = previewAmount * (ratio / 100);
                 const available = availableBySource[item.source] ?? 0;
@@ -208,7 +224,7 @@ export function AddPlatformTransactionForm({
             {manualAllocation && (
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                {sourceMeta.map((item) => (
+                {visibleSources.map((item) => (
                   <div key={item.source} className="space-y-1">
                     <Label htmlFor={`allocation_${item.source}_pct`}>{item.label} %</Label>
                     <Input

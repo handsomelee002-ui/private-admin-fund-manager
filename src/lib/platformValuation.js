@@ -35,9 +35,23 @@ function selectValuationAsOf(valuations, asOfDate) {
  * Resolve one platform's value for a NAV date from its recorded value marks,
  * carried forward when the platform was not refreshed on the NAV date itself.
  */
-function resolvePlatformValue({ netInvested, valuations = [], asOfDate }) {
+function resolvePlatformValue({ netInvested, valuations = [], asOfDate, closed = false }) {
   const invested = roundMoney(Number(netInvested) || 0);
   const recorded = selectValuationAsOf(valuations, asOfDate);
+
+  // A shut account is worth nothing, and no amount of waiting will refresh it.
+  // Reporting it stale would block NAV locks forever over a platform that is
+  // never going to be valued again; carrying it at cost, which is what the
+  // fallback below does, would keep dead money in gross assets.
+  if (closed) {
+    return {
+      totalValue: 0,
+      source: "CLOSED",
+      valuationDate: recorded ? recorded.asOfDate : null,
+      ageDays: null,
+      isStale: false,
+    };
+  }
 
   if (!recorded) {
     // No mark ever taken: assume flat rather than inventing a gain.

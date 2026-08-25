@@ -84,6 +84,21 @@ export function splitPoolAvailability(input: {
   brokerageDeployedInPlatforms: number;
 }): PoolAvailabilityResult;
 
+export type NonEquityPlatformFlows = {
+  /** Signed non-equity cash flows in date order: + into the platform, - out. */
+  flows: number[];
+  /** The account is shut and marked at zero, so nothing is left to recover. */
+  closed?: boolean;
+};
+
+export function realisedNonEquityProfit(input: NonEquityPlatformFlows): number;
+
+export function splitNonEquityProfit(input: {
+  platforms: NonEquityPlatformFlows[];
+  /** Total non-equity P&L on the locked-NAV basis. Unrealised is the residual. */
+  totalProfitLoss: number;
+}): { realised: number; unrealised: number; total: number };
+
 /** Percentage shares of a total that always add to exactly 100. */
 export function allocateSharePercentages(values: number[]): number[];
 

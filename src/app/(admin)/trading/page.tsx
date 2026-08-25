@@ -167,7 +167,9 @@ export default async function TradingLedgerPage({
                             <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
                           </span>
                           <span className="text-[10px] text-muted-foreground">
-                            {platform.latestValuationDate
+                            {platform.closedOn
+                              ? `Closed ${platform.closedOn}`
+                              : platform.latestValuationDate
                               ? `Valued ${platform.latestValuationDate}`
                               : "Never valued"}
                             {platform.isValuationStale && " · stale"}

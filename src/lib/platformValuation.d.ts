@@ -1,4 +1,4 @@
-export type ValuationSource = "RECORDED" | "CARRIED_FORWARD" | "NET_INVESTED_FALLBACK";
+export type ValuationSource = "RECORDED" | "CARRIED_FORWARD" | "NET_INVESTED_FALLBACK" | "CLOSED";
 
 export type RecordedValuation = {
   asOfDate: string;
@@ -25,6 +25,8 @@ export function resolvePlatformValue(input: {
   netInvested: number;
   valuations?: RecordedValuation[];
   asOfDate: string;
+  /** The account is shut: worth nothing, and never stale. */
+  closed?: boolean;
 }): ResolvedValuation;
 export function blockingValuations<T extends ResolvedValuation>(
   resolved: T[],

@@ -170,6 +170,92 @@ async function firstInvestor(name) {
     );
   });
 
+  await check("platform positions are struck on the NAV date, not on today", async () => {
+    const created = await trading.addPlatform(formData({ name: "Cutoff Broker", default_currency: "MYR" }));
+    assert.equal(created.success, true);
+    const platformId = created.id;
+    const account = await one(await sql`SELECT id FROM platform_accounts WHERE platform_id = ${platformId} LIMIT 1`);
+
+    const deposit = async (date, base) => assert.equal((await trading.addPlatformTransaction(formData({
+      platform_id: platformId,
+      account_id: account.id,
+      date,
+      type: "BROKER_DEPOSIT",
+      amount: base,
+      currency: "MYR",
+      base_amount: base,
+      status: "SETTLED",
+    }))).success, true);
+
+    await deposit("2026-08-01", "10000");
+    await deposit("2026-08-20", "5000");
+
+    // The second deposit is dated after the NAV date. Counting it would make
+    // net invested 15,000 against a mark taken on the 10th, pricing 5,000 of
+    // capital that had not arrived yet as a loss.
+    const preview = await fundDb.buildNavPlatformPreview("2026-08-10");
+    const onDate = preview.find((row) => row.platformId === platformId);
+    assert.equal(money(onDate.netInvested), 10000, "post-date transactions must not leak into a NAV date");
+
+    const later = await fundDb.buildNavPlatformPreview("2026-08-21");
+    assert.equal(money(later.find((row) => row.platformId === platformId).netInvested), 15000);
+  });
+
+  await check("closing a broker account marks it at zero and realises the loss", async () => {
+    const platform = await one(await sql`SELECT id FROM platforms WHERE name = 'Cutoff Broker'`);
+    await fundDb.recordPlatformValuation({
+      platformId: platform.id,
+      asOfDate: "2026-08-05",
+      totalValue: 12000,
+    });
+
+    const live = await fundDb.buildNavPlatformPreview("2026-08-10");
+    assert.equal(money(live.find((row) => row.platformId === platform.id).totalValue), 12000);
+
+    await fundDb.closePlatform({ platformId: platform.id, asOfDate: "2026-08-15", notes: "feature close" });
+
+    // Marked at zero, and no longer stale - a dead account nobody will ever
+    // value again must not wedge every future NAV lock behind a missing mark.
+    const closed = await fundDb.buildNavPlatformPreview("2026-08-21");
+    const row = closed.find((item) => item.platformId === platform.id);
+    assert.equal(money(row.totalValue), 0);
+    assert.equal(row.isStale, false);
+    assert.equal(money(row.profitLoss), -15000, "everything the account still held is now a realised loss");
+
+    // Closing twice, and booking money into a dead account, must both refuse.
+    await assert.rejects(
+      () => fundDb.closePlatform({ platformId: platform.id, asOfDate: "2026-08-16" }),
+      /already closed/i,
+    );
+    const account = await one(await sql`SELECT id FROM platform_accounts WHERE platform_id = ${platform.id} LIMIT 1`);
+    const blocked = await trading.addPlatformTransaction(formData({
+      platform_id: platform.id,
+      account_id: account.id,
+      date: "2026-08-18",
+      type: "BROKER_DEPOSIT",
+      amount: "1000",
+      currency: "MYR",
+      base_amount: "1000",
+      status: "SETTLED",
+    }));
+    assert.match(blocked.error, /was closed on 2026-08-15/i);
+
+    // Reopening restores the earlier mark. The zero valuation the close wrote
+    // stays on record, so dates on or after it still read zero until a fresh
+    // valuation is taken.
+    await fundDb.reopenPlatform(platform.id);
+    const reopened = await fundDb.buildNavPlatformPreview("2026-08-10");
+    assert.equal(money(reopened.find((item) => item.platformId === platform.id).totalValue), 12000);
+    await assert.rejects(() => fundDb.reopenPlatform(platform.id), /is not closed/i);
+
+    // Remove the fixture. Reopening leaves the close's zero valuation in place
+    // by design, so this platform would otherwise sit at 15,000 invested and
+    // valued at nothing - a phantom loss the pot absorbs on savers' share of it,
+    // which later checks would read as the fund genuinely deploying from
+    // brokerage. Cascades clean up its accounts, transactions and valuations.
+    await sql`DELETE FROM platforms WHERE name = 'Cutoff Broker'`;
+  });
+
   await check("fixed savings deposit, withdrawal, and liability calculation", async () => {
     const alice = await firstInvestor("Alice Tan");
     assert.equal((await fundDb.recordFixedSavings({
@@ -240,15 +326,16 @@ async function firstInvestor(name) {
     const basis = await trading.getPlatformCapitalAllocation((await one(await sql`SELECT id FROM platforms LIMIT 1`)).id);
     const availability = await fundDb.getFundCashAvailability();
     assert.equal(availability.brokerage.claim, pot.balance);
-    // getCapitalAllocationBasis clamps at zero, so it can only be compared when
-    // the pot is in credit and has nothing deployed against it.
-    assert.equal(typeof basis.automaticBasis.brokerage, "number");
+    // The pot is no longer capital a deposit can draw on, so it must not appear
+    // in the funding basis at all - a zero there would read as "nothing left"
+    // rather than "not a funding source".
+    assert.equal("brokerage" in basis.automaticBasis, false);
 
-    // A pot in deficit must refuse, not pay out of the bank.
-    if (pot.balance <= 0) {
+    // A pot with nothing realised must refuse, not pay out of the bank.
+    if (pot.withdrawable <= 0) {
       await assert.rejects(
         () => fundDb.recordBrokerageWithdrawal({ date: "2026-07-04", amount: 1, notes: "should refuse" }),
-        /holds nothing to withdraw/i,
+        /no realised profit to withdraw|in deficit/i,
       );
     }
 
@@ -258,9 +345,23 @@ async function firstInvestor(name) {
     const funded = await fundDb.getBrokerageBalance();
     assert.equal(funded.balance > 0, true, `expected a positive pot, got ${funded.balance}`);
 
+    // The two capital accounts must foot to the balance NAV prices the pot at,
+    // and cash out may never exceed either limb of the test.
+    assert.equal(money(funded.realisedPot + funded.unrealisedPot), money(funded.balance));
+    assert.equal(
+      money(funded.platformProfitLossRealised + funded.platformProfitLossUnrealised),
+      money(funded.platformProfitLoss),
+    );
+    assert.equal(funded.withdrawable <= funded.balance + 0.005, true, "withdrawable must not exceed the balance");
+    assert.equal(
+      funded.withdrawable <= Math.max(0, funded.realisedPot) + 0.005,
+      true,
+      "withdrawable must not exceed realised profit",
+    );
+
     await assert.rejects(
-      () => fundDb.recordBrokerageWithdrawal({ date: "2026-07-04", amount: funded.balance + 1000 }),
-      /exceeds the brokerage balance/i,
+      () => fundDb.recordBrokerageWithdrawal({ date: "2026-07-04", amount: funded.withdrawable + 1000 }),
+      /exceeds the RM .* of realised profit available/i,
     );
     await assert.rejects(
       () => fundDb.recordBrokerageWithdrawal({ date: "2026-07-04", amount: -5 }),
@@ -268,7 +369,7 @@ async function firstInvestor(name) {
     );
 
     const cashBefore = (await fundDb.getFundCashAsOf("2026-07-04")).balance;
-    const take = Math.min(500, funded.balance);
+    const take = Math.min(500, funded.withdrawable);
     const result = await fundDb.recordBrokerageWithdrawal({ date: "2026-07-04", amount: take, notes: "feature test" });
     assert.equal(result.amount, take);
 
@@ -287,7 +388,114 @@ async function firstInvestor(name) {
     const listed = await fundDb.getBrokerageWithdrawals();
     assert.equal(listed.some((row) => row.date === "2026-07-04" && Number(row.amount) === take), true);
 
+    // Realised and unrealised must still foot to the balance after cash moves,
+    // and cash withdrawn is a realised-side item only.
+    const potFinal = await fundDb.getBrokerageBalance();
+    assert.equal(money(potFinal.realisedPot + potFinal.unrealisedPot), money(potFinal.balance));
+    assert.equal(money(potFinal.unrealisedPot), money(funded.unrealisedPot), "cash out must not move the mark");
+    assert.equal(money(potFinal.realisedPot), money(funded.realisedPot - take));
+
+    const rows = await fundDb.getBrokerageWithdrawals();
+    assert.equal(rows.some((row) => row.notes === "feature test" && row.type === "CASH"), true);
+
     await sql`DELETE FROM brokerage_withdrawals WHERE notes IN ('test credit', 'feature test')`;
+  });
+
+  await check("brokerage is retired as a funding source but old money can still come out", async () => {
+    // The seed used to send 30% of every platform flow to brokerage, deploying
+    // principal the pot never held. Nothing may fund from it now.
+    const seeded = await sql`
+      SELECT COALESCE(SUM(base_amount), 0) as total
+      FROM platform_transaction_allocations WHERE funding_source = 'brokerage'
+    `;
+    assert.equal(Number(seeded.rows[0].total), 0, "seed still funds platforms from brokerage");
+    const legacyTx = await sql`SELECT COUNT(*) as n FROM platform_transactions WHERE funding_source = 'brokerage'`;
+    assert.equal(Number(legacyTx.rows[0].n), 0, "seed still marks transactions brokerage-funded");
+
+    // No pool may be deployed beyond what it owns. Sending the freed 30% to
+    // fixed savings instead would have recreated the same inversion.
+    const availability = await fundDb.getFundCashAvailability();
+    assert.equal(
+      availability.fixedSavings.deployed <= availability.fixedSavings.claim + 0.005,
+      true,
+      `savers deployed ${availability.fixedSavings.deployed} against a claim of ${availability.fixedSavings.claim}`,
+    );
+    assert.equal(availability.brokerage.deployed, 0);
+    assert.equal(availability.brokerage.unbackedPrincipal, 0);
+
+    const platformId = (await one(await sql`SELECT id FROM platforms LIMIT 1`)).id;
+    const account = await one(await sql`SELECT id FROM platform_accounts WHERE platform_id = ${platformId} LIMIT 1`);
+
+    // A manual allocation naming brokerage is refused rather than quietly
+    // dropped, so the operator finds out the source is gone.
+    const refused = await trading.addPlatformTransaction(formData({
+      platform_id: platformId,
+      account_id: account ? account.id : "",
+      date: "2026-06-20",
+      type: "BROKER_DEPOSIT",
+      amount: "1000",
+      base_amount: "1000",
+      currency: "MYR",
+      status: "SETTLED",
+      allocation_mode: "manual",
+      allocation_equity_pct: "50",
+      allocation_fixed_savings_pct: "20",
+      allocation_brokerage_pct: "30",
+    }));
+    assert.match(refused.error, /no longer a funding source/i);
+
+    // Automatic allocation splits across the two live pools and totals 100%.
+    const auto = await trading.addPlatformTransaction(formData({
+      platform_id: platformId,
+      account_id: account ? account.id : "",
+      date: "2026-06-20",
+      type: "BROKER_DEPOSIT",
+      amount: "1000",
+      base_amount: "1000",
+      currency: "MYR",
+      status: "SETTLED",
+      allocation_mode: "automatic",
+    }));
+    assert.equal(auto.success, true, auto.error);
+    const split = await sql`
+      SELECT pta.funding_source, pta.ratio_percent
+      FROM platform_transaction_allocations pta
+      JOIN platform_transactions pt ON pt.id = pta.transaction_id
+      WHERE pt.platform_id = ${platformId} AND pt.date = '2026-06-20' AND pt.base_amount = 1000
+    `;
+    assert.equal(split.rows.length > 0, true, "automatic allocation wrote no rows");
+    assert.equal(split.rows.some((row) => row.funding_source === "brokerage"), false);
+    assert.equal(
+      money(split.rows.reduce((sum, row) => sum + Number(row.ratio_percent), 0)),
+      100,
+      "automatic allocation ratios do not total 100%",
+    );
+
+    // Money that went in under the retired source must still be able to come
+    // back out, or a restored backup would strand it in the platform forever.
+    const withdrawalTx = await one(await sql`
+      SELECT id FROM platform_transactions
+      WHERE platform_id = ${platformId} AND date = '2026-06-20' AND base_amount = 1000
+      ORDER BY created_at DESC LIMIT 1
+    `);
+    await sql`
+      UPDATE platform_transaction_allocations
+      SET funding_source = 'brokerage'
+      WHERE transaction_id = ${withdrawalTx.id}
+        AND funding_source = (
+          SELECT funding_source FROM platform_transaction_allocations
+          WHERE transaction_id = ${withdrawalTx.id} ORDER BY base_amount DESC LIMIT 1
+        )
+    `;
+    const balances = await trading.getPlatformCapitalAllocation(platformId);
+    assert.equal(
+      balances.platformAllocations.some((row) => row.source === "brokerage" && row.baseAmount > 0),
+      true,
+      "legacy brokerage principal vanished from the platform view",
+    );
+
+    await sql`DELETE FROM platform_transaction_allocations WHERE transaction_id = ${withdrawalTx.id}`;
+    await sql`DELETE FROM platform_transactions WHERE id = ${withdrawalTx.id}`;
   });
 
   await check("equity withdrawal rejects an overdraw instead of silently under-filling", async () => {

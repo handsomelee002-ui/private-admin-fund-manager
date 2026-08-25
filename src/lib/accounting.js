@@ -325,9 +325,60 @@ function accrueDailyCompoundInterest({ principal, annualRatePercent, startDate, 
   return roundMoney(accrued);
 }
 
+/**
+ * Realised non-equity profit on one platform, from its cash flows alone.
+ *
+ * The fund never sees the underlying trades on a copy-trading, high-frequency
+ * or crypto account - only money paid into the broker, money swept back out,
+ * and a periodic mark. So the only realisation event it can observe is cash
+ * returning to the fund's bank. Everything still sitting at the broker is still
+ * being traded, and is therefore still unrealised however many trades closed to
+ * produce it.
+ *
+ * Return of capital first: sweeps repay principal before they realise anything.
+ * The measure is the *lowest* point cumulative net invested ever reached, not
+ * where it sits today, so topping the account back up cannot un-realise a gain
+ * already taken off the table.
+ *
+ * `flows` are signed and in date order - positive into the platform, negative
+ * out. `closed` means the account is shut and marked at zero, so nothing is
+ * left to recover and whatever never came back is a realised loss.
+ */
+function realisedNonEquityProfit({ flows = [], closed = false }) {
+  let running = 0;
+  let lowest = 0;
+  for (const flow of flows) {
+    running = roundMoney(running + (Number(flow) || 0));
+    if (running < lowest) lowest = running;
+  }
+  // A shut account has no unrealised part left, so realised must equal the
+  // whole return: value (zero) less net invested, which is exactly -running.
+  if (closed) return roundMoney(-running);
+  return roundMoney(Math.max(0, -lowest));
+}
+
+/**
+ * Split the pot's non-equity P&L into the part that has been converted to cash
+ * and the part that is still a mark.
+ *
+ * `total` is passed in on the locked-NAV basis and is not recomputed here: the
+ * unrealised half is deliberately derived as the residual, so the two always
+ * add back to the number NAV priced itself on. Deriving it independently is how
+ * a split stops reconciling.
+ */
+function splitNonEquityProfit({ platforms = [], totalProfitLoss = 0 }) {
+  const total = roundMoney(Number(totalProfitLoss) || 0);
+  const realised = roundMoney(
+    platforms.reduce((sum, platform) => sum + realisedNonEquityProfit(platform), 0),
+  );
+  return { realised, unrealised: roundMoney(total - realised), total };
+}
+
 module.exports = {
   accrueDailyCompoundInterest,
   calculateEquityFundCash,
+  realisedNonEquityProfit,
+  splitNonEquityProfit,
   splitPoolAvailability,
   allocateSharePercentages,
   allocateFixedSavingsWithdrawal,
