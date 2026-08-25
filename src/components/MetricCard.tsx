@@ -36,7 +36,7 @@ export type MetricCardProps = {
  */
 export function MetricCard({ title, icon, value, valueClassName, delta, rows, footnote }: MetricCardProps) {
   return (
-    <Card className="bg-card/50 border-border/50">
+    <Card className="h-full bg-card/50 border-border/50">
       <CardHeader className={metricHeaderClass}>
         <CardTitle className={metricTitleClass}>{title}</CardTitle>
         {icon}
@@ -44,7 +44,13 @@ export function MetricCard({ title, icon, value, valueClassName, delta, rows, fo
       <CardContent className="space-y-3">
         <div>
           <div className={cn(metricValueClass, valueClassName)}>{value}</div>
-          {delta}
+          {/* Cards without a delta still reserve its line, so the rule below
+           *  and every row under it land at the same height on all cards. */}
+          {delta ?? (
+            <p className="text-xs mt-1 invisible" aria-hidden="true">
+              &nbsp;
+            </p>
+          )}
         </div>
 
         {rows.length > 0 && (
