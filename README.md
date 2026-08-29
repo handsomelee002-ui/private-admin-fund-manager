@@ -1,226 +1,120 @@
 # Private Admin Fund Manager
 
-Private Admin Fund Manager is a self-hosted Next.js application for administering a private unit-based investment fund. It supports event-driven NAV accounting, platform valuations, investor units and equity performance, capital movements, fixed-savings liabilities, trading platform records, profit claims, profit performance fees, brokerage reconciliation, audit logs, JSON backups, and read-only investor portal links.
+A self-hosted web application for administering a **private, unit-based investment
+fund** — the kind a small group of people run between themselves, where one person
+keeps the books.
 
-This repository is operational software for private administration. It is not investment advice, tax advice, legal advice, a public fundraising platform, a payment processor, or a regulated custody product.
+It prices investor units from real platform valuations, settles deposits and
+withdrawals against a locked NAV, tracks a separate fixed-savings liability book,
+records trading-platform performance, handles profit claims and performance fees,
+and gives each investor a read-only statement link.
 
-## Contents
+![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)
+![React](https://img.shields.io/badge/React-19-149ECA?logo=react&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![Postgres](https://img.shields.io/badge/Postgres-Vercel%20%2F%20Neon-4169E1?logo=postgresql&logoColor=white)
+![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-38BDF8?logo=tailwindcss&logoColor=white)
 
-- [Features](#features)
-- [Accounting Model](#accounting-model)
-- [Access Model](#access-model)
-- [Security Notes](#security-notes)
-- [Requirements](#requirements)
-- [Environment Variables](#environment-variables)
-- [Installation](#installation)
-- [First-Time Setup](#first-time-setup)
-- [Available Scripts](#available-scripts)
-- [Testing and Verification](#testing-and-verification)
-- [Backup and Restore](#backup-and-restore)
-- [Investor Portal](#investor-portal)
-- [Project Structure](#project-structure)
-- [Production Checklist](#production-checklist)
-- [Limitations](#limitations)
-- [License](#license)
+> **Not financial software for the public.** This is private bookkeeping software.
+> It is **not** investment advice, tax advice, legal advice, a fundraising
+> platform, a payment processor, or a regulated custody product. See
+> [Scope and limitations](#scope-and-limitations).
 
-## Features
+## Live demo
 
-- Event-driven unit-based NAV accounting with draft and locked NAV records.
-- Platform values recorded independently of the NAV cycle, carried forward with staleness tracking.
-- Fund cash tracked as its own balance, so money withdrawn from a platform stays in gross assets instead of disappearing.
-- Investor directory with unit balances, ownership, market value, equity P&L, equity return percentage, fixed-savings balance, and statement history.
-- Capital deposits and withdrawals settled against the latest locked NAV per unit.
-- Fixed-savings deposits, withdrawals, interest accrual, base rates, and promotional rate periods outside equity NAV.
-- Trading platform, account, asset, transaction, funding allocation, NAV snapshot, realized profit, and unrealized P&L tracking.
-- Profit claim creation and settlement with configurable profit performance fee handling.
-- Brokerage account reconciliation for non-equity investment P&L, profit performance fees, accrued fixed-savings interest, and bonuses.
-- Audit log with supported reversal workflows and guardrails against unsafe historical mutation.
-- Read-only investor portal links with rotation and access logging.
-- Manual JSON backup export, validation, preview, and restore.
-- Development-only schema initialization, cleanup, table drop, and high-volume dummy data import.
-- Pagination and sorting across admin and portal tables.
-- Unit, database feature, browser E2E, lint, typecheck, build, and full verification scripts.
+**<https://private-admin-fund-manager.vercel.app>**
 
-## Accounting Model
+A public sandbox on sample data, backed by a throwaway database. Sign in at
+`/admin/login` with **`admin` / `admin`** (the login form is pre-filled). Anyone
+can sign in and change records — do not treat anything in the demo as private or
+persistent.
 
-- Equity investors own fund units.
-- Locked NAV is the source of truth for equity unit pricing.
-- Deposits issue units at the latest locked NAV per unit **on or before the movement date**.
-- Withdrawals redeem units at the latest locked NAV per unit **on or before the movement date**, against the units the investor held **on that date**.
-- The profit performance fee is charged only on a realized gain — a withdrawal at a loss is not charged — and is **withheld from the payout**: the investor receives the redemption value less the fee, and the fee stays in the fund as brokerage income.
-- A withdrawal larger than the investor's redeemable equity is rejected, not silently reduced. Use "withdraw all" to redeem a full balance.
-- Financial records may be backdated but never post-dated.
-- Investor ownership is calculated from current investor units divided by total active fund units.
-- Equity P&L is calculated as current equity market value minus remaining investor equity cost basis.
-- Equity return percentage is calculated from equity P&L divided by remaining investor equity cost basis.
-- Late investors do not receive gains from periods before their unit issuance.
-- Fixed savings is treated as a liability book and excluded from equity NAV ownership.
-- Fixed-savings interest accrues independently from equity units.
-- Fixed-savings principal and accrued interest remain contractual liabilities even when fixed-savings-funded capital is used in platform investments.
-- Platform funding can be attributed to equity, fixed savings, and brokerage sources.
-- Equity-funded platform P&L flows into equity NAV.
-- Fixed-savings-funded and brokerage-funded platform P&L is reported as non-equity investment P&L and reconciled through the brokerage workflow.
-- Profit claims are capped at the investor's attributable equity profit less profit still outstanding in existing claims.
-- Settling a claim **redeems units** from the claimant at the NAV in force on the settlement date, so the investor taking profit out is the one whose position shrinks rather than every other investor being diluted.
-- Equity bonuses are funded from the brokerage pot, not by dilution: the pot's claim falls by the bonus, which raises equity's share of cash by exactly what the new units are worth.
-- Locked NAV records are immutable by design.
+## Screenshots
 
-### What a platform records
-
-A platform tracks three facts and nothing else:
-
-| Fact | Meaning |
+| Dashboard | NAV review |
 | --- | --- |
-| **Money in** | Ringgit left the fund's cash and entered the platform. |
-| **Money out** | Ringgit left the platform and returned to the fund's cash. |
-| **Value mark** | What the whole platform was worth on a given date. |
+| ![Dashboard](docs/screenshots/dashboard.png) | ![NAV review](docs/screenshots/nav.png) |
 
-Profit is derived: `value − (money in − money out)`.
-
-The rule is whether money crossed the platform boundary. Buying, selling, dividends
-that stay in the account, copy-trading gains, fees, withholding tax, FX drift and
-corporate actions are all **internal** — record nothing, and the next value mark
-absorbs them. Topping up a broker, cashing out to the fund's bank, taking dividends
-out, and moving between platforms (money out of one, money in to the other) are
-**boundary** events and must be recorded.
-
-Money out is capped at what the platform is currently worth, not at what was put
-in, so cashing out a gain or a dividend can be recorded. The ceiling is the latest
-value mark adjusted by anything that moved since it, which stops the same profit
-being withdrawn twice.
-
-### Platform valuation
-
-A platform's value is resolved for a NAV date in this order:
-
-| Source | Behaviour |
+| Investor statement | Trading platform |
 | --- | --- |
-| `RECORDED` | A value mark dated exactly on the NAV date. |
-| `CARRIED_FORWARD` | The most recent value mark on or before the NAV date, with its age reported. |
-| `NET_INVESTED_FALLBACK` | Never valued; assumed flat rather than inventing a gain. |
+| ![Investor statement](docs/screenshots/investor.png) | ![Trading platform](docs/screenshots/trading.png) |
 
-Value marks dated after the NAV date are never used, so a historical NAV cannot see a future mark.
+| Reports | Investor portal (read-only) |
+| --- | --- |
+| ![Reports](docs/screenshots/reports.png) | ![Investor portal](docs/screenshots/portal.png) |
 
-A valuation older than **30 days** is flagged stale. A platform that is both stale and **10% or more** of the fund is *material*: NAV can still be created and locked for reporting, but settling any deposit or withdrawal against it is rejected until the valuation is refreshed. Stale-but-immaterial and fresh-but-small platforms never block settlement.
+## What it does
 
-Recording a value mark, a fund cash balance, or a platform transaction dated on or
-before an already-locked NAV is rejected, because that NAV has already priced the
-period.
+- **Event-driven NAV accounting.** Create a NAV when you need to price something,
+  not on a fixed calendar. NAV records are drafted, reviewed, then locked and
+  become immutable.
+- **Valuation from real marks.** Each trading platform is valued from the latest
+  broker figure on or before the NAV date, with staleness tracking. A stale
+  valuation on a large platform blocks settlement until it is refreshed.
+- **Fund cash as its own balance.** Money pulled out of a platform stays in gross
+  assets instead of vanishing. Expected vs. recorded bank balance is reconciled
+  on screen, broken down per pool.
+- **Investor units and equity performance.** Ownership, market value, cost basis,
+  equity P&L, and return percentage per investor, with full statement history.
+- **Capital movements.** Deposits issue units and withdrawals redeem units at the
+  locked NAV per unit on or before the movement date. Backdating allowed,
+  post-dating rejected.
+- **Fixed-savings liability book.** Interest-bearing savings tracked outside
+  equity NAV, with base rates and promotional rate periods.
+- **Trading records.** Platforms, accounts, assets, transactions, funding-source
+  allocation (equity or fixed savings), realized profit, and unrealized P&L. A
+  platform account can be closed and reopened.
+- **Profit claims and performance fees.** Claims are capped at attributable
+  profit; settling a claim redeems the claimant's units so only their position
+  shrinks. Performance fee is charged on realized gains and withheld from payout.
+- **Brokerage reconciliation.** Non-equity investment P&L split into a realised
+  account (cash returned above capital deployed) and an unrealised account (the
+  mark on money still deployed), plus performance fees, accrued fixed-savings
+  interest, bonuses, and a brokerage withdrawal workflow.
+- **Audit log** with supported reversals and guardrails against unsafe historical
+  edits.
+- **Read-only investor portal** via private, rotatable bearer links with access
+  logging — an activity ledger plus a dashboard of metrics and charts.
+- **Manual JSON backup** export, validation, preview, and restore.
 
-### Fund cash
+## How the accounting works (short version)
 
-Gross assets are the sum of every platform's value **plus the fund's own cash** —
-money withdrawn from a platform, or investor capital not deployed yet. Without it
-that money belongs to no platform and falls out of the fund's value entirely.
+- Equity investors own **fund units**. Locked NAV per unit is the single source
+  of truth for unit pricing.
+- A trading platform records only three facts: **money in**, **money out**, and
+  **value marks**. Profit is derived as `value − (money in − money out)`.
+  Everything that stays inside the account (trades, dividends, fees, FX) is
+  absorbed by the next value mark.
+- **Gross assets = every platform's value + the fund's own cash.** The bank
+  balance is not all equity's — savers' principal and the brokerage pot pass
+  through the same account, so only equity's residual share prices the units.
+- Late investors do not receive gains from before their units were issued.
+- Fixed savings is a **liability**, excluded from equity NAV ownership.
 
-The bank balance is **not** all equity's. Savers' principal and interest, and the
-brokerage pot's own money, pass through the same account. Only equity's share
-prices the units:
+The complete model — valuation resolution order, staleness/materiality rules,
+fund-cash math, the operating cycle, and every edge case — is in
+**[docs/OPERATIONS.md](docs/OPERATIONS.md)**.
 
-```
-equityCash = bankBalance + nonEquityValueInPlatforms
-           - fixedSavingsLiability - brokerageClaim
+## Tech stack
+
+- **Next.js 16** App Router, **React 19**, **TypeScript**
+- **Vercel Postgres** / Neon-compatible Postgres
+- **Tailwind CSS v4**, Base UI / shadcn-style components, **Recharts**
+- Server Actions for all mutations; signed `HttpOnly` session cookies for admin auth
+- Node.js built-in test runner; headless Chromium/Edge E2E via Chrome DevTools Protocol
+
+## Quickstart
+
+Requires **Node.js 20+**, npm, and a Postgres database (Vercel Postgres, Neon, or
+compatible).
+
+```bash
+git clone https://github.com/handsomelee002-ui/private-admin-fund-manager.git
+cd private-admin-fund-manager
+npm install
 ```
 
-Equity is the residual owner: savers hold a fixed contractual claim, the
-brokerage pot holds what it has earned and not yet spent, and equity owns what is
-left. `nonEquityValueInPlatforms` appears because the other two pools hold part
-of their claim as platform value rather than cash. The brokerage claim is built
-from *cumulative* interest and bonuses, not outstanding ones — an obligation
-already paid in cash has left the bank, so treating it as no longer owed would
-return the money to equity twice.
-
-The NAV row stores both: `fund_cash` is the whole bank balance, `equity_fund_cash`
-is the slice that priced the units.
-
-Fund cash is recorded the same way as a platform value: a balance and a date, taken
-from a bank statement, carried forward until replaced. The NAV screen also shows an
-**expected** balance derived from the last recorded balance plus settled investor
-deposits and withdrawals, minus money sent to platforms, plus money taken back out.
-A gap between the two is flagged: it is legitimate when money moved outside the app,
-and otherwise means something is unrecorded.
-
-`adjustments` remains available for genuine one-off corrections and normally stays
-at zero. It is no longer the only home for idle cash.
-
-### Operating cycle
-
-NAV is event-driven: create one when you need to price something, not on a fixed calendar.
-
-1. Record money in and money out as it happens.
-2. Record platform values whenever convenient — one number per platform, as your broker shows it. Record the fund's cash balance the same way.
-3. When a deposit, withdrawal, or reporting date arrives, open the NAV review screen and pick the valuation date.
-4. Review resolved values, staleness badges, fund cash against its expected balance, and gross assets. Override individual rows only where needed.
-5. Save the draft and lock it.
-6. Settle deposits, withdrawals, fixed-savings movements, claims, and bonuses.
-7. Review investor statements, equity performance, reports, brokerage reconciliation, and audit logs.
-
-## Access Model
-
-| Path | Access | Purpose |
-| --- | --- | --- |
-| `/admin/login` | Public | Administrator login. |
-| `/login` | Public | Investor portal access ID entry. |
-| `/portal/[portal_access_id]` | Private bearer link | Read-only investor statement for the matching access ID. |
-| `/` | Admin session | Dashboard. |
-| `/investors` | Admin session | Investor directory and portal link management. |
-| `/investors/[id]` | Admin session | Investor statement and activity ledger. |
-| `/nav` | Admin session | Platform values and NAV register. |
-| `/capital` | Admin session | Equity cash movement ledger. |
-| `/fixed-savings` | Admin session | Fixed-savings liability ledger. |
-| `/fixed-savings-rates` | Admin session | Fixed-savings base and promotional rates. |
-| `/trading` | Admin session | Trading platform directory, realized profit, unrealized P&L, and portfolio value. |
-| `/trading/[platformId]` | Admin session | Platform transactions, snapshots, funding allocation, and performance. |
-| `/claims` | Admin session | Profit claims and settlement workflow. |
-| `/brokerage` | Admin session | Profit performance fee settings and non-equity reconciliation workflow. |
-| `/reports` | Admin session | Fund reports, profit performance fees, platform performance, and NAV trends. |
-| `/settings` | Admin session | Backup and protected data tools. |
-| `/admin-logs` | Admin session | Audit history and supported reversals. |
-| `/development` | Admin session | Development tooling route. |
-
-Administrative access uses:
-
-- `ADMIN_LOGIN_ID`
-- `ADMIN_PASSWORD_HASH`
-- `AUTH_SESSION_SECRET`
-- Signed `HttpOnly` session cookies
-- Server-side authorization checks on administrative reads and mutations
-
-Portal links are possession-based bearer links. Anyone with a valid portal URL can view that investor's read-only statement until the link is rotated.
-
-## Security Notes
-
-This application handles sensitive financial records. Do not deploy it casually.
-
-Required before public exposure:
-
-- Use HTTPS only.
-- Use a dedicated production database.
-- Use production-only admin credentials and session secrets.
-- Rotate any credential ever committed, shared, logged, or used in local testing.
-- Keep `.env.local` and all secret files out of git.
-- Confirm `NODE_ENV=production` in production.
-- Confirm development data tools are unavailable in production.
-- Restrict database credentials to the minimum privilege required.
-- Put the app behind additional network controls where possible.
-- Back up the database before schema changes, restores, imports, or releases.
-- Treat backup JSON files and portal URLs as sensitive secrets.
-- Review audit logs after operational changes.
-
-Do not expose this application as a multi-tenant public SaaS without redesigning authorization, tenancy, rate limiting, monitoring, data isolation, incident response, and compliance controls.
-
-## Requirements
-
-- Node.js 20 or newer.
-- npm.
-- Vercel Postgres, Neon, or a compatible Postgres database.
-- A Chromium-compatible browser for E2E tests.
-
-The browser E2E script currently looks for Microsoft Edge or Google Chrome in common Windows install locations.
-
-## Environment Variables
-
-Database configuration:
+Create `.env.local` with your database connection and admin auth:
 
 ```env
 POSTGRES_URL=postgresql://...
@@ -229,11 +123,7 @@ POSTGRES_USER=...
 POSTGRES_HOST=...
 POSTGRES_PASSWORD=...
 POSTGRES_DATABASE=...
-```
 
-Administrator authentication:
-
-```env
 ADMIN_LOGIN_ID=your-private-admin-login-id
 ADMIN_PASSWORD_HASH=scrypt\$generated-salt\$generated-hash
 AUTH_SESSION_SECRET=generated-session-signing-secret
@@ -245,200 +135,80 @@ Generate the password hash and session secret:
 node scripts/generate-auth-config.mjs "a-private-password-of-at-least-12-characters"
 ```
 
-For `.env.local`, escape each `$` in `ADMIN_PASSWORD_HASH` as `\$` because Next.js expands unescaped dollar sequences in environment files. In hosted environment variable settings, use the raw hash without backslashes unless the provider explicitly requires escaping.
+> In `.env.local`, escape each `$` in `ADMIN_PASSWORD_HASH` as `\$`. In hosted
+> environment-variable settings, use the raw hash without backslashes.
 
-## Installation
-
-Install dependencies:
-
-```bash
-npm install
-```
-
-Start the development server:
+Run it:
 
 ```bash
 npm run dev
 ```
 
-Open:
+Then open <http://localhost:3000>, sign in at `/admin/login`, open `/settings`,
+enter the admin password in the protected gate, and run **Initialize Database**.
+Full first-run steps (adding platforms, recording opening values, locking an
+opening NAV) are in [docs/OPERATIONS.md](docs/OPERATIONS.md#first-time-setup).
 
-```text
-http://localhost:3000
-```
-
-On PowerShell systems that block `npm.ps1`, use `npm.cmd`:
-
-```powershell
-npm.cmd run dev
-```
-
-## First-Time Setup
-
-1. Create and configure the Postgres database.
-2. Configure the database environment variables.
-3. Generate and configure `ADMIN_LOGIN_ID`, `ADMIN_PASSWORD_HASH`, and `AUTH_SESSION_SECRET`.
-4. Start the app with `npm run dev`.
-5. Sign in at `/admin/login`.
-6. Open `/settings`.
-7. Enter the admin password in the protected settings gate.
-8. Run `Initialize Database`.
-9. Optionally run `Import Dummy Data` for local development only.
-10. Add each trading platform.
-11. Record a starting value for every platform, and the fund's starting cash balance.
-12. Create and lock an opening NAV before recording any capital movement.
-13. Review `/nav`, `/capital`, `/investors`, `/trading`, `/claims`, `/fixed-savings`, `/fixed-savings-rates`, `/brokerage`, `/reports`, `/admin-logs`, and `/settings`.
-
-The protected data tools can delete records, drop tables, initialize schema, and import dummy data. They are destructive and are blocked in production.
-
-## Available Scripts
+## Scripts
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | Start the Next.js development server with hot reload. |
-| `npm run build` | Build the production application. |
-| `npm run start` | Start the production server from an existing build. |
-| `npm test` | Run Node unit tests in `src/**/*.test.js` and `src/**/*.test.mjs`. |
-| `npm run test:feature` | Run destructive database-backed feature tests with one transient DB retry. |
-| `npm run test:e2e` | Run destructive browser E2E tests with one transient DB retry. |
-| `npm run typecheck` | Run TypeScript type checking. |
-| `npm run lint` | Run ESLint. |
-| `npm run verify` | Run unit tests, feature tests, lint, typecheck, build, and E2E tests. |
-| `node scripts/generate-auth-config.mjs "<password>"` | Generate admin password hash and session secret. |
+| `npm run dev` | Development server with hot reload |
+| `npm run build` / `npm run start` | Production build and server |
+| `npm test` | Node unit tests |
+| `npm run test:feature` | Database-backed feature tests (**destructive**) |
+| `npm run test:e2e` | Browser E2E tests (**destructive**) |
+| `npm run lint` / `npm run typecheck` | ESLint / TypeScript checks |
+| `npm run verify` | Everything above, in order |
 
-Use `npm run dev` while developing. Use `npm run build` followed by `npm run start` to smoke-test production server behavior.
+`test:feature`, `test:e2e`, and `verify` reset and mutate the configured
+database. Run them only against a disposable test database.
 
-## Testing and Verification
+## Security
 
-Run unit tests:
+This application handles sensitive financial records. **Do not deploy it
+casually.** Before any public exposure:
 
-```bash
-npm test
-```
+- HTTPS only; dedicated production database; least-privilege DB credentials.
+- Production-only admin credentials and session secret. **Rotate any credential
+  ever committed, shared, logged, or used in local testing.**
+- `NODE_ENV=production`, so development data tools (schema init, table drop,
+  dummy import) are disabled.
+- Treat backup JSON files and portal URLs as secrets.
+- Put the app behind additional network controls where possible.
 
-Run database-backed feature tests:
+Portal links are **possession-based** — anyone with a valid portal URL can view
+that investor's read-only ledger and dashboard until the link is rotated.
 
-```bash
-npm run test:feature
-```
+Full checklist: [docs/OPERATIONS.md](docs/OPERATIONS.md#security-notes).
 
-Run browser E2E tests:
+## Scope and limitations
 
-```bash
-npm run test:e2e
-```
+Deliberately **not** included:
 
-Run the full verification suite:
+- No multi-tenant isolation and no public self-registration.
+- No payment processor and no investor password accounts.
+- No formal compliance workflow, tax reporting, or market-data ingestion.
+- No guarantee of regulatory suitability in any jurisdiction.
 
-```bash
-npm run verify
-```
+This is single-operator private administration software. Running it as a
+multi-tenant public SaaS would require a separate authorization, tenancy, rate
+limiting, monitoring, data-isolation, and compliance design.
 
-`test:feature`, `test:e2e`, and `verify` are destructive. They reset, seed, insert, update, restore, and mutate the configured database. Run them only against a disposable development or test database.
+## Documentation
 
-The feature and E2E scripts use `scripts/run-with-retry.cjs` to retry once on transient Neon/WebSocket database failures such as unexpected connection termination.
+- **[docs/OPERATIONS.md](docs/OPERATIONS.md)** — full operator manual: accounting
+  model, access model, environment variables, first-time setup, verification,
+  backup and restore, production checklist.
+- **[AGENTS.md](AGENTS.md)** — engineering conventions for this codebase.
 
-## Backup and Restore
+## Contributing
 
-The Settings page provides manual JSON backup tooling:
-
-- Export backup JSON.
-- Validate a backup file before restore.
-- Preview table row counts.
-- Restore a validated backup with explicit confirmation.
-
-Backup files contain financial records, investor names, portal identifiers, NAV history, claims, trading records, and audit events. Store them as secrets.
-
-The current backup schema version is **4**. Older files still restore:
-
-| Version | Behaviour on restore |
-| --- | --- |
-| 3 | `fund_cash_valuations` comes back empty. |
-| 2 | `platform_valuations`, `platform_transaction_allocations`, and `fund_cash_valuations` come back empty. |
-
-Two tables that older exports carried are ignored on restore: `platform_performance`, which no migration ever created, and `cash_balances`, which was written but never read before fund cash replaced it.
-
-Schema version 3 added `platform_valuations` and — importantly — `platform_transaction_allocations`, which version 2 omitted. Restoring a v2 backup therefore loses per-transaction funding-source splits, and affected platforms fall back to the legacy single-`funding_source` attribution. Re-enter allocations after restoring a v2 file if you relied on split funding.
-
-## Investor Portal
-
-Investor portal access is not a password login. It is a private bearer-link workflow:
-
-1. Open an investor from `/investors`.
-2. Generate or rotate the investor portal access ID.
-3. Share only the intended `/portal/[portal_access_id]` URL with the investor.
-4. Rotate the link immediately if it is exposed to the wrong person.
-
-The portal renders a read-only statement for the matching investor.
-
-## Project Structure
-
-```text
-src/app/                  Next.js App Router routes
-src/actions/              Server actions for mutations and protected workflows
-src/components/           UI components and forms
-src/components/ui/        Shared UI primitives
-src/lib/                  Accounting, database, auth, backup, sorting, and pagination utilities
-scripts/                  Verification, E2E, auth config, and test runtime scripts
-public/                   Static assets
-```
-
-Primary modules:
-
-- Dashboard: fund overview, NAV per unit, units, equity P&L, equity return, fixed-savings liability, and investor summary.
-- Valuations & NAV: record platform values, review resolved values with staleness, draft, lock, and list NAV records.
-- Investors: directory, equity P&L, equity return, balances, portal links, and investor statements.
-- Capital: equity deposits and withdrawals.
-- Fixed Savings: liability ledger and interest-bearing savings activity.
-- Fixed Savings Rates: base rates and promotions.
-- Trading: platforms, accounts, assets, transactions, funding allocation, realized profit, unrealized P&L, snapshots, and performance.
-- Claims: profit claim settlement and outstanding balances.
-- Brokerage: profit performance fee configuration, non-equity investment P&L reconciliation, fixed-savings interest liability, and bonus workflows.
-- Reports: platform performance, profit performance fees, and NAV history.
-- Settings: protected backup and data tools.
-- Admin Logs: audit trail and supported reversal controls.
-
-## Technical Stack
-
-- Next.js 16 App Router
-- React 19
-- TypeScript
-- Vercel Postgres / Neon-compatible Postgres
-- Tailwind CSS
-- Base UI / shadcn-style components
-- Recharts
-- Node.js built-in test runner
-- Headless Chromium/Edge E2E harness through Chrome DevTools Protocol
-
-## Production Checklist
-
-- `npm run verify` passes against a disposable test database.
-- Production database has a fresh backup.
-- Production secrets are configured in the hosting provider.
-- Local and test credentials are not reused in production.
-- Anonymous admin routes redirect to `/admin/login`.
-- Invalid admin credentials do not create a session.
-- A valid admin can complete required operational workflows.
-- Investor portal links show only the matching read-only statement.
-- Rotated portal links no longer resolve.
-- Development tools are blocked in production.
-- Backup export and restore procedure is understood by the operator.
-- Database credentials have least-privilege access.
-- Monitoring and backup retention are configured outside the app.
-
-## Limitations
-
-- No multi-tenant isolation.
-- No public self-registration.
-- No payment processor integration.
-- No investor password accounts.
-- No formal compliance workflow.
-- No automated tax reporting.
-- No automated market data ingestion.
-- No guarantee of regulatory suitability.
-
-These boundaries are deliberate. Expanding beyond private administration requires a separate security, compliance, and operations design.
+This is a personal project published for reference. Issues and discussion are
+welcome; pull requests are not actively solicited.
 
 ## License
 
-No license is currently declared. Without a license, public source code remains copyrighted and reuse rights are unclear.
+No license is currently declared. Without a license, this source is **All Rights
+Reserved** — you may view it, but reuse, redistribution, and derivative works are
+not permitted. Contact the author for permission.
