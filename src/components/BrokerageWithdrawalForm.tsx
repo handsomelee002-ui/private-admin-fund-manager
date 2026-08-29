@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { formatMoney } from "@/lib/formatting";
 import { recordBrokerageWithdrawalAction } from "@/actions/settings";
 import { Banknote } from "lucide-react";
+import { useIsViewer } from "@/components/RoleContext";
 
 /**
  * Take cash out of the brokerage pot: the pot falls and the fund's recorded bank
@@ -47,6 +48,9 @@ export function BrokerageWithdrawalForm({
       alert(result?.error || "Failed to record withdrawal.");
     }
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

@@ -5,11 +5,11 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import {
+  authenticate,
   clearAdminSession,
-  createAdminSession,
+  createSession,
   isAdminLoginLocked,
   recordAdminLoginAttempt,
-  validateAdminCredentials,
 } from "@/lib/auth";
 
 export type LoginState = {
@@ -44,14 +44,14 @@ export async function loginAdmin(_: LoginState, formData: FormData): Promise<Log
     return { error: "Too many failed sign-in attempts. Try again later." };
   }
 
-  const valid = validateAdminCredentials(result.data.loginId, result.data.password);
-  await recordAdminLoginAttempt(clientKey, result.data.loginId, valid);
-  if (!valid) {
+  const role = authenticate(result.data.loginId, result.data.password);
+  await recordAdminLoginAttempt(clientKey, result.data.loginId, role !== null);
+  if (!role) {
     return { error: "Invalid administrator credentials." };
   }
 
   await clearAdminSession();
-  await createAdminSession();
+  await createSession(role);
   redirect("/");
 }
 

@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { isRedirectError, requireAdmin } from "@/lib/auth";
+import { isRedirectError, requireAdmin, requireSession } from "@/lib/auth";
 import {
   assertNotFutureDate,
   buildNavPlatformPreview,
@@ -109,7 +109,7 @@ export async function getNavPreviewAction(
   fundCashOverride?: number,
 ) {
   try {
-    await requireAdmin();
+    await requireSession();
     assertNotFutureDate(asOfDate, "Valuation date");
     const overrideMap = new Map(
       overrides

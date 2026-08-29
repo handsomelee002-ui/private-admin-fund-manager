@@ -4,6 +4,7 @@ import { useState } from "react";
 import { disableFixedSavingsPromotion } from "@/actions/fixedSavingsRates";
 import { Button } from "@/components/ui/button";
 import { Ban } from "lucide-react";
+import { useIsViewer } from "@/components/RoleContext";
 
 export function DisablePromotionButton({ id }: { id: string }) {
   const [loading, setLoading] = useState(false);
@@ -15,6 +16,9 @@ export function DisablePromotionButton({ id }: { id: string }) {
     setLoading(false);
     if (result?.error) alert(result.error);
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={handleClick} disabled={loading}>

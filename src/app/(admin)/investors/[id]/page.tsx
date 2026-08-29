@@ -11,7 +11,7 @@ import { PaginationControls } from "@/components/PaginationControls";
 import { SortableTableHead } from "@/components/SortableTableHead";
 import { getInvestors } from "@/actions/investors";
 import { getInvestorStatement } from "@/lib/fundDb";
-import { requireAdmin } from "@/lib/auth";
+import { requireSession } from "@/lib/auth";
 import { formatMoney, formatPercent, formatUnits } from "@/lib/formatting";
 import { paginateRows } from "@/lib/pagination";
 import { getSortState, sortRows } from "@/lib/tableSorting";
@@ -50,7 +50,7 @@ export default async function InvestorDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  await requireAdmin();
+  await requireSession();
   const { id } = await params;
   const resolvedSearchParams = await searchParams;
   const sortState = getSortState(resolvedSearchParams, activitySorts, { sort: "date", dir: "desc" });

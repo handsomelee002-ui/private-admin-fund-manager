@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus } from "lucide-react";
 import { addPlatform } from "@/actions/trading";
+import { useIsViewer } from "@/components/RoleContext";
 
 export function AddPlatformForm({ redirectToDetail = false }: { redirectToDetail?: boolean }) {
   const router = useRouter();
@@ -29,6 +30,9 @@ export function AddPlatformForm({ redirectToDetail = false }: { redirectToDetail
       alert(res?.error || "An error occurred");
     }
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

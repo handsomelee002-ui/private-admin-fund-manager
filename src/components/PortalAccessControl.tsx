@@ -4,6 +4,7 @@ import { useState } from "react";
 import { rotateInvestorPortalAccess } from "@/actions/investors";
 import { Button } from "@/components/ui/button";
 import { NoPrefetchLink } from "@/components/NoPrefetchLink";
+import { useIsViewer } from "@/components/RoleContext";
 
 export function PortalAccessControl({
   investorId,
@@ -37,6 +38,9 @@ export function PortalAccessControl({
       alert("Unable to copy the link. Open it and copy the address from the browser.");
     }
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <div className="flex justify-end gap-1">

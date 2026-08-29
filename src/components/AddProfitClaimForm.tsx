@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Handshake } from "lucide-react";
 import { addProfitClaim } from "@/actions/profitClaims";
+import { useIsViewer } from "@/components/RoleContext";
 
 interface Props {
   investorId: string;
@@ -34,6 +35,9 @@ export function AddProfitClaimForm({ investorId, investorName, defaultAmount }: 
       alert(res?.error || "Failed to create claim.");
     }
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

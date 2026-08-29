@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus } from "lucide-react";
+import { useIsViewer } from "@/components/RoleContext";
 
 export function AddPlatformAccountForm({ platformId }: { platformId: string }) {
   const [open, setOpen] = useState(false);
@@ -22,6 +23,9 @@ export function AddPlatformAccountForm({ platformId }: { platformId: string }) {
     if (result?.success) setOpen(false);
     else alert(result?.error || "Failed to add account.");
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

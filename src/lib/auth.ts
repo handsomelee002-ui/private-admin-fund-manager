@@ -13,8 +13,10 @@ const LOGIN_LOCKOUT_MINUTES = 15;
 const LOGIN_WINDOW_INTERVAL = `${LOGIN_WINDOW_MINUTES} minutes`;
 const LOGIN_RETENTION_INTERVAL = `${LOGIN_LOCKOUT_MINUTES * 4} minutes`;
 
-type AdminSession = {
-  role: "admin";
+export type SessionRole = "admin" | "viewer";
+
+type Session = {
+  role: SessionRole;
   sid: string;
   issuedAt: number;
   expiresAt: number;
@@ -28,6 +30,15 @@ function requiredEnv(name: "ADMIN_LOGIN_ID" | "ADMIN_PASSWORD_HASH" | "AUTH_SESS
   return value;
 }
 
+// The read-only viewer account is optional. It exists only when both variables
+// are set, so an operator who never configures it keeps a single-account app.
+function viewerCredentials() {
+  const loginId = process.env.VIEWER_LOGIN_ID;
+  const passwordHash = process.env.VIEWER_PASSWORD_HASH;
+  if (!loginId || !passwordHash) return null;
+  return { loginId, passwordHash };
+}
+
 function sameValue(submitted: string, expected: string) {
   const submittedBytes = Buffer.from(submitted);
   const expectedBytes = Buffer.from(expected);
@@ -38,13 +49,17 @@ function sign(payload: string) {
   return createHmac("sha256", requiredEnv("AUTH_SESSION_SECRET")).update(payload).digest("base64url");
 }
 
-export function verifyAdminPassword(password: string) {
-  const [scheme, salt, expected] = requiredEnv("ADMIN_PASSWORD_HASH").split("$");
+function verifyPassword(password: string, passwordHash: string) {
+  const [scheme, salt, expected] = passwordHash.split("$");
   if (scheme !== "scrypt" || !salt || !expected) return false;
 
   const actualBytes = scryptSync(password, Buffer.from(salt, "base64url"), 64);
   const expectedBytes = Buffer.from(expected, "base64url");
   return expectedBytes.length === actualBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
+
+export function verifyAdminPassword(password: string) {
+  return verifyPassword(password, requiredEnv("ADMIN_PASSWORD_HASH"));
 }
 
 export function assertAdminPassword(password: string | null | undefined) {
@@ -55,6 +70,21 @@ export function assertAdminPassword(password: string | null | undefined) {
 
 export function validateAdminCredentials(loginId: string, password: string) {
   return sameValue(loginId, requiredEnv("ADMIN_LOGIN_ID")) && verifyAdminPassword(password);
+}
+
+/**
+ * Resolve a login to the role it authenticates as, or null. Admin is checked
+ * first so it always wins if the two accounts were ever given the same id.
+ */
+export function authenticate(loginId: string, password: string): SessionRole | null {
+  if (sameValue(loginId, requiredEnv("ADMIN_LOGIN_ID")) && verifyAdminPassword(password)) {
+    return "admin";
+  }
+  const viewer = viewerCredentials();
+  if (viewer && sameValue(loginId, viewer.loginId) && verifyPassword(password, viewer.passwordHash)) {
+    return "viewer";
+  }
+  return null;
 }
 
 export async function ensureAuthSecurityTables() {
@@ -102,10 +132,10 @@ export async function recordAdminLoginAttempt(clientKey: string, loginId: string
   `;
 }
 
-export async function createAdminSession() {
+export async function createSession(role: SessionRole) {
   const now = Math.floor(Date.now() / 1000);
-  const session: AdminSession = {
-    role: "admin",
+  const session: Session = {
+    role,
     sid: randomBytes(18).toString("base64url"),
     issuedAt: now,
     expiresAt: now + SESSION_TTL_SECONDS,
@@ -124,19 +154,25 @@ export async function clearAdminSession() {
   (await cookies()).delete(ADMIN_COOKIE);
 }
 
-export async function isAdminSessionValid() {
+export async function getSession(): Promise<Session | null> {
   const raw = (await cookies()).get(ADMIN_COOKIE)?.value;
-  if (!raw) return false;
+  if (!raw) return null;
 
   const [payload, signature] = raw.split(".");
-  if (!payload || !signature || !sameValue(signature, sign(payload))) return false;
+  if (!payload || !signature || !sameValue(signature, sign(payload))) return null;
 
   try {
-    const session = JSON.parse(Buffer.from(payload, "base64url").toString()) as AdminSession;
-    return session.role === "admin" && session.expiresAt > Math.floor(Date.now() / 1000);
+    const session = JSON.parse(Buffer.from(payload, "base64url").toString()) as Session;
+    const roleOk = session.role === "admin" || session.role === "viewer";
+    if (roleOk && session.expiresAt > Math.floor(Date.now() / 1000)) return session;
+    return null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export async function isAdminSessionValid() {
+  return (await getSession())?.role === "admin";
 }
 
 /**
@@ -151,9 +187,30 @@ export function isRedirectError(error: unknown) {
     && ((error as { digest: string }).digest.startsWith("NEXT_REDIRECT"));
 }
 
-export async function requireAdmin() {
-  if (!(await isAdminSessionValid())) {
+/**
+ * Any signed-in account (admin or read-only viewer). Use this to guard reads and
+ * page loads. An anonymous request is sent to the login screen.
+ */
+export async function requireSession() {
+  const session = await getSession();
+  if (!session) {
     redirect("/admin/login");
+  }
+  return { role: session.role };
+}
+
+/**
+ * Admin-only. Use this to guard every mutation. An anonymous request is sent to
+ * the login screen; a signed-in viewer is refused with an error the calling
+ * server action surfaces to the page.
+ */
+export async function requireAdmin() {
+  const session = await getSession();
+  if (!session) {
+    redirect("/admin/login");
+  }
+  if (session.role !== "admin") {
+    throw new Error("This action requires an administrator account.");
   }
   return { id: "admin", role: "admin" as const, name: "Admin" };
 }

@@ -193,6 +193,23 @@ Administrative access uses:
 - Signed `HttpOnly` session cookies
 - Server-side authorization checks on administrative reads and mutations
 
+### Read-only viewer account
+
+Setting both `VIEWER_LOGIN_ID` and `VIEWER_PASSWORD_HASH` enables a second login
+that can open every admin screen but perform no mutations. Leave either unset and
+the app stays single-account.
+
+- Every mutation server action is guarded by `requireAdmin` and refuses a viewer
+  session with an error; reads and page loads use `requireSession`, which accepts
+  either role. Enforcement is server-side — hiding the buttons is only cosmetic.
+- The viewer sees a "Read-only view" banner, and mutation controls (add, edit,
+  delete, lock, settle, rotate, close, backup, data tools) are not rendered.
+- The investor list hides portal links from a viewer, so a viewer cannot open
+  investor portals.
+- Generate the hash the same way as the admin hash:
+  `node scripts/generate-auth-config.mjs "<viewer-password>"` and use the
+  `ADMIN_PASSWORD_HASH=` line's value for `VIEWER_PASSWORD_HASH`.
+
 Portal links are possession-based bearer links. Anyone with a valid portal URL can view that investor's read-only activity ledger and dashboard until the link is rotated.
 
 ## Security Notes
@@ -252,7 +269,14 @@ Generate the password hash and session secret:
 node scripts/generate-auth-config.mjs "a-private-password-of-at-least-12-characters"
 ```
 
-For `.env.local`, escape each `$` in `ADMIN_PASSWORD_HASH` as `\$` because Next.js expands unescaped dollar sequences in environment files. In hosted environment variable settings, use the raw hash without backslashes unless the provider explicitly requires escaping.
+Optional read-only viewer account (see [Read-only viewer account](#read-only-viewer-account)):
+
+```env
+VIEWER_LOGIN_ID=your-viewer-login-id
+VIEWER_PASSWORD_HASH=scrypt\$generated-salt\$generated-hash
+```
+
+For `.env.local`, escape each `$` in `ADMIN_PASSWORD_HASH` and `VIEWER_PASSWORD_HASH` as `\$` because Next.js expands unescaped dollar sequences in environment files. In hosted environment variable settings, use the raw hash without backslashes unless the provider explicitly requires escaping.
 
 ## Installation
 

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Gift } from "lucide-react";
 import { addBonusPayment } from "@/actions/settings";
+import { useIsViewer } from "@/components/RoleContext";
 
 interface Props {
   investors: { id: string; name: string }[];
@@ -50,6 +51,9 @@ export function AddBonusForm({ investors }: Props) {
   }
 
   const selectClass = "flex h-9 w-full rounded-md border border-input bg-card/50 px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-1 focus:ring-ring";
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

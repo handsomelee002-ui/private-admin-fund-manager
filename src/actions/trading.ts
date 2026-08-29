@@ -3,7 +3,7 @@
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { assertNotFutureDate, calculateFixedSavingsLiability, closePlatform, ensureAuditColumns, getFixedSavingsRateInputs, reopenPlatform, withTransaction, writeAuditEvent } from "@/lib/fundDb";
-import { isRedirectError, requireAdmin } from "@/lib/auth";
+import { isRedirectError, requireAdmin, requireSession } from "@/lib/auth";
 import {
   BASE_CURRENCY,
   isRecordableTransactionType,
@@ -123,7 +123,7 @@ function revalidateTrading(platformId?: string) {
 }
 
 async function ensureTradingSchemaUncached() {
-  await requireAdmin();
+  await requireSession();
   await ensureAuditColumns();
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS base_currency TEXT NOT NULL DEFAULT 'MYR'`;
   await sql`ALTER TABLE platforms ADD COLUMN IF NOT EXISTS default_currency TEXT NOT NULL DEFAULT 'MYR'`;
@@ -201,7 +201,7 @@ export async function ensureTradingSchema() {
 }
 
 export async function getPlatforms() {
-  await requireAdmin();
+  await requireSession();
   await ensureTradingSchema();
 
   const data = await sql`
@@ -536,7 +536,7 @@ async function getPlatformWithdrawalBasis(platformId: string, asOfDate: string) 
 }
 
 export async function getPlatformCapitalAllocation(platformId: string) {
-  await requireAdmin();
+  await requireSession();
   await ensureTradingSchema();
   const [platformBalances, automaticBasis] = await Promise.all([
     getPlatformSourceBalances(platformId),
@@ -560,7 +560,7 @@ export async function getPlatformCapitalAllocation(platformId: string) {
 }
 
 export async function getPlatform(id: string) {
-  await requireAdmin();
+  await requireSession();
   await ensureTradingSchema();
   const data = await sql`
     SELECT id, name, base_currency, default_currency,
@@ -615,7 +615,7 @@ export async function reopenPlatformAction(platformId: string) {
 }
 
 export async function getPlatformAccounts(platformId: string) {
-  await requireAdmin();
+  await requireSession();
   await ensureTradingSchema();
   const data = await sql`
     SELECT id, platform_id, name, account_type, currency, TO_CHAR(created_at, 'YYYY-MM-DD') as created_at
@@ -627,7 +627,7 @@ export async function getPlatformAccounts(platformId: string) {
 }
 
 export async function getPlatformAssets(platformId: string) {
-  await requireAdmin();
+  await requireSession();
   await ensureTradingSchema();
   const data = await sql`
     SELECT id, platform_id, symbol, name, asset_type, currency, latest_price, latest_fx_rate_to_myr
@@ -792,7 +792,7 @@ export async function addPlatformAsset(formData: FormData) {
 }
 
 export async function getPlatformTransactions(platformId: string) {
-  await requireAdmin();
+  await requireSession();
   await ensureTradingSchema();
   const data = await sql`
     SELECT
@@ -1051,7 +1051,7 @@ export async function deletePlatformTransaction(_id: string) {
 }
 
 export async function getPlatformNavSnapshots(platformId: string) {
-  await requireAdmin();
+  await requireSession();
   const data = await sql`
     SELECT
       nwps.id,
@@ -1077,7 +1077,7 @@ export async function getPlatformNavSnapshots(platformId: string) {
 }
 
 export async function getPlatformPerformance(platformId: string) {
-  await requireAdmin();
+  await requireSession();
   const [transactions, snapshots] = await Promise.all([
     getPlatformTransactions(platformId),
     getPlatformNavSnapshots(platformId),

@@ -13,14 +13,14 @@ import {
   writeAuditEvent,
 } from "@/lib/fundDb";
 import { roundMoney } from "@/lib/accounting";
-import { isRedirectError, requireAdmin } from "@/lib/auth";
+import { isRedirectError, requireAdmin, requireSession } from "@/lib/auth";
 
 let settingsTablesPromise: Promise<void> | null = null;
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
 async function ensureSettingsTablesUncached() {
-  await requireAdmin();
+  await requireSession();
   await sql`
     CREATE TABLE IF NOT EXISTS fund_config (
       key        TEXT PRIMARY KEY,
@@ -66,7 +66,7 @@ export async function ensureSettingsTables() {
 // ── Fund Config ───────────────────────────────────────────────────────────────
 
 export async function getBrokerageFeeRate(): Promise<number> {
-  await requireAdmin();
+  await requireSession();
   const res = await sql`SELECT value FROM fund_config WHERE key = 'brokerage_fee_pct'`;
   return parseFloat(res.rows[0]?.value ?? "2.0");
 }
@@ -90,7 +90,7 @@ export async function updateBrokerageFeeRate(formData: FormData) {
 // ── Bonus Payments ────────────────────────────────────────────────────────────
 
 export async function getAllBonusPayments() {
-  await requireAdmin();
+  await requireSession();
   await ensureSettingsTables();
   const res = await sql`
     SELECT
@@ -111,7 +111,7 @@ export async function getAllBonusPayments() {
 }
 
 export async function getBonusByInvestor(investorId: string) {
-  await requireAdmin();
+  await requireSession();
   await ensureSettingsTables();
   const res = await sql`
     SELECT id, ledger_type, amount,

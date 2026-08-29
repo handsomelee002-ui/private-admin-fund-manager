@@ -3,7 +3,7 @@
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
 import { getBrokerageFeeRate } from "@/actions/settings";
-import { isRedirectError, requireAdmin } from "@/lib/auth";
+import { isRedirectError, requireAdmin, requireSession } from "@/lib/auth";
 import { assertNotFutureDate, ensureAuditColumns, getInvestorStatement, redeemUnitsForProfitClaim, withTransaction, writeAuditEvent } from "@/lib/fundDb";
 import { calculateClaimSettlement } from "@/lib/profitClaimAccounting";
 
@@ -43,7 +43,7 @@ async function getClaimableProfit(investorId: string) {
 
 // ── Schema Migration ─────────────────────────────────────────────────────────
 export async function ensureClaimsTable() {
-  await requireAdmin();
+  await requireSession();
   await sql`
     CREATE TABLE IF NOT EXISTS investor_profit_claims (
       id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -74,7 +74,7 @@ export async function ensureClaimsTable() {
 // ── Queries ──────────────────────────────────────────────────────────────────
 
 export async function getAllClaims() {
-  await requireAdmin();
+  await requireSession();
   const data = await sql`
     SELECT
       ipc.id,
@@ -96,7 +96,7 @@ export async function getAllClaims() {
 }
 
 export async function getClaimsByInvestor(investorId: string) {
-  await requireAdmin();
+  await requireSession();
   const data = await sql`
     SELECT
       id,

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CheckCircle } from "lucide-react";
 import { settleClaim } from "@/actions/profitClaims";
+import { useIsViewer } from "@/components/RoleContext";
 
 interface Props {
   claim: {
@@ -64,6 +65,9 @@ export function SettleClaimDialog({ claim }: Props) {
 
   const fmt = (n: number) =>
     `RM ${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

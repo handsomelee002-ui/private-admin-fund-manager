@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { closePlatformAction, reopenPlatformAction } from "@/actions/trading";
 import { Archive, RotateCcw } from "lucide-react";
+import { useIsViewer } from "@/components/RoleContext";
 
 /**
  * Shut a broker account, or undo it.
@@ -26,6 +27,7 @@ export function ClosePlatformControl({
   platformName: string;
   closedOn: string | null;
 }) {
+  const viewerLocked = useIsViewer();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -45,6 +47,8 @@ export function ClosePlatformControl({
     setLoading(false);
     if (!result?.success) alert(result?.error || "Failed to reopen the platform.");
   }
+
+  if (viewerLocked) return null;
 
   if (closedOn) {
     return (

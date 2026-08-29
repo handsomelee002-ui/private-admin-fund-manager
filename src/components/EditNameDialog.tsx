@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Edit2 } from "lucide-react";
+import { useIsViewer } from "@/components/RoleContext";
 
 interface EditNameDialogProps {
   id: string;
@@ -32,6 +33,9 @@ export function EditNameDialog({ id, currentName, title, updateAction }: EditNam
       alert(res?.error || "An error occurred");
     }
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

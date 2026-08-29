@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { CalendarPlus, Percent } from "lucide-react";
+import { useIsViewer } from "@/components/RoleContext";
 
 export function AddBaseRateForm() {
   const [open, setOpen] = useState(false);
@@ -21,6 +22,9 @@ export function AddBaseRateForm() {
     if ("success" in result && result.success) setOpen(false);
     else alert(result?.error || "Failed to save base rate.");
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -63,6 +67,9 @@ export function AddPromotionForm() {
     if ("success" in result && result.success) setOpen(false);
     else alert(result?.error || "Failed to add promotion.");
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

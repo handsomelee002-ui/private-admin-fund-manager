@@ -66,12 +66,15 @@ function installTsRuntime({
         verifyAdminPassword: () => true,
         assertAdminPassword: () => {},
         validateAdminCredentials: () => true,
+        authenticate: () => "admin",
         ensureAuthSecurityTables: async () => {},
         isAdminLoginLocked: async () => false,
         recordAdminLoginAttempt: async () => {},
-        createAdminSession: async () => {},
+        createSession: async () => {},
         clearAdminSession: async () => {},
+        getSession: async () => ({ role: "admin", sid: "test", issuedAt: 0, expiresAt: 4102444800 }),
         isAdminSessionValid: async () => true,
+        requireSession: async () => ({ role: "admin" }),
         requireAdmin: async () => ({ id: "admin", role: "admin", name: "Admin" }),
         // Mirrors the real implementation. Server actions call this in every
         // catch block, so omitting it here fails them with "not a function"

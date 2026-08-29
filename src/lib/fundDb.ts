@@ -13,7 +13,7 @@ import {
   splitNonEquityProfit,
   splitPoolAvailability,
 } from "@/lib/accounting";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, requireSession } from "@/lib/auth";
 import { BACKUP_TABLES, assertBackupTableName } from "@/lib/backupTables";
 import {
   MATERIAL_WEIGHT_PERCENT,
@@ -1369,7 +1369,7 @@ export async function getLatestLockedNavWeek() {
 }
 
 export async function getNavWeeks() {
-  await requireAdmin();
+  await requireSession();
   const res = await sql`
     SELECT id,
       TO_CHAR(week_ending, 'YYYY-MM-DD') as week_ending,
@@ -1932,7 +1932,7 @@ export async function recordBrokerageWithdrawal(input: {
 }
 
 export async function getBrokerageWithdrawals() {
-  await requireAdmin();
+  await requireSession();
   await ensureAuditColumns();
   const res = await sql`
     SELECT id, TO_CHAR(date, 'YYYY-MM-DD') as date, amount, type, notes, created_at
@@ -2232,7 +2232,7 @@ export async function reopenPlatform(platformId: string) {
 }
 
 export async function getPlatformValuations(platformId?: string) {
-  await requireAdmin();
+  await requireSession();
   await ensureAuditColumns();
   const res = platformId
     ? await sql`
@@ -2429,7 +2429,7 @@ export function splitNavPlatformValue(snapshots: ReturnType<typeof summarizeNavP
  * operator is not allocating from a pool that has nothing left.
  */
 export async function getFundCashAvailability(asOfDate?: string) {
-  await requireAdmin();
+  await requireSession();
   const date = asOfDate ?? todayIso();
   const [preview, fundCash] = await Promise.all([
     buildNavPlatformPreview(date),
@@ -3103,7 +3103,7 @@ export async function recordFixedSavings(input: FixedSavingsInput) {
 }
 
 export async function getCashMovements() {
-  await requireAdmin();
+  await requireSession();
   await ensureAuditColumns();
   const res = await sql`
     SELECT cm.*, i.name as investor_name, TO_CHAR(cm.date, 'YYYY-MM-DD') as date, nw.nav_per_unit
@@ -3117,7 +3117,7 @@ export async function getCashMovements() {
 }
 
 export async function getFixedSavingsLedger() {
-  await requireAdmin();
+  await requireSession();
   await ensureAuditColumns();
   const res = await sql`
     SELECT fsl.*, i.name as investor_name, TO_CHAR(fsl.date, 'YYYY-MM-DD') as date
@@ -3130,7 +3130,7 @@ export async function getFixedSavingsLedger() {
 }
 
 export async function getInvestorsWithBalances() {
-  await requireAdmin();
+  await requireSession();
   await ensureAuditColumns();
   await ensureInvestorPortalAccessColumns();
   const [res, savings, equityLedger, rateInput] = await Promise.all([
@@ -3500,7 +3500,7 @@ export async function getInvestorPortalDashboard(investorId: string) {
 }
 
 export async function getFundSummaryMetrics() {
-  await requireAdmin();
+  await requireSession();
   await ensureAuditColumns();
   const [summary, savings, rateInput] = await Promise.all([
     sql`
@@ -3563,7 +3563,7 @@ export async function getFundSummaryMetrics() {
 }
 
 export async function getDashboardSummary() {
-  await requireAdmin();
+  await requireSession();
   await ensureAuditColumns();
   await ensureInvestorPortalAccessColumns();
   const [summaryResult, savings, investorsResult, equityLedger, rateInput] = await Promise.all([

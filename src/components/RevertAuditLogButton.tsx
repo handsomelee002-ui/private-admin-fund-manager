@@ -4,6 +4,7 @@ import { useState } from "react";
 import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { revertAuditLog } from "@/actions/adminLogs";
+import { useIsViewer } from "@/components/RoleContext";
 
 export function RevertAuditLogButton({
   id,
@@ -25,6 +26,9 @@ export function RevertAuditLogButton({
     setLoading(false);
     if (result?.error) alert(result.error);
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Button

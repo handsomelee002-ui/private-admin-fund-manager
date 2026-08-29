@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { updateBrokerageFeeRate } from "@/actions/settings";
 import { Check, Pencil } from "lucide-react";
+import { useIsViewer } from "@/components/RoleContext";
 
 export function BrokerageFeeConfig({ initialRate }: { initialRate: number }) {
   const [editing, setEditing] = useState(false);
@@ -26,6 +27,9 @@ export function BrokerageFeeConfig({ initialRate }: { initialRate: number }) {
       alert(res?.error || "Failed to save.");
     }
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <div className="flex items-center gap-3">

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Trash2 } from "lucide-react";
+import { useIsViewer } from "@/components/RoleContext";
 
 export function DeleteButton({ id, deleteAction }: { id: string, deleteAction: (id: string) => Promise<{success?: boolean, error?: string}> }) {
   const [loading, setLoading] = useState(false);
@@ -18,6 +19,9 @@ export function DeleteButton({ id, deleteAction }: { id: string, deleteAction: (
       alert(res.error);
     }
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={handleDelete} disabled={loading}>

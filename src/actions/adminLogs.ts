@@ -2,7 +2,7 @@
 
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { isRedirectError, requireAdmin } from "@/lib/auth";
+import { isRedirectError, requireAdmin, requireSession } from "@/lib/auth";
 import { ensureAuditColumns, withTransaction, writeAuditEvent } from "@/lib/fundDb";
 
 const REVERSIBLE_ACTION_LIST = [
@@ -473,7 +473,7 @@ export async function getAdminAuditLogs({
   page?: number;
   pageSize?: number;
 } = {}) {
-  await requireAdmin();
+  await requireSession();
   await ensureAuditColumns();
   const safePage = Number.isInteger(page) && page > 0 ? page : 1;
   const safePageSize = Number.isInteger(pageSize) && pageSize > 0 && pageSize <= 50 ? pageSize : 12;
@@ -486,7 +486,7 @@ export async function getAdminAuditLogs({
 }
 
 export async function getAdminAuditLogDetails(id: string) {
-  await requireAdmin();
+  await requireSession();
   await ensureAuditColumns();
   const result = await sql`
     SELECT

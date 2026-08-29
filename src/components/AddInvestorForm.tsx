@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus } from "lucide-react";
 import { addInvestor } from "@/actions/investors";
+import { useIsViewer } from "@/components/RoleContext";
 
 export function AddInvestorForm() {
   const [open, setOpen] = useState(false);
@@ -24,6 +25,9 @@ export function AddInvestorForm() {
       alert(res?.error || "An error occurred");
     }
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

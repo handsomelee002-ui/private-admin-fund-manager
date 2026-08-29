@@ -10,6 +10,7 @@ import { HoverDetail } from "@/components/HoverDetail";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AlertTriangle, Plus } from "lucide-react";
+import { useIsViewer } from "@/components/RoleContext";
 
 type PreviewRow = {
   platformId: string;
@@ -246,6 +247,9 @@ export function CreateNavWeekForm() {
   );
   const staleRows = rows.filter((row) => row.isStale);
   const blockingRows = staleRows.filter((row) => row.weightPercent >= 10);
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

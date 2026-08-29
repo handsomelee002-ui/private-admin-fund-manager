@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { deleteDraftNavWeekAction, lockNavWeekAction } from "@/actions/fund";
 import { Button } from "@/components/ui/button";
 import { Lock, Trash2 } from "lucide-react";
+import { useIsViewer } from "@/components/RoleContext";
 
 export function LockNavButton({ id }: { id: string }) {
   const router = useRouter();
@@ -41,6 +42,9 @@ export function LockNavButton({ id }: { id: string }) {
     }
     router.refresh();
   }
+
+  const viewerLocked = useIsViewer();
+  if (viewerLocked) return null;
 
   return (
     <div className="flex justify-end gap-2">

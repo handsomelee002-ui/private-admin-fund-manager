@@ -25,9 +25,9 @@ and gives each investor a read-only statement link.
 **<https://private-admin-fund-manager.vercel.app>**
 
 A public sandbox on sample data, backed by a throwaway database. Sign in at
-`/admin/login` with **`admin` / `admin`** (the login form is pre-filled). Anyone
-can sign in and change records — do not treat anything in the demo as private or
-persistent.
+`/admin/login` with **`admin` / `admin`** (the login form is pre-filled), or with
+**`viewer` / `viewer`** for the read-only role. Anyone can sign in and change
+records — do not treat anything in the demo as private or persistent.
 
 ## Screenshots
 
@@ -75,6 +75,8 @@ persistent.
   edits.
 - **Read-only investor portal** via private, rotatable bearer links with access
   logging — an activity ledger plus a dashboard of metrics and charts.
+- **Optional read-only admin account** (`VIEWER_LOGIN_ID` / `VIEWER_PASSWORD_HASH`)
+  that can open every screen but is refused every mutation, server-side.
 - **Manual JSON backup** export, validation, preview, and restore.
 
 ## How the accounting works (short version)

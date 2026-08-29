@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { sql } from "@vercel/postgres";
 import { revalidatePath } from "next/cache";
-import { generatePortalAccessId, isRedirectError, requireAdmin } from "@/lib/auth";
+import { generatePortalAccessId, isRedirectError, requireAdmin, requireSession } from "@/lib/auth";
 import { ensureAuditColumns, getInvestorsWithBalances, writeAuditEvent } from "@/lib/fundDb";
 
 function hashPortalAccessId(portalAccessId: string | null | undefined) {
@@ -11,7 +11,7 @@ function hashPortalAccessId(portalAccessId: string | null | undefined) {
 }
 
 export async function getInvestors() {
-  await requireAdmin();
+  await requireSession();
   try {
     return await getInvestorsWithBalances();
   } catch (error) {
